@@ -1,0 +1,15 @@
+[Unit]
+Description=Xray Manager Web Panel
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/xray-manager
+ExecStart=/usr/bin/python3 /root/xray-manager/app.py --host 0.0.0.0 --port 54321 --xray-config /root/xray-multi-socks.json --xray-binary /usr/local/bin/xray --service xray-multi-socks.service
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
