@@ -1902,8 +1902,9 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
       </div>
       <div class="edit-row" style="margin-bottom:12px">
         <label>代理出口</label>
-        <select id="tp-proxy-tag" style="padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px"></select>
+        <select id="tp-proxy-tag" style="padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px" onchange="loadBalancer()"></select>
       </div>
+      <div id="tp-mode-hint" style="font-size:12px;color:var(--text2);margin-bottom:12px;padding:6px 10px;background:var(--bg);border-radius:4px;border-left:3px solid var(--border)"></div>
       <div class="edit-row" style="margin-bottom:12px">
         <label>端口</label>
         <input id="tp-port-input" type="number" value="12345" style="width:100px">
@@ -2803,9 +2804,23 @@ async function loadBalancer(){
   const selected=new Set(d.tags||[]);
   if(tags.length===0){
     nodes.innerHTML='<span style="color:var(--text2);font-size:12px">无可用代理节点</span>';
-    return;
+  }else{
+    nodes.innerHTML=tags.map(t=>'<label style="display:flex;align-items:center;gap:6px;padding:4px 0;cursor:pointer"><input type="checkbox" name="bal-node" value="'+t+'" '+(selected.has(t)?'checked':'')+'><span style="font-size:13px">'+t+'</span></label>').join("");
   }
-  nodes.innerHTML=tags.map(t=>'<label style="display:flex;align-items:center;gap:6px;padding:4px 0;cursor:pointer"><input type="checkbox" name="bal-node" value="'+t+'" '+(selected.has(t)?'checked':'')+'><span style="font-size:13px">'+t+'</span></label>').join("");
+  // Update mode hint
+  const hint=document.getElementById("tp-mode-hint");
+  if(hint){
+    if(d.enabled&&d.tags&&d.tags.length>0){
+      const strMap={roundRobin:"轮询",leastPing:"最低延迟",random:"随机"};
+      hint.style.borderLeftColor="var(--green)";
+      hint.innerHTML="✅ 启用时将使用 <b>负载均衡</b>："+d.tags.join(", ")+"（"+(strMap[d.strategy]||d.strategy)+"）";
+    }else{
+      const sel=document.getElementById("tp-proxy-tag");
+      const tag=sel?sel.value:"";
+      hint.style.borderLeftColor="var(--border)";
+      hint.innerHTML="启用时将使用 <b>单节点</b>："+(tag||"未选择")+"（可在下方配置负载均衡）";
+    }
+  }
 }
 async function tpSaveBalancer(){
   const enabled=document.getElementById("tp-bal-enabled").checked;
