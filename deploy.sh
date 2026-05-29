@@ -107,6 +107,18 @@ detect_arch() {
 # ---------------------------------------------------------------------------
 install_xray() {
     step "Xray-core"
+
+    # Skip if already installed with correct version
+    if [[ -x "$XRAY_BIN" ]]; then
+        local cur
+        cur="$($XRAY_BIN version 2>/dev/null | head -1)"
+        if echo "$cur" | grep -q "$XRAY_VER"; then
+            info "Already installed: $cur"
+            return 0
+        fi
+        info "Upgrading: $cur → $XRAY_VER"
+    fi
+
     local arch
     arch="$(detect_arch)"
     info "Arch=$arch  Version=$XRAY_VER"
@@ -128,11 +140,21 @@ install_geo() {
     step "GeoIP / GeoSite"
     mkdir -p "$(dirname "$GEOIP_PATH")"
 
-    gh_dl "https://${GH}/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" "$GEOIP_PATH" \
-        && info "geoip.dat ✓ ($(du -h "$GEOIP_PATH" | cut -f1))" || warn "geoip.dat failed"
+    if [[ -f "$GEOIP_PATH" ]] && [[ $(stat -c%s "$GEOIP_PATH" 2>/dev/null || echo 0) -gt 10000000 ]]; then
+        info "geoip.dat exists ($(du -h "$GEOIP_PATH" | cut -f1))"
+    elif gh_dl "https://${GH}/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" "$GEOIP_PATH"; then
+        info "geoip.dat ✓ ($(du -h "$GEOIP_PATH" | cut -f1))"
+    else
+        warn "geoip.dat failed"
+    fi
 
-    gh_dl "https://${GH}/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" "$GEOSITE_PATH" \
-        && info "geosite.dat ✓ ($(du -h "$GEOSITE_PATH" | cut -f1))" || warn "geosite.dat failed"
+    if [[ -f "$GEOSITE_PATH" ]] && [[ $(stat -c%s "$GEOSITE_PATH" 2>/dev/null || echo 0) -gt 5000000 ]]; then
+        info "geosite.dat exists ($(du -h "$GEOSITE_PATH" | cut -f1))"
+    elif gh_dl "https://${GH}/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" "$GEOSITE_PATH"; then
+        info "geosite.dat ✓ ($(du -h "$GEOSITE_PATH" | cut -f1))"
+    else
+        warn "geosite.dat failed"
+    fi
 }
 
 # ---------------------------------------------------------------------------
