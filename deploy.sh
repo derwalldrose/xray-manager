@@ -4,7 +4,7 @@
 # Supports: Linux amd64 / arm64
 # Usage:
 #   bash deploy.sh                      # direct download
-#   bash deploy.sh --proxy ghproxy      # use ghproxy.com mirror
+#   bash deploy.sh --proxy ghproxy      # use ghproxy.net mirror
 #   bash deploy.sh --proxy direct       # explicit direct (default)
 #   bash deploy.sh --proxy http://127.0.0.1:7890  # custom HTTP proxy
 # ============================================================================
@@ -26,7 +26,7 @@ XRAY_RELEASE_URL="https://github.com/XTLS/Xray-core/releases/latest"
 GEOIP_URL="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
 GEOSITE_URL="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
 
-GHPROXY_PREFIX="https://ghproxy.com/"
+GHPROXY_PREFIX="https://ghproxy.net/"
 
 # ---------------------------------------------------------------------------
 # Color helpers
