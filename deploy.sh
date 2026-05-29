@@ -123,18 +123,27 @@ detect_arch() {
 # Resolve latest Xray release tag
 # ---------------------------------------------------------------------------
 resolve_xray_tag() {
-    local api_url="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
     info "Resolving latest Xray release..."
 
-    local json tag=""
-    json="$(curl -sL --connect-timeout 10 --max-time 20 "${CDN}/${api_url}" 2>/dev/null || true)"
+    # Try direct API (CDN may corrupt JSON responses)
+    local tag=""
+    local json
+    json="$(curl -sL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/XTLS/Xray-core/releases/latest" 2>/dev/null || true)"
 
     if [[ -n "$json" ]]; then
         tag="$(echo "$json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || true)"
     fi
 
+    # Fallback via CDN
     if [[ -z "$tag" ]]; then
-        # Fallback: try known recent version
+        json="$(curl -sL --connect-timeout 10 --max-time 20 "${CDN}/https://api.github.com/repos/XTLS/Xray-core/releases/latest" 2>/dev/null || true)"
+        if [[ -n "$json" ]]; then
+            tag="$(echo "$json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || true)"
+        fi
+    fi
+
+    # Hardcoded fallback
+    if [[ -z "$tag" ]]; then
         tag="v26.3.27"
         warn "Could not resolve tag, using fallback: $tag"
     fi
