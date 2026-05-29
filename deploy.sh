@@ -352,7 +352,14 @@ setup_app() {
         cp "${script_dir}/app.py" "${XRAY_MANAGER_HOME}/app.py"
         info "Copied app.py -> ${XRAY_MANAGER_HOME}/app.py"
     else
-        warn "app.py not found in script directory — skipping copy"
+        info "app.py not found locally — downloading from GitHub..."
+        setup_curl_proxy
+        if mirror_download "https://raw.githubusercontent.com/derwalldrose/xray-manager/main/app.py" "${XRAY_MANAGER_HOME}/app.py"; then
+            info "Downloaded app.py ✓"
+        else
+            error "Failed to download app.py"
+            error "Manual fix: copy app.py to ${XRAY_MANAGER_HOME}/app.py"
+        fi
     fi
 
     # Copy requirements.txt if present
@@ -512,7 +519,7 @@ print_summary() {
     echo -e "  Xray version:     ${CYAN}$($XRAY_BIN version 2>/dev/null || echo 'unknown')${NC}"
     echo -e "  Xray config:      ${CYAN}${XRAY_CFG}${NC}"
     echo -e "  Manager app:      ${CYAN}${XRAY_MANAGER_HOME}/app.py${NC}"
-    echo -e "  Geo data:         ${CYAN}/usr/local/share/xray/${NC}"
+    echo -e "  Geo data:         ${CYAN}${XRAY_MANAGER_HOME}/data/${NC}"
     echo ""
     echo -e "  Web Panel URL:    ${CYAN}http://${ip}:54321${NC}"
     echo -e "  Default token:    ${CYAN}Root2023!${NC}"
