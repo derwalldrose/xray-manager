@@ -156,6 +156,13 @@ install_geo() {
     else
         warn "geosite.dat failed"
     fi
+
+    # Xray looks for geo files next to the binary — symlink from bin/ to data/
+    local bin_dir
+    bin_dir="$(dirname "$XRAY_BIN")"
+    ln -sf "$GEOIP_PATH" "${bin_dir}/geoip.dat"
+    ln -sf "$GEOSITE_PATH" "${bin_dir}/geosite.dat"
+    info "Symlinked geo files to ${bin_dir}/"
 }
 
 # ---------------------------------------------------------------------------
