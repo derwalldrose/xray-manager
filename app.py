@@ -677,28 +677,51 @@ def _tp_remove_dokodemo_from_config():
     return cfg, None
 
 
+def _has_systemd():
+    """Check if systemd/systemctl is available."""
+    _, _, rc = _run("command -v systemctl")
+    return rc == 0
+
+
+def _has_supervisord():
+    """Check if supervisord/supervisorctl is available."""
+    _, _, rc = _run("command -v supervisorctl")
+    return rc == 0
+
+
 def _service_status():
     """Get service status info."""
     info = {"name": SVC_NAME, "running": False}
-    out, _, rc = _run(f"systemctl is-active {SVC_NAME}")
-    info["active"] = out.strip()
-    info["running"] = out.strip() == "active"
 
-    # uptime
-    out, _, _ = _run(f"systemctl show {SVC_NAME} --property=ActiveEnterTimestamp --value")
-    info["started_at"] = out.strip()
-
-    # PID
-    out, _, _ = _run(f"systemctl show {SVC_NAME} --property=MainPID --value")
-    info["pid"] = out.strip()
-
-    # memory
-    out, _, _ = _run(f"systemctl show {SVC_NAME} --property=MemoryCurrent --value")
-    mem = out.strip()
-    try:
-        info["memory"] = f"{int(mem) / 1024 / 1024:.1f} MB" if mem and mem != "[not set]" else "N/A"
-    except ValueError:
-        info["memory"] = mem
+    if _has_systemd():
+        out, _, rc = _run(f"systemctl is-active {SVC_NAME}")
+        info["active"] = out.strip()
+        info["running"] = out.strip() == "active"
+        out, _, _ = _run(f"systemctl show {SVC_NAME} --property=ActiveEnterTimestamp --value")
+        info["started_at"] = out.strip()
+        out, _, _ = _run(f"systemctl show {SVC_NAME} --property=MainPID --value")
+        info["pid"] = out.strip()
+        out, _, _ = _run(f"systemctl show {SVC_NAME} --property=MemoryCurrent --value")
+        mem = out.strip()
+        try:
+            info["memory"] = f"{int(mem) / 1024 / 1024:.1f} MB" if mem and mem != "[not set]" else "N/A"
+        except ValueError:
+            info["memory"] = mem
+    elif _has_supervisord():
+        out, _, rc = _run("supervisorctl status xray-all:xray 2>/dev/null")
+        info["active"] = "active" if "RUNNING" in out else "inactive"
+        info["running"] = "RUNNING" in out
+        info["started_at"] = ""
+        info["pid"] = ""
+        info["memory"] = "N/A"
+    else:
+        # Try checking if xray process is running
+        out, _, rc = _run("pgrep -x xray")
+        info["active"] = "active" if rc == 0 else "inactive"
+        info["running"] = rc == 0
+        info["started_at"] = ""
+        info["pid"] = out.strip().split("\n")[0] if out.strip() else ""
+        info["memory"] = "N/A"
 
     # listen ports via ss
     out, _, _ = _run("ss -lntp")
@@ -778,10 +801,19 @@ def _save_config_object(cfg):
 
 def _restart_xray():
     """Restart Xray service, return restart result."""
-    _run(f"systemctl --no-block restart {SVC_NAME}")
-    time.sleep(1.5)
-    out, _, rc = _run(f"systemctl is-active {SVC_NAME}")
-    return {"active": out.strip(), "success": out.strip() == "active"}
+    if _has_systemd():
+        _run(f"systemctl --no-block restart {SVC_NAME}")
+        time.sleep(1.5)
+        out, _, rc = _run(f"systemctl is-active {SVC_NAME}")
+        return {"active": out.strip(), "success": out.strip() == "active"}
+    elif _has_supervisord():
+        _run("supervisorctl restart xray-all:xray")
+        time.sleep(1.5)
+        out, _, _ = _run("supervisorctl status xray-all:xray")
+        active = "active" if "RUNNING" in out else "inactive"
+        return {"active": active, "success": "RUNNING" in out}
+    else:
+        return {"active": "unknown", "success": False}
 
 
 def _bool_param(qs, *names, default=False):
@@ -1589,14 +1621,21 @@ def api_balancer_set():
 
 @app.route("/api/service/<action>", methods=["POST"])
 def api_service_action(action):
-    if action == "restart":
-        _, err, rc = _run(f"systemctl restart {SVC_NAME}")
-    elif action == "stop":
-        _, err, rc = _run(f"systemctl stop {SVC_NAME}")
-    elif action == "start":
-        _, err, rc = _run(f"systemctl start {SVC_NAME}")
-    else:
+    if action not in ("restart", "stop", "start"):
         return jsonify({"error": f"unknown action: {action}"}), 400
+
+    if _has_systemd():
+        _, err, rc = _run(f"systemctl {action} {SVC_NAME}")
+    elif _has_supervisord():
+        svc = "xray-all:xray"
+        if action == "restart":
+            _, err, rc = _run(f"supervisorctl restart {svc}")
+        elif action == "stop":
+            _, err, rc = _run(f"supervisorctl stop {svc}")
+        else:
+            _, err, rc = _run(f"supervisorctl start {svc}")
+    else:
+        return jsonify({"error": "no service manager found"}), 500
 
     time.sleep(1)
     info = _service_status()
@@ -1610,7 +1649,21 @@ def api_service_action(action):
 @app.route("/api/logs")
 def api_logs():
     lines = request.args.get("lines", 80, type=int)
-    out, _, _ = _run(f"journalctl -u {SVC_NAME} --no-pager -n {lines} 2>&1")
+    if _has_systemd():
+        out, _, _ = _run(f"journalctl -u {SVC_NAME} --no-pager -n {lines} 2>&1")
+    else:
+        # Docker/supervisord: read log files directly
+        log_file = f"{BASE_DIR}/logs/xray.log"
+        err_file = f"{BASE_DIR}/logs/xray.err"
+        content = ""
+        for f in [err_file, log_file]:
+            try:
+                with open(f) as fh:
+                    all_lines = fh.readlines()
+                    content += "".join(all_lines[-lines:])
+            except Exception:
+                pass
+        out = content if content else "(no logs found)"
     return jsonify({"logs": out})
 
 
