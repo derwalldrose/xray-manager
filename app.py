@@ -2214,7 +2214,13 @@ async function saveInbounds(){
 
 function renderOutbounds(){
   const tb=document.getElementById('outbounds-tbody');
-  tb.innerHTML=outboundsData.map((ob,i)=>{
+  // Sort: proxy nodes first, system outbounds (freedom/blackhole/dns) last
+  const sorted=outboundsData.map((ob,i)=>({ob,i})).sort((a,b)=>{
+    const sa=(a.ob.protocol==='freedom'||a.ob.protocol==='blackhole'||a.ob.protocol==='dns')?1:0;
+    const sb=(b.ob.protocol==='freedom'||b.ob.protocol==='blackhole'||b.ob.protocol==='dns')?1:0;
+    return sa-sb;
+  });
+  tb.innerHTML=sorted.map(({ob,i})=>{
     let addr='-', port='-', net='-';
     try{
       const v=ob.settings&&ob.settings.vnext&&ob.settings.vnext[0];
@@ -2227,7 +2233,8 @@ function renderOutbounds(){
     const speed=ob._speed||'-';
     const p=ob.protocol||'';
     const isSystem=p==='freedom'||p==='blackhole';
-    const rowCls=isSystem?' class="ob-system"':'';
+    const isDns=p==='dns';
+    const rowCls=isSystem?' class="ob-system"':isDns?' class="ob-system"':'';
     const protoLabel=p==='freedom'?'direct':p==='blackhole'?'block':p;
     if(isSystem){
       return `<tr${rowCls}>
@@ -2235,6 +2242,15 @@ function renderOutbounds(){
         <td><span style="opacity:.7">${ob.tag||'-'}</span></td>
         <td><span style="opacity:.5">${protoLabel}</span></td>
         <td colspan="5" style="opacity:.4;font-size:11px">${p==='freedom'?'直连出口':'丢弃出口'}</td>
+        <td><button class="btn" onclick="editOutbound(${i})">编辑</button></td>
+      </tr>`;
+    }
+    if(isDns){
+      return `<tr${rowCls}>
+        <td></td>
+        <td><span style="opacity:.7">${ob.tag||'-'}</span></td>
+        <td><span style="opacity:.5">dns</span></td>
+        <td colspan="5" style="opacity:.4;font-size:11px">DNS出口</td>
         <td><button class="btn" onclick="editOutbound(${i})">编辑</button></td>
       </tr>`;
     }
