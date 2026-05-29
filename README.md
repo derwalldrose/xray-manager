@@ -8,7 +8,7 @@
 bash <(curl -fsSL https://hub.543083.xyz/https://raw.githubusercontent.com/derwalldrose/xray-manager/main/deploy.sh)
 ```
 
-部署完成后访问 `http://<IP>:54321`，Token 在部署脚本输出中显示（随机生成，保存在 `state/token`）。
+部署完成后访问 `http://<IP>:54321`，初始 Token: `123456`（首次登录后在配置页面修改）。
 
 ## 功能
 
