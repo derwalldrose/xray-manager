@@ -6,44 +6,40 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # Override Xray version if needed
         # XRAY_VERSION: "v25.4.30"
         TARGETARCH: amd64
     container_name: xray-manager
     restart: unless-stopped
 
-    # ---- Network mode ----
-    # "host" is recommended for transparent proxy (iptables/DNS hijack).
-    # When using host mode, 'ports:' mapping is ignored — the container
-    # directly binds to host interfaces.
+    # host 网络：容器直接使用宿主机网络栈
+    # - 面板端口 54321、SOCKS 10808、HTTP 10809 直接暴露
+    # - iptables 透明代理直接操作宿主机的 nat 表
+    # - DNS 劫持直接改宿主机 /etc/resolv.conf
     network_mode: host
 
-    # If you prefer bridge mode (no transparent proxy), comment out
-    # network_mode above and uncomment ports below:
+    # bridge 模式（不用透明代理时可切换）：
+    # network_mode: bridge
     # ports:
-    #   - "54321:54321"
+    #   - "54321:54321"   # 管理面板
+    #   - "10808:10808"   # SOCKS 代理
+    #   - "10809:10809"   # HTTP 代理
 
     volumes:
-      # Mount entire xray-manager directory for unified file layout
-      # Structure:
-      #   config/xray-multi-socks.json  — Xray proxy config
-      #   data/geoip.dat, geosite.dat   — GeoIP/GeoSite data
-      #   backup/                        — Config backups
-      #   state/                         — Runtime state (transparent proxy, balancer, etc.)
+      # 配置目录（Xray配置、备份、状态、geo数据）
       - ./config:/root/xray-manager/config
       - ./data:/root/xray-manager/data
       - ./backup:/root/xray-manager/backup
       - ./state:/root/xray-manager/state
+      - ./logs:/root/xray-manager/logs
 
     environment:
       - PYTHONUNBUFFERED=1
 
-    # Capabilities needed for iptables transparent proxy
+    # iptables 透明代理需要的权限
     cap_add:
-      - NET_ADMIN
-      - NET_RAW
+      - NET_ADMIN    # iptables 操作
+      - NET_RAW      # 原始套接字
 
-    # DNS — allow resolution both inside container and via host
     dns:
       - 8.8.8.8
       - 1.1.1.1
