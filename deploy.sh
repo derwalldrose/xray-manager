@@ -3,7 +3,7 @@
 # xray-manager — one-click deployment script
 # Supports: Linux amd64 / arm64
 # Usage:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/derwalldrose/xray-manager/main/deploy.sh)
+#   bash <(curl -fsSL https://hub.543083.xyz/https://raw.githubusercontent.com/derwalldrose/xray-manager/main/deploy.sh)
 # ============================================================================
 set -euo pipefail
 
