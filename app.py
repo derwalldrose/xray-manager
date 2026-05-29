@@ -2125,6 +2125,20 @@ let restoreTarget = '';
 
 function hdrs(){return {'Content-Type':'application/json','X-Token':token}}
 
+function copyToClipboard(text){
+  if(navigator.clipboard&&window.isSecureContext){
+    navigator.clipboard.writeText(text).then(()=>true).catch(()=>fallbackCopy(text));
+  }else{
+    fallbackCopy(text);
+  }
+}
+function fallbackCopy(text){
+  const ta=document.createElement('textarea');
+  ta.value=text;ta.style.position='fixed';ta.style.left='-9999px';
+  document.body.appendChild(ta);ta.select();
+  try{document.execCommand('copy');}catch(e){}
+  document.body.removeChild(ta);
+}
 function toast(msg, ok=true){
   const d=document.createElement('div');
   d.className='toast '+(ok?'ok':'err');
@@ -2744,7 +2758,7 @@ function exportOutbound(idx){
   if(!ob){toast('节点数据异常',false);return;}
   const link=outboundToShareLink(ob);
   if(!link){toast('不支持导出该协议: '+ob.protocol,false);return;}
-  navigator.clipboard.writeText(link).then(()=>toast('已复制: '+ob.tag)).catch(()=>toast('复制失败，请手动复制',false));
+  copyToClipboard(link);toast('已复制: '+ob.tag);
   // Also show in a temporary box
   const box=document.getElementById('outbound-test-output');
   box.style.display='block';
@@ -2763,7 +2777,7 @@ function batchExportOutbounds(){
   }
   if(!links.length){toast('没有可导出的代理节点',false);return;}
   const text=links.join('\n');
-  navigator.clipboard.writeText(text).then(()=>toast('已复制 '+links.length+' 个节点链接')).catch(()=>toast('复制失败',false));
+  copyToClipboard(text);toast('已复制 '+links.length+' 个节点链接');
   const box=document.getElementById('outbound-test-output');
   box.style.display='block';
   box.textContent='=== 已导出 '+links.length+' 个节点 ===\n\n'+text;
