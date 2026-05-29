@@ -56,6 +56,7 @@ DEFAULT_SPEEDTEST_TIMEOUT = 20
 DEFAULT_TRANSPARENT_PORT = 12345
 TRANSPARENT_STATE_FILE = "/root/xray-manager/transparent-state.json"
 IPTABLES_BACKUP_FILE = "/root/xray-manager/iptables-backup.rules"
+RESOLV_BACKUP_FILE = "/root/xray-manager/resolv.conf.bak"
 CHAIN_PREFIX = "XRAY_MGR"
 CUSTOM_BYPASS_FILE = "/root/xray-manager/transparent-bypass.json"
 
@@ -404,7 +405,8 @@ def _tp_has_dokodemo_inbound():
 
 def _tp_startup_cleanup():
     """On startup: if iptables rules exist but config has no transparent inbound,
-    clean up stale rules to prevent them from intercepting xray's own traffic."""
+    clean up stale rules to prevent them from intercepting xray's own traffic.
+    Also restore DNS if hijacked but transparent proxy is off."""
     if _tp_has_iptables_rules() and not _tp_has_dokodemo_inbound():
         print("[transparent-proxy] Stale iptables rules detected without dokodemo inbound — cleaning up")
         _iptables_cleanup()
@@ -415,6 +417,48 @@ def _tp_startup_cleanup():
     state = _tp_state_read()
     if state.get("enabled") and not _tp_has_dokodemo_inbound():
         _tp_state_write({"enabled": False})
+    # Restore stale DNS hijack
+    if _dns_hijack_is_active() and not _tp_has_dokodemo_inbound():
+        if _dns_hijack_restore():
+            print("[transparent-proxy] Stale DNS hijack restored")
+
+
+def _dns_hijack_backup():
+    """Backup /etc/resolv.conf before hijacking."""
+    resolv = Path("/etc/resolv.conf")
+    if not resolv.exists():
+        return False
+    import shutil
+    shutil.copy2(resolv, RESOLV_BACKUP_FILE)
+    return True
+
+
+def _dns_hijack_apply():
+    """Hijack system DNS to point to Xray's dns inbound (127.0.0.1:53)."""
+    _dns_hijack_backup()
+    with open("/etc/resolv.conf", "w") as f:
+        f.write("# Xray DNS hijack (xray-manager transparent proxy)\n")
+        f.write("nameserver 127.0.0.1\n")
+    return True
+
+
+def _dns_hijack_restore():
+    """Restore original /etc/resolv.conf from backup."""
+    if not Path(RESOLV_BACKUP_FILE).exists():
+        return False
+    import shutil
+    shutil.copy2(RESOLV_BACKUP_FILE, "/etc/resolv.conf")
+    return True
+
+
+def _dns_hijack_is_active():
+    """Check if /etc/resolv.conf points to our hijack address."""
+    try:
+        with open("/etc/resolv.conf") as f:
+            content = f.read()
+        return "127.0.0.1" in content and "Xray DNS hijack" in content
+    except Exception:
+        return False
 
 
 def _iptables_setup_redirect(port, bypass_cidrs=None):
@@ -459,11 +503,11 @@ def _tp_add_dokodemo_to_config(port):
         }
         cfg.setdefault("inbounds", []).append(dokodemo)
 
-    # -- Inbound: DNS (port 5354, 5353 used by avahi-daemon) --
+    # -- Inbound: DNS (port 53) --
     has_dns_ib = any(ib.get("tag") == "dns" for ib in cfg.get("inbounds", []))
     if not has_dns_ib:
         dns_ib = {
-            "tag": "dns", "listen": "127.0.0.1", "port": 5354,
+            "tag": "dns", "listen": "127.0.0.1", "port": 53,
             "protocol": "dokodemo-door",
             "settings": {"address": "119.29.29.29", "port": 53, "network": "tcp,udp"},
         }
@@ -1430,6 +1474,7 @@ def api_transparent_enable():
         _tp_remove_dokodemo_from_config()
         return jsonify({"error": msg}), 400
     restart = _restart_xray()
+    _dns_hijack_apply()
     _tp_state_write({"enabled": True, "port": port, "proxy_tag": proxy_tag})
     return jsonify({"ok": True, "port": port, "restart": restart})
 
@@ -1441,6 +1486,7 @@ def api_transparent_disable():
     if cfg:
         _save_config_object(cfg)
     restart = _restart_xray()
+    _dns_hijack_restore()
     _tp_state_write({"enabled": False})
     return jsonify({"ok": True, "restart": restart})
 
