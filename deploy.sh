@@ -164,7 +164,7 @@ install_python() {
         info "Installing Python 3..."
         if command -v apt-get &>/dev/null; then
             apt-get update -qq
-            apt-get install -y -qq python3 python3-pip python3-venv
+            apt-get install -y -qq python3 python3-venv
         elif command -v yum &>/dev/null; then
             yum install -y -q python3 python3-pip
         elif command -v dnf &>/dev/null; then
@@ -172,21 +172,20 @@ install_python() {
         fi
     fi
 
-    # Ensure pip works
-    if ! python3 -m pip --version &>/dev/null; then
-        info "Installing pip..."
-        python3 -m ensurepip --upgrade 2>/dev/null || true
-        # Fallback: get-pip.py
-        if ! python3 -m pip --version &>/dev/null; then
-            curl -sSL https://bootstrap.pypa.io/get-pip.py | python3
-        fi
+    # Ensure python3-venv is installed (Debian 12+ needs it)
+    if command -v apt-get &>/dev/null; then
+        apt-get install -y -qq python3-venv 2>/dev/null || true
     fi
 
-    info "Installing Flask..."
-    python3 -m pip install --break-system-packages flask 2>/dev/null \
-        || python3 -m pip install flask
+    # Create virtual environment
+    local venv_dir="${XRAY_MANAGER_HOME}/.venv"
+    info "Creating venv at ${venv_dir}..."
+    python3 -m venv "${venv_dir}"
 
-    info "Flask installed: $(python3 -c 'import flask; print(flask.__version__)')"
+    info "Installing Flask in venv..."
+    "${venv_dir}/bin/pip" install --quiet flask
+
+    info "Flask installed: $("${venv_dir}/bin/python3" -c 'import flask; print(flask.__version__)')"
 }
 
 # ---------------------------------------------------------------------------
@@ -415,7 +414,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=${XRAY_MANAGER_HOME}
-ExecStart=/usr/bin/python3 ${XRAY_MANAGER_HOME}/app.py --host 0.0.0.0 --port 54321 --xray-config ${XRAY_CFG} --xray-binary ${XRAY_BIN} --service ${XRAY_SOCKS_SERVICE}
+ExecStart=${XRAY_MANAGER_HOME}/.venv/bin/python3 ${XRAY_MANAGER_HOME}/app.py --host 0.0.0.0 --port 54321 --xray-config ${XRAY_CFG} --xray-binary ${XRAY_BIN} --service ${XRAY_SOCKS_SERVICE}
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
@@ -508,6 +507,9 @@ print_summary() {
 # Main
 # ---------------------------------------------------------------------------
 main() {
+    # Create base directory first (needed for deploy.log)
+    mkdir -p "${XRAY_MANAGER_HOME}"
+
     echo -e "${CYAN}"
     echo "  ██╗  ██╗██████╗  █████╗ ██╗   ██╗"
     echo "  ╚██╗██╔╝██╔══██╗██╔══██╗╚██╗ ██╔╝"
