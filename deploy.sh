@@ -65,10 +65,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 GHPROXY_MIRRORS=(
+    "https://hub.543083.xyz/"
     "https://ghproxy.net/"
     "https://mirror.ghproxy.com/"
     "https://gh-proxy.com/"
-    "https://ghps.cc/"
 )
 
 # ---------------------------------------------------------------------------
