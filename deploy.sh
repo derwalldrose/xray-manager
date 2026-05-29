@@ -83,18 +83,22 @@ mirror_url() {
     fi
 }
 
-# Try all mirrors until one works
+# Try direct first, fallback to mirrors
 mirror_download() {
     local url="$1"
     local output="$2"
     shift 2
     local extra_args=("$@")
 
+    # Always try direct first
     if [[ "$PROXY_MODE" != "ghproxy" ]]; then
-        curl -fSL --connect-timeout 15 --max-time 300 "${extra_args[@]}" "$url" -o "$output"
-        return $?
+        if curl -fSL --connect-timeout 15 --max-time 300 "${extra_args[@]}" "$url" -o "$output" 2>/dev/null; then
+            return 0
+        fi
+        info "Direct download failed — trying mirrors..."
     fi
 
+    # Run through mirrors
     for mirror in "${GHPROXY_MIRRORS[@]}"; do
         local mirrored="${mirror}${url}"
         info "Trying: $mirrored"
