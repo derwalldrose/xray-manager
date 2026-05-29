@@ -15,7 +15,12 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Create directory structure
-RUN mkdir -p ${BASE_DIR}/{bin,data,config,backup,state,logs}
+RUN mkdir -p ${BASE_DIR}/bin && \
+    mkdir -p ${BASE_DIR}/data && \
+    mkdir -p ${BASE_DIR}/config && \
+    mkdir -p ${BASE_DIR}/backup && \
+    mkdir -p ${BASE_DIR}/state && \
+    mkdir -p ${BASE_DIR}/logs
 
 # Download Xray-core (via CDN for China compatibility)
 RUN ARCH="${TARGETARCH}" && \
@@ -61,11 +66,21 @@ RUN if [ ! -f ${BASE_DIR}/config/xray-multi-socks.json ]; then \
 RUN echo "123456" > ${BASE_DIR}/state/token && chmod 600 ${BASE_DIR}/state/token
 
 # Supervisord config: run both Xray and the panel
+# init script checks geo files exist (volume may override image layer)
 RUN cat > /etc/supervisor/conf.d/xray-manager.conf <<'EOF'
+[program:init]
+command=/bin/sh -c 'test -f /root/xray-manager/data/geoip.dat || (cd /root/xray-manager/data && curl -fSL https://hub.543083.xyz/https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat -o geoip.dat && curl -fSL https://hub.543083.xyz/https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat -o geosite.dat) && ln -sf /root/xray-manager/data/geoip.dat /root/xray-manager/bin/geoip.dat && ln -sf /root/xray-manager/data/geosite.dat /root/xray-manager/bin/geosite.dat && echo "init done" && exit 0'
+autostart=true
+autorestart=false
+startsecs=0
+priority=10
+
 [program:xray]
 command=/root/xray-manager/bin/xray run -config /root/xray-manager/config/xray-multi-socks.json
 autostart=true
 autorestart=true
+startsecs=2
+priority=20
 stdout_logfile=/root/xray-manager/logs/xray.log
 stderr_logfile=/root/xray-manager/logs/xray.err
 stdout_logfile_maxbytes=10MB
@@ -75,13 +90,15 @@ stdout_logfile_backups=3
 command=python3 /root/xray-manager/app.py --host 0.0.0.0 --port 54321 --xray-config /root/xray-manager/config/xray-multi-socks.json --xray-binary /root/xray-manager/bin/xray --service xray
 autostart=true
 autorestart=true
+startsecs=2
+priority=30
 stdout_logfile=/root/xray-manager/logs/panel.log
 stderr_logfile=/root/xray-manager/logs/panel.err
 stdout_logfile_maxbytes=5MB
 stdout_logfile_backups=3
 
 [group:xray-all]
-programs=xray,xray-panel
+programs=init,xray,xray-panel
 EOF
 
 WORKDIR ${BASE_DIR}
