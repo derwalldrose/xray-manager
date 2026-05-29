@@ -1844,6 +1844,11 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
         <input id="ob-speed-url" value="https://speed.cloudflare.com/__down?bytes=10000000" style="min-width:460px;padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace">
         <button class="btn primary" onclick="batchTestSelected('ping')">批量测延迟</button>
         <button class="btn" onclick="batchTestSelected('speed')">批量测速</button>
+        <button class="btn" onclick="batchExportOutbounds()">批量导出</button>
+      </div>
+      <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:12px;flex-wrap:wrap">
+        <textarea id="quick-import-links" placeholder="快速导入：粘贴 vless:// vmess:// ss:// trojan:// 链接（支持多行）" style="flex:1;min-width:400px;min-height:60px;padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:12px;resize:vertical"></textarea>
+        <button class="btn primary" onclick="quickImportLinks()" style="align-self:flex-end">解析导入</button>
       </div>
       <div class="log-box" id="outbound-test-output" style="display:none;margin-bottom:12px;max-height:400px;overflow-y:auto"></div>
       <table>
@@ -2367,7 +2372,7 @@ function renderOutbounds(){
       <td><input type="checkbox" class="ob-check" data-idx="${i}"></td>
       <td>${ob.tag||'-'}</td><td>${p}</td><td class="ob-addr"${addrTip}>${addr}</td><td>${port}</td><td>${net}</td>
       <td id="ob-delay-${i}" style="color:var(--green)">${delay}</td><td id="ob-speed-${i}" style="color:var(--yellow)">${speed}</td>
-      <td><div class="ob-actions"><button class="btn primary" onclick="testOutbound(${i})">延迟</button><button class="btn" onclick="speedtestOutbound(${i})">测速</button><button class="btn" onclick="editOutbound(${i})">编辑</button><button class="btn danger" onclick="deleteOutbound(${i})">删除</button></div></td>
+      <td><div class="ob-actions"><button class="btn primary" onclick="testOutbound(${i})">延迟</button><button class="btn" onclick="speedtestOutbound(${i})">测速</button><button class="btn" onclick="editOutbound(${i})">编辑</button><button class="btn" onclick="exportOutbound(${i})">导出</button><button class="btn danger" onclick="deleteOutbound(${i})">删除</button></div></td>
     </tr>`;
   }).join('');
 }
@@ -2639,6 +2644,160 @@ async function parseAndAddVless(){
 async function saveOutbounds(){
   const d=await api('/api/outbounds',{method:'POST',body:JSON.stringify({outbounds:outboundsData})});
   if(d&&d.ok)toast('出站已保存'+(d.restart&&d.restart.success?'，Xray 已重启':''));
+}
+
+// --- Export: outbound config -> share link ---
+function outboundToShareLink(ob){
+  const p=ob.protocol||'';
+  const ss=ob.streamSettings||{};
+  const net=ss.network||'tcp';
+  const sec=ss.security||'none';
+  try{
+    if(p==='vless'){
+      const v=ob.settings.vnext[0]; const u=v.users[0];
+      let link='vless://'+encodeURIComponent(u.id)+'@'+v.address+':'+v.port;
+      const params=[];
+      if(u.encryption&&u.encryption!=='none') params.push('encryption='+u.encryption);
+      if(u.flow) params.push('flow='+u.flow);
+      if(sec&&sec!=='none') params.push('security='+sec);
+      if(sec==='tls'){
+        const tls=ss.tlsSettings||{};
+        if(tls.serverName) params.push('sni='+tls.serverName);
+        if(tls.fingerprint) params.push('fp='+tls.fingerprint);
+        if(tls.alpn&&tls.alpn.length) params.push('alpn='+tls.alpn.join(','));
+        if(tls.allowInsecure) params.push('allowInsecure=1');
+        if(tls.echConfigList) params.push('ech='+tls.echConfigList);
+      }else if(sec==='reality'){
+        const r=ss.realitySettings||{};
+        if(r.serverName) params.push('sni='+r.serverName);
+        if(r.fingerprint) params.push('fp='+r.fingerprint);
+        if(r.publicKey) params.push('pbk='+r.publicKey);
+        if(r.shortId) params.push('sid='+r.shortId);
+        if(r.spiderX) params.push('spx='+r.spiderX);
+      }
+      if(net&&net!=='tcp') params.push('type='+net);
+      if(net==='ws'){
+        const ws=ss.wsSettings||{};
+        if(ws.path) params.push('path='+encodeURIComponent(ws.path));
+        if(ws.headers&&ws.headers.Host) params.push('host='+ws.headers.Host);
+      }else if(net==='grpc'){
+        const g=ss.grpcSettings||{};
+        if(g.serviceName) params.push('serviceName='+g.serviceName);
+      }else if(net==='xhttp'){
+        const x=ss.xhttpSettings||{};
+        if(x.path) params.push('path='+encodeURIComponent(x.path));
+      }
+      if(params.length) link+='?'+params.join('&');
+      link+='#'+encodeURIComponent(ob.tag||'');
+      return link;
+    }
+    if(p==='vmess'){
+      const v=ob.settings.vnext[0]; const u=v.users[0];
+      const obj={
+        v:'2', ps:ob.tag||'', add:v.address, port:String(v.port),
+        id:u.id, aid:String(u.alterId||0), scy:u.security||'auto',
+        net:net, type:'none', host:'', path:'', tls:sec||'none', sni:''
+      };
+      if(ss.tlsSettings){
+        if(ss.tlsSettings.serverName) obj.sni=ss.tlsSettings.serverName;
+        if(ss.tlsSettings.fingerprint) obj.fp=ss.tlsSettings.fingerprint;
+        if(ss.tlsSettings.alpn) obj.alpn=ss.tlsSettings.alpn.join(',');
+        if(ss.tlsSettings.allowInsecure) obj.insecure='1';
+      }
+      if(net==='ws'){
+        const ws=ss.wsSettings||{};
+        obj.path=ws.path||'/';
+        if(ws.headers&&ws.headers.Host) obj.host=ws.headers.Host;
+      }else if(net==='grpc'){
+        const g=ss.grpcSettings||{};
+        obj.path=g.serviceName||'';
+      }else if(net==='h2'||net==='http'){
+        const h=ss.httpSettings||{};
+        obj.path=h.path||'/';
+        if(h.host&&h.host.length) obj.host=h.host[0];
+      }
+      const jsonStr=JSON.stringify(obj);
+      return 'vmess://'+btoa(jsonStr);
+    }
+    if(p==='shadowsocks'){
+      const s=ob.settings.servers[0];
+      const mp=s.method+':'+s.password;
+      return 'ss://'+btoa(mp)+'@'+s.address+':'+s.port+'#'+encodeURIComponent(ob.tag||'');
+    }
+    if(p==='trojan'){
+      const s=ob.settings.servers[0];
+      let link='trojan://'+encodeURIComponent(s.password)+'@'+s.address+':'+s.port;
+      const params=[];
+      if(sec&&sec!=='none'&&sec!=='tls') params.push('security='+sec);
+      if(ss.tlsSettings){
+        if(ss.tlsSettings.serverName) params.push('sni='+ss.tlsSettings.serverName);
+        if(ss.tlsSettings.fingerprint) params.push('fp='+ss.tlsSettings.fingerprint);
+        if(ss.tlsSettings.allowInsecure) params.push('allowInsecure=1');
+      }
+      if(net&&net!=='tcp') params.push('type='+net);
+      if(net==='ws'){
+        const ws=ss.wsSettings||{};
+        if(ws.path) params.push('path='+encodeURIComponent(ws.path));
+        if(ws.headers&&ws.headers.Host) params.push('host='+ws.headers.Host);
+      }else if(net==='grpc'){
+        const g=ss.grpcSettings||{};
+        if(g.serviceName) params.push('serviceName='+g.serviceName);
+      }
+      if(params.length) link+='?'+params.join('&');
+      link+='#'+encodeURIComponent(ob.tag||'');
+      return link;
+    }
+  }catch(e){console.error('export error:',e);}
+  return null;
+}
+
+function exportOutbound(idx){
+  const ob=outboundsData[idx];
+  if(!ob){toast('节点数据异常',false);return;}
+  const link=outboundToShareLink(ob);
+  if(!link){toast('不支持导出该协议: '+ob.protocol,false);return;}
+  navigator.clipboard.writeText(link).then(()=>toast('已复制: '+ob.tag)).catch(()=>toast('复制失败，请手动复制',false));
+  // Also show in a temporary box
+  const box=document.getElementById('outbound-test-output');
+  box.style.display='block';
+  box.textContent='['+ob.tag+'] '+link;
+}
+
+function batchExportOutbounds(){
+  const sel=getSelectedIndices();
+  const indices=sel||outboundsData.map((_,i)=>i);
+  const links=[];
+  for(const i of indices){
+    const ob=outboundsData[i];
+    if(!ob.protocol||ob.protocol==='freedom'||ob.protocol==='blackhole'||ob.protocol==='dns') continue;
+    const link=outboundToShareLink(ob);
+    if(link) links.push(link);
+  }
+  if(!links.length){toast('没有可导出的代理节点',false);return;}
+  const text=links.join('\n');
+  navigator.clipboard.writeText(text).then(()=>toast('已复制 '+links.length+' 个节点链接')).catch(()=>toast('复制失败',false));
+  const box=document.getElementById('outbound-test-output');
+  box.style.display='block';
+  box.textContent='=== 已导出 '+links.length+' 个节点 ===\n\n'+text;
+}
+
+// --- Import: quick paste area ---
+async function quickImportLinks(){
+  const raw=(document.getElementById('quick-import-links')?.value||'').trim();
+  if(!raw){toast('请粘贴节点链接',false);return;}
+  const lines=raw.split('\n').map(l=>l.trim()).filter(l=>l&&l.includes('://'));
+  if(!lines.length){toast('未识别到有效链接',false);return;}
+  let added=0;
+  for(const link of lines){
+    const d=await api('/api/outbounds/parse-vless',{method:'POST',body:JSON.stringify({link})});
+    if(d&&d.outbound){outboundsData.push(d.outbound);added++;}
+  }
+  renderOutbounds();
+  if(!added){toast('解析失败',false);return;}
+  document.getElementById('quick-import-links').value='';
+  const s=await api('/api/outbounds',{method:'POST',body:JSON.stringify({outbounds:outboundsData})});
+  if(s&&s.ok) toast('已导入 '+added+' 个节点并保存'+(s.restart&&s.restart.success?'，Xray 已重启':''));
+  else toast('已解析但保存失败，请手动点保存',false);
 }
 
 async function loadRouting(){

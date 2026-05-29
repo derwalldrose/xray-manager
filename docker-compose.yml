@@ -1,0 +1,53 @@
+version: "3.8"
+
+services:
+  xray-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Override Xray version if needed
+        # XRAY_VERSION: "v25.4.30"
+        TARGETARCH: amd64
+    container_name: xray-manager
+    restart: unless-stopped
+
+    # ---- Network mode ----
+    # "host" is recommended for transparent proxy (iptables/DNS hijack).
+    # When using host mode, 'ports:' mapping is ignored — the container
+    # directly binds to host interfaces.
+    network_mode: host
+
+    # If you prefer bridge mode (no transparent proxy), comment out
+    # network_mode above and uncomment ports below:
+    # ports:
+    #   - "54321:54321"
+
+    volumes:
+      # Xray config (the proxy configuration)
+      - ./xray-multi-socks.json:/root/xray-multi-socks.json
+
+      # xray-manager data (test URLs, transparent proxy state, etc.)
+      - xray-manager-data:/root/xray-manager
+
+      # GeoIP / GeoSite data (persisted across rebuilds)
+      - xray-geo-data:/usr/local/share/xray
+
+    environment:
+      - PYTHONUNBUFFERED=1
+
+    # Capabilities needed for iptables transparent proxy
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    # DNS — allow resolution both inside container and via host
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+volumes:
+  xray-manager-data:
+    driver: local
+  xray-geo-data:
+    driver: local
