@@ -604,7 +604,6 @@ def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
                 "tag": bal_tag,
                 "selector": balancer_cfg["tags"],
                 "strategy": strategy,
-                "fallbackTag": "direct",
             }
             # Remove existing balancer with same tag, then add
             balancers = cfg.get("routing", {}).get("balancers", [])
