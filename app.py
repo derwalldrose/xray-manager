@@ -59,6 +59,7 @@ IPTABLES_BACKUP_FILE = "/root/xray-manager/iptables-backup.rules"
 RESOLV_BACKUP_FILE = "/root/xray-manager/resolv.conf.bak"
 CHAIN_PREFIX = "XRAY_MGR"
 CUSTOM_BYPASS_FILE = "/root/xray-manager/transparent-bypass.json"
+BALANCER_CONFIG_FILE = "/root/xray-manager/balancer-config.json"
 
 app = Flask(__name__)
 
@@ -283,6 +284,22 @@ def _tp_state_write(state):
         json.dump(state, f, indent=2)
 
 
+def _balancer_read():
+    """Load balancer config from file."""
+    try:
+        with open(BALANCER_CONFIG_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {"enabled": False, "tags": [], "strategy": "roundRobin"}
+
+
+def _balancer_write(cfg):
+    """Save balancer config to file."""
+    Path(BALANCER_CONFIG_FILE).parent.mkdir(parents=True, exist_ok=True)
+    with open(BALANCER_CONFIG_FILE, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
 def _tp_load_custom_bypass():
     """Load user-customized bypass CIDRs from file."""
     try:
@@ -487,7 +504,7 @@ def _iptables_setup_redirect(port, bypass_cidrs=None):
     return True, "ok"
 
 
-def _tp_add_dokodemo_to_config(port):
+def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
     cfg, err = _parse_config()
     if err:
         return None, err
@@ -574,7 +591,29 @@ def _tp_add_dokodemo_to_config(port):
 
     has_tp_rule = any(r.get("inboundTag") == ["transparent"] for r in rules)
     if not has_tp_rule:
-        rules.insert(0, {"type": "field", "inboundTag": ["transparent"], "outboundTag": default_tag})
+        if balancer_cfg and balancer_cfg.get("enabled") and balancer_cfg.get("tags"):
+            # Use balancer instead of fixed outbound
+            bal_tag = "proxy-balancer"
+            strategy_map = {
+                "roundRobin": {"type": "roundRobin"},
+                "leastPing": {"type": "leastPing"},
+                "random": {"type": "random"},
+            }
+            strategy = strategy_map.get(balancer_cfg.get("strategy", "roundRobin"), {"type": "roundRobin"})
+            balancer = {
+                "tag": bal_tag,
+                "selector": balancer_cfg["tags"],
+                "strategy": strategy,
+                "fallbackTag": "direct",
+            }
+            # Remove existing balancer with same tag, then add
+            balancers = cfg.get("routing", {}).get("balancers", [])
+            balancers = [b for b in balancers if b.get("tag") != bal_tag]
+            balancers.append(balancer)
+            cfg.setdefault("routing", {})["balancers"] = balancers
+            rules.insert(0, {"type": "field", "inboundTag": ["transparent"], "balancerTag": bal_tag})
+        else:
+            rules.insert(0, {"type": "field", "inboundTag": ["transparent"], "outboundTag": default_tag})
 
     # Insert geo + dns rules at the beginning
     cfg["routing"]["rules"] = geo_rules + dns_rules + rules
@@ -609,6 +648,8 @@ def _tp_remove_dokodemo_from_config():
             return True
         return False
     cfg["routing"]["rules"] = [r for r in rules if not _is_tp_added(r)]
+    # Remove balancers added by transparent proxy
+    cfg["routing"]["balancers"] = [b for b in cfg.get("routing", {}).get("balancers", []) if b.get("tag") != "proxy-balancer"]
     # Remove sockopt.mark and domainStrategy from outbounds
     for ob in cfg.get("outbounds", []):
         sockopt = ob.get("streamSettings", {}).get("sockopt", {})
@@ -1453,12 +1494,13 @@ def api_transparent_enable():
     proxy_tag = data.get("proxy_tag")
     _iptables_cleanup()
     backed_up = _iptables_save()
-    cfg, err = _tp_add_dokodemo_to_config(port)
+    balancer_cfg = _balancer_read()
+    cfg, err = _tp_add_dokodemo_to_config(port, balancer_cfg)
     if err:
         if backed_up:
             _iptables_restore()
         return jsonify({"error": str(err)}), 400
-    if proxy_tag:
+    if proxy_tag and not (balancer_cfg.get("enabled") and balancer_cfg.get("tags")):
         for r in cfg.get("routing", {}).get("rules", []):
             if r.get("inboundTag") == ["transparent"]:
                 r["outboundTag"] = proxy_tag
@@ -1497,6 +1539,43 @@ def api_transparent_restore():
     _iptables_cleanup()
     ok = _iptables_restore()
     return jsonify({"ok": ok})
+
+
+@app.route("/api/transparent/balancer", methods=["GET"])
+def api_balancer_get():
+    cfg = _balancer_read()
+    # Also return list of available proxy outbounds for the UI
+    parsed, err = _parse_config()
+    outbounds = []
+    if not err:
+        for ob in parsed.get("outbounds", []):
+            if ob.get("protocol") not in ("freedom", "blackhole", "dns"):
+                outbounds.append(ob.get("tag"))
+    cfg["available_tags"] = outbounds
+    return jsonify(cfg)
+
+
+@app.route("/api/transparent/balancer", methods=["POST"])
+def api_balancer_set():
+    data = request.json or {}
+    enabled = bool(data.get("enabled", False))
+    tags = data.get("tags", [])
+    strategy = data.get("strategy", "roundRobin")
+    if strategy not in ("roundRobin", "leastPing", "random"):
+        return jsonify({"error": "invalid strategy"}), 400
+    cfg = {"enabled": enabled, "tags": tags, "strategy": strategy}
+    _balancer_write(cfg)
+    # If transparent proxy is currently enabled, re-apply config with new balancer
+    state = _tp_state_read()
+    reloaded = False
+    if state.get("enabled"):
+        port = state.get("port", DEFAULT_TRANSPARENT_PORT)
+        new_cfg, err = _tp_add_dokodemo_to_config(port, cfg)
+        if not err and new_cfg:
+            _save_config_object(new_cfg)
+            _restart_xray()
+            reloaded = True
+    return jsonify({"ok": True, "config": cfg, "reloaded": reloaded})
 
 
 @app.route("/api/service/<action>", methods=["POST"])
@@ -1609,7 +1688,7 @@ a{color:var(--accent);text-decoration:none}
 .btn.danger{background:var(--red);color:#fff;border-color:var(--red)}
 .btn.danger:hover{opacity:.85}
 .btn.success{background:var(--green);color:#fff;border-color:var(--green)}
-.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
 textarea.config-editor{width:100%;min-height:500px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:'SF Mono',SFMono-Regular,consolas,monospace;font-size:13px;resize:vertical;tab-size:2;white-space:pre;overflow:auto}
 table{width:100%;border-collapse:collapse}
 th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px}
@@ -1629,13 +1708,18 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
 .toast.ok{background:var(--green);color:#fff}
 .toast.err{background:var(--red);color:#fff}
 @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
-.edit-row{display:grid;grid-template-columns:120px 1fr;gap:8px;align-items:center;margin-bottom:8px}
-.edit-row label{color:var(--text2);font-size:13px;text-align:right}
+.edit-row{display:grid;grid-template-columns:130px 1fr;gap:8px;align-items:center;margin-bottom:8px}
+.edit-row label{color:var(--text2);font-size:13px;text-align:right;padding-right:4px;white-space:nowrap}
+.edit-row input,.edit-row select{width:100%}
 .edit-row input,.edit-row select,.edit-row textarea{padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;font-family:monospace}
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:none;align-items:center;justify-content:center}
 .modal-overlay.show{display:flex}
 .modal{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:20px;width:90%;max-width:900px;max-height:85vh;overflow-y:auto}
 .modal h3{margin-bottom:16px;font-size:16px}
+.modal-footer{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid var(--border)}
+.modal-footer .btn-group{margin-top:0}
+.ob-actions{display:flex;gap:4px;flex-wrap:nowrap;align-items:center;white-space:nowrap}
+.ob-actions .btn{padding:3px 8px;font-size:11px;line-height:1.4;border-radius:4px;flex-shrink:0}
 .backup-item{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;font-family:monospace}
 .status-pill{display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;font-weight:600}
 .status-pill.active{background:rgba(63,185,80,.15);color:var(--green)}
@@ -1657,7 +1741,7 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
   th,td{padding:6px 8px;font-size:11px}
   .modal{width:95%;padding:14px;max-height:90vh}
   .modal h3{font-size:14px}
-  .edit-row{grid-template-columns:90px 1fr}
+  .edit-row{grid-template-columns:100px 1fr}
   textarea.config-editor{min-height:300px;font-size:11px}
   .log-box{font-size:10px;max-height:300px}
   .toast{top:10px;right:10px;left:10px;max-width:none;font-size:12px}
@@ -1851,6 +1935,30 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
           <button class="btn primary" onclick="tpSaveBypass()">保存绕过规则</button>
         </div>
       </details>
+      <details style="margin-top:12px">
+        <summary style="cursor:pointer;color:var(--text2);font-size:13px;margin-bottom:8px">负载均衡配置</summary>
+        <p style="color:var(--text2);font-size:12px;margin-bottom:8px">选择多个代理节点进行负载均衡。启用后，透明代理流量将通过负载均衡器分配到所选节点，而非固定单一出口。策略说明：roundRobin（轮询）、leastPing（最低延迟）、random（随机）。</p>
+        <div style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
+            <input type="checkbox" id="tp-bal-enabled"> <span style="font-size:13px">启用负载均衡</span>
+          </label>
+          <div class="edit-row" style="margin-bottom:8px">
+            <label>策略</label>
+            <select id="tp-bal-strategy" style="padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
+              <option value="roundRobin">轮询 (roundRobin)</option>
+              <option value="leastPing">最低延迟 (leastPing)</option>
+              <option value="random">随机 (random)</option>
+            </select>
+          </div>
+          <div id="tp-bal-nodes" style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:8px;background:var(--bg)">
+            <span style="color:var(--text2);font-size:12px">加载中...</span>
+          </div>
+          <p style="color:var(--text2);font-size:11px;margin-top:4px">回退出口 (fallback): direct</p>
+        </div>
+        <div class="btn-group" style="margin-top:8px">
+          <button class="btn primary" onclick="tpSaveBalancer()">保存负载均衡配置</button>
+        </div>
+      </details>
     </div>
   </div>
 
@@ -1918,7 +2026,7 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
       </div>
     </div>
     <div id="mob-pane-form" style="display:none">
-      <div class="edit-row"><label>Tag</label><input id="of-tag"></div>
+      <div class="edit-row"><label>Tag</label><input id="of-tag" autocomplete="off"></div>
       <div class="edit-row"><label>协议</label><select id="of-protocol"><option value="vless">vless</option><option value="vmess">vmess</option><option value="shadowsocks">shadowsocks</option><option value="trojan">trojan</option></select></div>
       <div class="edit-row"><label>地址</label><input id="of-address"></div>
       <div class="edit-row"><label>端口</label><input id="of-port" type="number"></div>
@@ -1943,7 +2051,7 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
         <button class="btn primary" onclick="saveEditOutbound()">确认</button>
       </div>
     </div>
-    <div class="btn-group" style="margin-top:16px">
+    <div class="modal-footer">
       <button class="btn" onclick="closeModal('modal-outbound')">关闭</button>
     </div>
   </div>
@@ -2259,7 +2367,7 @@ function renderOutbounds(){
       <td><input type="checkbox" class="ob-check" data-idx="${i}"></td>
       <td>${ob.tag||'-'}</td><td>${p}</td><td class="ob-addr"${addrTip}>${addr}</td><td>${port}</td><td>${net}</td>
       <td id="ob-delay-${i}" style="color:var(--green)">${delay}</td><td id="ob-speed-${i}" style="color:var(--yellow)">${speed}</td>
-      <td><button class="btn primary" onclick="testOutbound(${i})">延迟</button> <button class="btn" onclick="speedtestOutbound(${i})">测速</button> <button class="btn" onclick="editOutbound(${i})">编辑</button> <button class="btn danger" onclick="deleteOutbound(${i})">删除</button></td>
+      <td><div class="ob-actions"><button class="btn primary" onclick="testOutbound(${i})">延迟</button><button class="btn" onclick="speedtestOutbound(${i})">测速</button><button class="btn" onclick="editOutbound(${i})">编辑</button><button class="btn danger" onclick="deleteOutbound(${i})">删除</button></div></td>
     </tr>`;
   }).join('');
 }
@@ -2651,15 +2759,16 @@ async function loadTransparent(){
   if(!d)return;
   const on=d.enabled&&d.iptables_active;
   document.getElementById("tp-dot").className="dot "+(on?"on":"off");
-  document.getElementById("tp-status").innerHTML="<span class=\"status-pill "+(on?"active":"inactive")+"\">"+(on?"已启用":"未启用")+"</span>";
+  document.getElementById("tp-status").innerHTML='<span class="status-pill '+(on?"active":"inactive")+'">'+(on?"已启用":"未启用")+'</span>';
   document.getElementById("tp-port").textContent=d.port||"-";
   document.getElementById("tp-chains").textContent=d.iptables_active?"active":"none";
   const od=await api("/api/outbounds");
   if(od&&od.outbounds){
     const sel=document.getElementById("tp-proxy-tag");
-    sel.innerHTML=od.outbounds.filter(ob=>ob.protocol&&ob.protocol!=="freedom"&&ob.protocol!=="blackhole"&&ob.protocol!=="dns").map(ob=>"<option value=\""+ob.tag+"\">"+ob.tag+"</option>").join("");
+    sel.innerHTML=od.outbounds.filter(ob=>ob.protocol&&ob.protocol!=="freedom"&&ob.protocol!=="blackhole"&&ob.protocol!=="dns").map(ob=>'<option value="'+ob.tag+'">'+ob.tag+'</option>').join("");
   }
   loadBypass();
+  loadBalancer();
 }
 async function tpEnable(){
   const box=document.getElementById("tp-output");box.style.display="block";
@@ -2683,6 +2792,32 @@ async function tpRestore(){
   const box=document.getElementById("tp-output");box.style.display="block";
   box.textContent=d&&d.ok?"Restored.":"Failed.";
   loadTransparent();
+}
+async function loadBalancer(){
+  const d=await api("/api/transparent/balancer");
+  if(!d)return;
+  document.getElementById("tp-bal-enabled").checked=!!d.enabled;
+  document.getElementById("tp-bal-strategy").value=d.strategy||"roundRobin";
+  const nodes=document.getElementById("tp-bal-nodes");
+  const tags=d.available_tags||[];
+  const selected=new Set(d.tags||[]);
+  if(tags.length===0){
+    nodes.innerHTML='<span style="color:var(--text2);font-size:12px">无可用代理节点</span>';
+    return;
+  }
+  nodes.innerHTML=tags.map(t=>'<label style="display:flex;align-items:center;gap:6px;padding:4px 0;cursor:pointer"><input type="checkbox" name="bal-node" value="'+t+'" '+(selected.has(t)?'checked':'')+'><span style="font-size:13px">'+t+'</span></label>').join("");
+}
+async function tpSaveBalancer(){
+  const enabled=document.getElementById("tp-bal-enabled").checked;
+  const strategy=document.getElementById("tp-bal-strategy").value;
+  const tags=Array.from(document.querySelectorAll('input[name="bal-node"]:checked')).map(cb=>cb.value);
+  if(enabled&&tags.length===0){
+    toast("请至少选择一个节点",false);return;
+  }
+  const box=document.getElementById("tp-output");box.style.display="block";box.textContent="Saving balancer config...";
+  const d=await api("/api/transparent/balancer",{method:"POST",body:JSON.stringify({enabled,tags,strategy})});
+  if(!d||!d.ok){box.textContent="Failed: "+(d&&d.error||"unknown");return;}
+  box.textContent="Balancer saved. "+(d.reloaded?"Xray restarted.":"");
 }
 </script>
 </body>
