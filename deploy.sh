@@ -195,6 +195,13 @@ EOF
 create_services() {
     step "Systemd services"
 
+    # Generate random token
+    local token
+    token="$(head -c 18 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16)"
+    echo "$token" > "${XRAY_MANAGER_HOME}/state/token"
+    chmod 600 "${XRAY_MANAGER_HOME}/state/token"
+    info "Auth token: $token"
+
     cat > "/etc/systemd/system/${XRAY_SOCKS_SERVICE}" <<EOF
 [Unit]
 Description=Xray Multi-Socks Proxy
@@ -218,7 +225,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=${XRAY_MANAGER_HOME}
-ExecStart=${XRAY_MANAGER_HOME}/.venv/bin/python3 ${XRAY_MANAGER_HOME}/app.py --host 0.0.0.0 --port 54321 --xray-config ${XRAY_CFG} --xray-binary ${XRAY_BIN} --service ${XRAY_SOCKS_SERVICE}
+ExecStart=${XRAY_MANAGER_HOME}/.venv/bin/python3 ${XRAY_MANAGER_HOME}/app.py --host 0.0.0.0 --port 54321 --xray-config ${XRAY_CFG} --xray-binary ${XRAY_BIN} --service ${XRAY_SOCKS_SERVICE} --token ${token}
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
@@ -247,7 +254,7 @@ print_summary() {
     echo -e "  Xray:     ${CYAN}$($XRAY_BIN version 2>/dev/null | head -1)${NC}"
     echo -e "  Config:   ${CYAN}${XRAY_CFG}${NC}"
     echo -e "  Panel:    ${CYAN}http://${ip}:54321${NC}"
-    echo -e "  Token:    ${CYAN}Root2023!${NC}"
+    echo -e "  Token:    ${CYAN}$(cat "${XRAY_MANAGER_HOME}/state/token" 2>/dev/null || echo '(check state/token)')${NC}"
     echo ""
     echo -e "  Next: open panel → add nodes → systemctl start xray-multi-socks"
     echo -e "${CYAN}================================================================${NC}"

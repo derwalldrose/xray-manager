@@ -43,7 +43,7 @@ DEFAULT_XRAY_BIN = f"{BASE_DIR}/bin/xray"
 DEFAULT_XRAY_CFG = f"{BASE_DIR}/config/xray-multi-socks.json"
 DEFAULT_SVC_NAME = "xray-multi-socks.service"
 DEFAULT_PORT = 54321
-DEFAULT_TOKEN = "Root2023!"
+DEFAULT_TOKEN = ""  # empty = no auth; set via --token at startup
 DEFAULT_TEST_URLS = [
     "https://api.ipify.org",
     "https://icanhazip.com",
