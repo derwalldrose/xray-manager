@@ -439,6 +439,7 @@ def _dns_hijack_apply():
     with open("/etc/resolv.conf", "w") as f:
         f.write("# Xray DNS hijack (xray-manager transparent proxy)\n")
         f.write("nameserver 127.0.0.1\n")
+        f.write("nameserver 119.29.29.29\n")
     return True
 
 
