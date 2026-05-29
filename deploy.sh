@@ -37,9 +37,9 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
-warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-error() { echo -e "${RED}[ERROR]${NC} $*"; }
+info()  { echo -e "${GREEN}[INFO]${NC}  $*" >&2; }
+warn()  { echo -e "${YELLOW}[WARN]${NC}  $*" >&2; }
+error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 step()  { echo -e "\n${CYAN}========== $* ==========${NC}"; }
 
 # ---------------------------------------------------------------------------
