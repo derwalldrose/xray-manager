@@ -183,7 +183,10 @@ install_python() {
     python3 -m venv "${venv_dir}"
 
     info "Installing Flask in venv..."
-    "${venv_dir}/bin/pip" install --quiet flask
+    # Unset SOCKS proxy vars (pip doesn't have pysocks in fresh venv)
+    "${venv_dir}/bin/pip" install --quiet flask 2>/dev/null \
+        || ALL_PROXY= HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= \
+           "${venv_dir}/bin/pip" install --quiet flask
 
     info "Flask installed: $("${venv_dir}/bin/python3" -c 'import flask; print(flask.__version__)')"
 }
