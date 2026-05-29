@@ -10,6 +10,8 @@ ExecStart=/root/xray-manager/.venv/bin/python3 /root/xray-manager/app.py --host 
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+StandardOutput=append:/root/xray-manager/logs/panel.log
+StandardError=append:/root/xray-manager/logs/panel.err
 
 [Install]
 WantedBy=multi-user.target

@@ -110,16 +110,17 @@
   ],
   "outbounds": [
     {
+      "tag": "proxy-us",
       "protocol": "vless",
       "settings": {
         "vnext": [
           {
-            "address": "ip.sb",
+            "address": "us.270376.xyz",
             "port": 443,
             "users": [
               {
-                "encryption": "none",
-                "id": "b29d5bf8-2a27-4f92-a6f4-53d1558e6ee1"
+                "id": "b29d5bf8-2a27-4f92-a6f4-53d1558e6ee1",
+                "encryption": "none"
               }
             ]
           }
@@ -129,23 +130,19 @@
         "network": "ws",
         "security": "tls",
         "tlsSettings": {
+          "serverName": "s1.270376.xyz",
           "allowInsecure": false,
+          "fingerprint": "random",
           "alpn": [
             "h3"
-          ],
-          "fingerprint": "random",
-          "serverName": "s1.270376.xyz"
+          ]
         },
         "wsSettings": {
-          "headers": {},
           "host": "s1.270376.xyz",
-          "path": "/socks5://admin:Root2023!@170.9.59.244:38443"
-        },
-        "sockopt": {
-          "mark": 128
+          "path": "/socks5://admin:Root2023!@170.9.59.244:38443",
+          "headers": {}
         }
-      },
-      "tag": "proxy-us"
+      }
     },
     {
       "_delay": "1s",
@@ -167,6 +164,9 @@
       "streamSettings": {
         "network": "ws",
         "security": "tls",
+        "sockopt": {
+          "mark": 128
+        },
         "tlsSettings": {
           "allowInsecure": false,
           "alpn": [
@@ -179,9 +179,6 @@
           "headers": {},
           "host": "s1.270376.xyz",
           "path": "/?ip=kr.270376.xyz:10000"
-        },
-        "sockopt": {
-          "mark": 128
         }
       },
       "tag": "proxy-kr"
@@ -206,6 +203,9 @@
       "streamSettings": {
         "network": "ws",
         "security": "tls",
+        "sockopt": {
+          "mark": 128
+        },
         "tlsSettings": {
           "allowInsecure": false,
           "alpn": [
@@ -219,9 +219,6 @@
             "Host": "s1.270376.xyz"
           },
           "path": "/?proxyip=jp.270376.xyz:443"
-        },
-        "sockopt": {
-          "mark": 128
         }
       },
       "tag": "proxy-jp"
@@ -261,6 +258,9 @@
       "streamSettings": {
         "network": "ws",
         "security": "tls",
+        "sockopt": {
+          "mark": 128
+        },
         "tlsSettings": {
           "allowInsecure": false,
           "echConfigList": "cloudflare-ech.com+https://dns.alidns.com/dns-query",
@@ -272,9 +272,6 @@
           "headers": {},
           "host": "pro.batch6p.workers.dev",
           "path": "/turn://219.117.234.178:3478"
-        },
-        "sockopt": {
-          "mark": 128
         }
       },
       "tag": "ech-turn-pro"
@@ -300,6 +297,9 @@
       "streamSettings": {
         "network": "ws",
         "security": "tls",
+        "sockopt": {
+          "mark": 128
+        },
         "tlsSettings": {
           "allowInsecure": false,
           "echConfigList": "cloudflare-ech.com+https://dns.alidns.com/dns-query",
@@ -310,44 +310,41 @@
           "headers": {},
           "host": "pro.batch10p.workers.dev",
           "path": "/turn=114.160.38.44:3478&?enc=aes-128-gcm"
-        },
-        "sockopt": {
-          "mark": 128
         }
       },
       "tag": "ed-ss-jp"
     },
     {
-      "tag": "ss-notls1",
+      "mux": {
+        "concurrency": -1,
+        "enabled": false
+      },
       "protocol": "shadowsocks",
       "settings": {
         "servers": [
           {
             "address": "198.41.209.8",
-            "port": 8880,
+            "level": 1,
             "method": "aes-128-gcm",
-            "password": "b29d5bf8-2a27-4f92-a6f4-53d1558e6ee1",
             "ota": false,
-            "level": 1
+            "password": "b29d5bf8-2a27-4f92-a6f4-53d1558e6ee1",
+            "port": 8880
           }
         ]
       },
       "streamSettings": {
         "network": "ws",
         "security": "none",
-        "wsSettings": {
-          "host": "pro.batch10p.workers.dev",
-          "path": "/proxyip=jp.270376.xyz:443&?enc=aes-128-gcm",
-          "headers": {}
-        },
         "sockopt": {
           "mark": 128
+        },
+        "wsSettings": {
+          "headers": {},
+          "host": "pro.batch10p.workers.dev",
+          "path": "/proxyip=jp.270376.xyz:443&?enc=aes-128-gcm"
         }
       },
-      "mux": {
-        "enabled": false,
-        "concurrency": -1
-      }
+      "tag": "ss-notls1"
     },
     {
       "mux": {
@@ -370,30 +367,30 @@
       "streamSettings": {
         "network": "ws",
         "security": "none",
+        "sockopt": {
+          "mark": 128
+        },
         "wsSettings": {
           "headers": {},
           "host": "pro.batch10p.workers.dev",
           "path": "/proxyip=kr1.270376.xyz:12345&?enc=aes-128-gcm"
-        },
-        "sockopt": {
-          "mark": 128
         }
       },
       "tag": "ss-notls2"
     },
     {
-      "tag": "dns-out",
       "protocol": "dns",
       "settings": {
-        "port": 53,
         "address": "119.29.29.29",
-        "network": "udp"
+        "network": "udp",
+        "port": 53
       },
       "streamSettings": {
         "sockopt": {
           "mark": 128
         }
-      }
+      },
+      "tag": "dns-out"
     }
   ],
   "routing": {

@@ -219,6 +219,8 @@ ExecStart=${XRAY_BIN} run -config ${XRAY_CFG}
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
+StandardOutput=append:${XRAY_MANAGER_HOME}/logs/xray.log
+StandardError=append:${XRAY_MANAGER_HOME}/logs/xray.err
 [Install]
 WantedBy=multi-user.target
 EOF

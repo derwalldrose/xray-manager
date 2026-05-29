@@ -1649,22 +1649,24 @@ def api_service_action(action):
 @app.route("/api/logs")
 def api_logs():
     lines = request.args.get("lines", 80, type=int)
+    out = ""
+
+    # Try journalctl first (systemd)
     if _has_systemd():
         out, _, _ = _run(f"journalctl -u {SVC_NAME} --no-pager -n {lines} 2>&1")
-    else:
-        # Docker/supervisord: read log files directly
-        log_file = f"{BASE_DIR}/logs/xray.log"
-        err_file = f"{BASE_DIR}/logs/xray.err"
-        content = ""
-        for f in [err_file, log_file]:
-            try:
-                with open(f) as fh:
-                    all_lines = fh.readlines()
-                    content += "".join(all_lines[-lines:])
-            except Exception:
-                pass
-        out = content if content else "(no logs found)"
-    return jsonify({"logs": out})
+        if out.strip() and "No journal files" not in out:
+            return jsonify({"logs": out})
+
+    # Fallback: read log files (works in Docker and systemd with file logging)
+    for log_file in [f"{BASE_DIR}/logs/xray.err", f"{BASE_DIR}/logs/xray.log"]:
+        try:
+            with open(log_file) as f:
+                all_lines = f.readlines()
+                out += "".join(all_lines[-lines:])
+        except Exception:
+            pass
+
+    return jsonify({"logs": out if out.strip() else "(no logs found)"})
 
 
 @app.route("/api/backups")
