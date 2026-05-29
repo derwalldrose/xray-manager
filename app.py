@@ -43,7 +43,7 @@ DEFAULT_XRAY_BIN = f"{BASE_DIR}/bin/xray"
 DEFAULT_XRAY_CFG = f"{BASE_DIR}/config/xray-multi-socks.json"
 DEFAULT_SVC_NAME = "xray-multi-socks.service"
 DEFAULT_PORT = 54321
-DEFAULT_TOKEN = ""  # empty = no auth; set via --token at startup
+DEFAULT_TOKEN = "123456"  # initial token; change via web UI or --token
 DEFAULT_TEST_URLS = [
     "https://api.ipify.org",
     "https://icanhazip.com",
@@ -61,6 +61,7 @@ RESOLV_BACKUP_FILE = f"{BASE_DIR}/backup/resolv.conf.bak"
 CHAIN_PREFIX = "XRAY_MGR"
 CUSTOM_BYPASS_FILE = f"{BASE_DIR}/state/transparent-bypass.json"
 BALANCER_CONFIG_FILE = f"{BASE_DIR}/state/balancer-config.json"
+TOKEN_FILE = f"{BASE_DIR}/state/token"
 
 app = Flask(__name__)
 
@@ -76,7 +77,7 @@ def _init_dirs():
 
 XRAY_CFG = DEFAULT_XRAY_CFG
 SVC_NAME = DEFAULT_SVC_NAME
-AUTH_TOKEN = DEFAULT_TOKEN  # empty = no auth
+AUTH_TOKEN = DEFAULT_TOKEN  # may be overridden by --token or token file
 TEST_URLS_FILE = DEFAULT_TEST_URLS_FILE
 
 # ---------------------------------------------------------------------------
@@ -1061,6 +1062,27 @@ def _check_auth():
         return jsonify({"error": "unauthorized"}), 401
 
 
+@app.route("/api/token", methods=["POST"])
+def api_change_token():
+    """Change auth token at runtime."""
+    global AUTH_TOKEN
+    data = request.json or {}
+    old = data.get("old", "")
+    new = data.get("new", "")
+    confirm = data.get("confirm", "")
+    if old != AUTH_TOKEN:
+        return jsonify({"error": "当前 Token 不正确"}), 400
+    if not new or len(new) < 4:
+        return jsonify({"error": "新 Token 至少 4 位"}), 400
+    if new != confirm:
+        return jsonify({"error": "两次输入不一致"}), 400
+    AUTH_TOKEN = new
+    Path(TOKEN_FILE).parent.mkdir(parents=True, exist_ok=True)
+    with open(TOKEN_FILE, "w") as f:
+        f.write(new)
+    return jsonify({"ok": True, "message": "Token 已修改，请重新登录"})
+
+
 # ---------------------------------------------------------------------------
 # API endpoints
 # ---------------------------------------------------------------------------
@@ -1867,6 +1889,14 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
         <button class="btn" onclick="loadConfig()">重新加载</button>
         <button class="btn" onclick="testConfig()">校验</button>
       </div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>修改 Token</h2>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">修改后需要重新登录。</p>
+      <div class="edit-row"><label>当前 Token</label><input id="token-old" type="password" placeholder="输入当前 Token"></div>
+      <div class="edit-row"><label>新 Token</label><input id="token-new" type="password" placeholder="输入新 Token"></div>
+      <div class="edit-row"><label>确认新 Token</label><input id="token-confirm" type="password" placeholder="再次输入新 Token"></div>
+      <div class="btn-group"><button class="btn primary" onclick="changeToken()">修改 Token</button></div>
     </div>
   </div>
 
@@ -2865,6 +2895,22 @@ async function testConfig(){
   if(d)toast(d.ok?'配置校验通过':'配置校验失败: '+d.output.slice(0,200),d.ok);
 }
 
+async function changeToken(){
+  const old=document.getElementById('token-old').value.trim();
+  const nw=document.getElementById('token-new').value.trim();
+  const cf=document.getElementById('token-confirm').value.trim();
+  if(!old||!nw||!cf){toast('请填写所有字段',false);return;}
+  const d=await api('/api/token',{method:'POST',body:JSON.stringify({old,new:nw,confirm:cf})});
+  if(!d){toast('请求失败',false);return;}
+  if(d.error){toast(d.error,false);return;}
+  toast(d.message||'Token 已修改');
+  token=nw;
+  localStorage.setItem('xray_token',token);
+  document.getElementById('token-old').value='';
+  document.getElementById('token-new').value='';
+  document.getElementById('token-confirm').value='';
+}
+
 async function loadLogs(n){
   const d=await api('/api/logs?lines='+n);
   if(!d)return;
@@ -3024,6 +3070,16 @@ if __name__ == "__main__":
     SVC_NAME = args.service
     AUTH_TOKEN = args.token
     TEST_URLS_FILE = args.test_urls_file
+
+    # Load token from file if exists (overrides default, but --token overrides file)
+    if not args.token:
+        try:
+            with open(f"{BASE_DIR}/state/token") as f:
+                saved = f.read().strip()
+            if saved:
+                AUTH_TOKEN = saved
+        except Exception:
+            pass
 
     print(f"Xray Manager starting on http://{args.host}:{args.port}")
     print(f"  Xray config: {XRAY_CFG}")

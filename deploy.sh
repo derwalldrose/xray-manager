@@ -195,12 +195,11 @@ EOF
 create_services() {
     step "Systemd services"
 
-    # Generate random token
-    local token
-    token="$(head -c 18 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16)"
+    # Set initial token
+    local token="123456"
     echo "$token" > "${XRAY_MANAGER_HOME}/state/token"
     chmod 600 "${XRAY_MANAGER_HOME}/state/token"
-    info "Auth token: $token"
+    info "Initial token: $token (change after first login)"
 
     cat > "/etc/systemd/system/${XRAY_SOCKS_SERVICE}" <<EOF
 [Unit]
