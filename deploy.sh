@@ -574,4 +574,5 @@ main() {
 }
 
 # Run
+mkdir -p "${XRAY_MANAGER_HOME}" 2>/dev/null
 main 2>&1 | tee "$DEPLOY_LOG"
