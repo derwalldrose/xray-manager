@@ -1,31 +1,25 @@
-version: "3.8"
-
 services:
   xray-manager:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        # XRAY_VERSION: "v25.4.30"
+        XRAY_VERSION: "v26.3.27"
         TARGETARCH: amd64
     container_name: xray-manager
     restart: unless-stopped
 
     # host 网络：容器直接使用宿主机网络栈
-    # - 面板端口 54321、SOCKS 10808、HTTP 10809 直接暴露
-    # - iptables 透明代理直接操作宿主机的 nat 表
-    # - DNS 劫持直接改宿主机 /etc/resolv.conf
     network_mode: host
 
     # bridge 模式（不用透明代理时可切换）：
     # network_mode: bridge
     # ports:
-    #   - "54321:54321"   # 管理面板
-    #   - "10808:10808"   # SOCKS 代理
-    #   - "10809:10809"   # HTTP 代理
+    #   - "54321:54321"
+    #   - "10808:10808"
+    #   - "10809:10809"
 
     volumes:
-      # 配置目录（Xray配置、备份、状态、geo数据）
       - ./config:/root/xray-manager/config
       - ./data:/root/xray-manager/data
       - ./backup:/root/xray-manager/backup
@@ -35,10 +29,9 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
 
-    # iptables 透明代理需要的权限
     cap_add:
-      - NET_ADMIN    # iptables 操作
-      - NET_RAW      # 原始套接字
+      - NET_ADMIN
+      - NET_RAW
 
     dns:
       - 8.8.8.8

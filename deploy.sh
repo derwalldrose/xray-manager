@@ -72,7 +72,7 @@ install_deps() {
     if command -v apt-get &>/dev/null; then
         info "apt"
         apt-get update -qq
-        apt-get install -y -qq curl unzip ca-certificates python3-venv
+        apt-get install -y -qq curl unzip ca-certificates python3-venv iptables iproute2
     elif command -v yum &>/dev/null; then
         info "yum"
         yum install -y -q curl unzip ca-certificates python3
