@@ -1476,6 +1476,9 @@ table{width:100%;border-collapse:collapse}
 th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px}
 th{color:var(--text2);font-weight:500;font-size:12px;text-transform:uppercase}
 td{font-family:'SF Mono',SFMono-Regular,consolas,monospace;font-size:12px}
+.ob-addr{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+tr.ob-system td{opacity:.6;border-bottom-style:dashed}
+tr.ob-system:hover td{opacity:.8;background:var(--bg)}
 .tag{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:500}
 .tag.us{background:rgba(56,139,253,.15);color:#58a6ff}
 .tag.kr{background:rgba(63,185,80,.15);color:#3fb950}
@@ -2076,14 +2079,30 @@ function renderOutbounds(){
     let addr='-', port='-', net='-';
     try{
       const v=ob.settings&&ob.settings.vnext&&ob.settings.vnext[0];
-      if(v){addr=v.address; port=v.port;}
+      const s=ob.settings&&ob.settings.servers&&ob.settings.servers[0];
+      const src=v||s;
+      if(src){addr=src.address||'-'; port=src.port||'-';}
       net=(ob.streamSettings&&ob.streamSettings.network)||'-';
     }catch(e){}
     const delay=ob._delay||'-';
     const speed=ob._speed||'-';
+    const p=ob.protocol||'';
+    const isSystem=p==='freedom'||p==='blackhole';
+    const rowCls=isSystem?' class="ob-system"':'';
+    const protoLabel=p==='freedom'?'direct':p==='blackhole'?'block':p;
+    if(isSystem){
+      return `<tr${rowCls}>
+        <td></td>
+        <td><span style="opacity:.7">${ob.tag||'-'}</span></td>
+        <td><span style="opacity:.5">${protoLabel}</span></td>
+        <td colspan="5" style="opacity:.4;font-size:11px">${p==='freedom'?'直连出口':'丢弃出口'}</td>
+        <td><button class="btn" onclick="editOutbound(${i})">编辑</button></td>
+      </tr>`;
+    }
+    const addrTip=addr!=='-'?` title="${addr}:${port}"`:'';
     return `<tr>
       <td><input type="checkbox" class="ob-check" data-idx="${i}"></td>
-      <td>${ob.tag||'-'}</td><td>${ob.protocol||'-'}</td><td>${addr}</td><td>${port}</td><td>${net}</td>
+      <td>${ob.tag||'-'}</td><td>${p}</td><td class="ob-addr"${addrTip}>${addr}</td><td>${port}</td><td>${net}</td>
       <td id="ob-delay-${i}" style="color:var(--green)">${delay}</td><td id="ob-speed-${i}" style="color:var(--yellow)">${speed}</td>
       <td><button class="btn primary" onclick="testOutbound(${i})">延迟</button> <button class="btn" onclick="speedtestOutbound(${i})">测速</button> <button class="btn" onclick="editOutbound(${i})">编辑</button> <button class="btn danger" onclick="deleteOutbound(${i})">删除</button></td>
     </tr>`;
