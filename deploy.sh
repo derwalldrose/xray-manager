@@ -64,16 +64,47 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+GHPROXY_MIRRORS=(
+    "https://ghproxy.net/"
+    "https://mirror.ghproxy.com/"
+    "https://gh-proxy.com/"
+    "https://ghps.cc/"
+)
+
 # ---------------------------------------------------------------------------
 # URL helper — apply proxy prefix if needed
 # ---------------------------------------------------------------------------
 mirror_url() {
     local url="$1"
     if [[ "$PROXY_MODE" == "ghproxy" ]]; then
-        echo "${GHPROXY_PREFIX}${url}"
+        echo "${GHPROXY_MIRRORS[0]}${url}"
     else
         echo "$url"
     fi
+}
+
+# Try all mirrors until one works
+mirror_download() {
+    local url="$1"
+    local output="$2"
+    shift 2
+    local extra_args=("$@")
+
+    if [[ "$PROXY_MODE" != "ghproxy" ]]; then
+        curl -fSL --connect-timeout 15 --max-time 300 "${extra_args[@]}" "$url" -o "$output"
+        return $?
+    fi
+
+    for mirror in "${GHPROXY_MIRRORS[@]}"; do
+        local mirrored="${mirror}${url}"
+        info "Trying: $mirrored"
+        if curl -fSL --connect-timeout 10 --max-time 300 "${extra_args[@]}" "$mirrored" -o "$output" 2>/dev/null; then
+            info "Downloaded via $mirror ✓"
+            return 0
+        fi
+        warn "Failed: $mirror"
+    done
+    return 1
 }
 
 # If user provides a custom proxy, export it for curl/wget
@@ -257,14 +288,11 @@ install_xray() {
     local zip_file="${tmp_dir}/xray.zip"
 
     info "Downloading Xray binary..."
-    local curl_args="-fSL --connect-timeout 15 --max-time 300 -o $zip_file"
-
-    # Apply proxy settings if needed
     setup_curl_proxy
 
-    if ! curl $curl_args "$(mirror_url "$download_url")"; then
+    if ! mirror_download "$download_url" "$zip_file"; then
         error "Failed to download Xray from: $download_url"
-        error "If you are in China, try: bash deploy.sh --proxy ghproxy"
+        error "All mirrors failed. Try: bash deploy.sh --proxy http://your-proxy:port"
         exit 1
     fi
 
@@ -291,16 +319,14 @@ install_geo_data() {
     mkdir -p "$geo_dir"
 
     info "Downloading geoip.dat..."
-    if ! curl -fSL --connect-timeout 15 --max-time 120 \
-        -o "$GEOIP_PATH" "$(mirror_url "$GEOIP_URL")"; then
+    if ! mirror_download "$GEOIP_URL" "$GEOIP_PATH"; then
         warn "Failed to download geoip.dat — will use Xray default"
     else
         info "geoip.dat installed to $GEOIP_PATH"
     fi
 
     info "Downloading geosite.dat..."
-    if ! curl -fSL --connect-timeout 15 --max-time 120 \
-        -o "$GEOSITE_PATH" "$(mirror_url "$GEOSITE_URL")"; then
+    if ! mirror_download "$GEOSITE_URL" "$GEOSITE_PATH"; then
         warn "Failed to download geosite.dat — will use Xray default"
     else
         info "geosite.dat installed to $GEOSITE_PATH"
