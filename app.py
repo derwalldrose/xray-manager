@@ -38,8 +38,9 @@ from flask import Flask, jsonify, request, Response
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-DEFAULT_XRAY_BIN = "/usr/local/bin/xray"
-DEFAULT_XRAY_CFG = "/root/xray-multi-socks.json"
+BASE_DIR = "/root/xray-manager"
+DEFAULT_XRAY_BIN = f"{BASE_DIR}/bin/xray"
+DEFAULT_XRAY_CFG = f"{BASE_DIR}/config/xray-multi-socks.json"
 DEFAULT_SVC_NAME = "xray-multi-socks.service"
 DEFAULT_PORT = 54321
 DEFAULT_TOKEN = "Root2023!"
@@ -50,21 +51,29 @@ DEFAULT_TEST_URLS = [
     "https://ipinfo.io/json",
     "https://ip.im/info",
 ]
-DEFAULT_TEST_URLS_FILE = "/root/xray-manager/test-urls.json"
+DEFAULT_TEST_URLS_FILE = f"{BASE_DIR}/state/test-urls.json"
 DEFAULT_SPEEDTEST_URL = "https://speed.cloudflare.com/__down?bytes=10000000"
 DEFAULT_SPEEDTEST_TIMEOUT = 20
 DEFAULT_TRANSPARENT_PORT = 12345
-TRANSPARENT_STATE_FILE = "/root/xray-manager/transparent-state.json"
-IPTABLES_BACKUP_FILE = "/root/xray-manager/iptables-backup.rules"
-RESOLV_BACKUP_FILE = "/root/xray-manager/resolv.conf.bak"
+TRANSPARENT_STATE_FILE = f"{BASE_DIR}/state/transparent-state.json"
+IPTABLES_BACKUP_FILE = f"{BASE_DIR}/backup/iptables-backup.rules"
+RESOLV_BACKUP_FILE = f"{BASE_DIR}/backup/resolv.conf.bak"
 CHAIN_PREFIX = "XRAY_MGR"
-CUSTOM_BYPASS_FILE = "/root/xray-manager/transparent-bypass.json"
-BALANCER_CONFIG_FILE = "/root/xray-manager/balancer-config.json"
+CUSTOM_BYPASS_FILE = f"{BASE_DIR}/state/transparent-bypass.json"
+BALANCER_CONFIG_FILE = f"{BASE_DIR}/state/balancer-config.json"
 
 app = Flask(__name__)
 
 # populated in main()
 XRAY_BIN = DEFAULT_XRAY_BIN
+
+
+def _init_dirs():
+    """Create all required subdirectories."""
+    for d in [f"{BASE_DIR}/bin", f"{BASE_DIR}/data", f"{BASE_DIR}/config",
+              f"{BASE_DIR}/backup", f"{BASE_DIR}/state"]:
+        Path(d).mkdir(parents=True, exist_ok=True)
+
 XRAY_CFG = DEFAULT_XRAY_CFG
 SVC_NAME = DEFAULT_SVC_NAME
 AUTH_TOKEN = DEFAULT_TOKEN  # empty = no auth
@@ -738,7 +747,9 @@ def _xray_version():
 
 def _backup_config():
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup = f"{XRAY_CFG}.bak.{ts}"
+    backup_dir = f"{BASE_DIR}/backup"
+    Path(backup_dir).mkdir(parents=True, exist_ok=True)
+    backup = f"{backup_dir}/config-{ts}.json.bak"
     try:
         raw, _ = _read_config()
         with open(backup, "w") as f:
@@ -1109,15 +1120,7 @@ def api_config_post():
     except json.JSONDecodeError as e:
         return jsonify({"error": f"invalid JSON: {e}"}), 400
 
-    # backup
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup = f"{XRAY_CFG}.bak.{ts}"
-    try:
-        raw, _ = _read_config()
-        with open(backup, "w") as f:
-            f.write(raw)
-    except Exception:
-        pass
+    _backup_config()
 
     # write
     with open(XRAY_CFG, "w") as f:
@@ -1168,15 +1171,7 @@ def api_inbounds_post():
         cfg["routing"] = data["routing"]
     new_raw = json.dumps(cfg, ensure_ascii=False, indent=2)
 
-    # save
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup = f"{XRAY_CFG}.bak.{ts}"
-    try:
-        raw, _ = _read_config()
-        with open(backup, "w") as f:
-            f.write(raw)
-    except Exception:
-        pass
+    _backup_config()
 
     with open(XRAY_CFG, "w") as f:
         f.write(new_raw + "\n")
@@ -1254,14 +1249,7 @@ def api_routing_post():
     cfg["routing"] = data["routing"]
     new_raw = json.dumps(cfg, ensure_ascii=False, indent=2)
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup = f"{XRAY_CFG}.bak.{ts}"
-    try:
-        raw, _ = _read_config()
-        with open(backup, "w") as f:
-            f.write(raw)
-    except Exception:
-        pass
+    _backup_config()
 
     with open(XRAY_CFG, "w") as f:
         f.write(new_raw + "\n")
@@ -3031,6 +3019,9 @@ if __name__ == "__main__":
         print(f"  Auth: enabled (token required)")
     else:
         print(f"  Auth: disabled (open access)")
+
+    # Create required directories
+    _init_dirs()
 
     # Cleanup stale transparent proxy iptables rules on startup
     _tp_startup_cleanup()

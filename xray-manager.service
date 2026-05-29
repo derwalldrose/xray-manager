@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/xray-manager
-ExecStart=/usr/bin/python3 /root/xray-manager/app.py --host 0.0.0.0 --port 54321 --xray-config /root/xray-multi-socks.json --xray-binary /usr/local/bin/xray --service xray-multi-socks.service
+ExecStart=/root/xray-manager/.venv/bin/python3 /root/xray-manager/app.py --host 0.0.0.0 --port 54321 --xray-config /root/xray-manager/config/xray-multi-socks.json --xray-binary /root/xray-manager/bin/xray --service xray-multi-socks.service
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1

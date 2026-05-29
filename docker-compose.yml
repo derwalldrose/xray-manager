@@ -24,14 +24,16 @@ services:
     #   - "54321:54321"
 
     volumes:
-      # Xray config (the proxy configuration)
-      - ./xray-multi-socks.json:/root/xray-multi-socks.json
-
-      # xray-manager data (test URLs, transparent proxy state, etc.)
-      - xray-manager-data:/root/xray-manager
-
-      # GeoIP / GeoSite data (persisted across rebuilds)
-      - xray-geo-data:/usr/local/share/xray
+      # Mount entire xray-manager directory for unified file layout
+      # Structure:
+      #   config/xray-multi-socks.json  — Xray proxy config
+      #   data/geoip.dat, geosite.dat   — GeoIP/GeoSite data
+      #   backup/                        — Config backups
+      #   state/                         — Runtime state (transparent proxy, balancer, etc.)
+      - ./config:/root/xray-manager/config
+      - ./data:/root/xray-manager/data
+      - ./backup:/root/xray-manager/backup
+      - ./state:/root/xray-manager/state
 
     environment:
       - PYTHONUNBUFFERED=1
@@ -45,9 +47,3 @@ services:
     dns:
       - 8.8.8.8
       - 1.1.1.1
-
-volumes:
-  xray-manager-data:
-    driver: local
-  xray-geo-data:
-    driver: local

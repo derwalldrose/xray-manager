@@ -7,6 +7,9 @@ LABEL maintainer="derwalldrose" \
 ARG XRAY_VERSION=v25.4.30
 ARG TARGETARCH=amd64
 
+# Base directory
+ENV BASE_DIR=/root/xray-manager
+
 # Install system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -14,6 +17,9 @@ RUN apt-get update && \
         unzip \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Create directory structure
+RUN mkdir -p ${BASE_DIR}/{bin,data,config,backup,state}
 
 # Download and install Xray-core
 RUN ARCH="${TARGETARCH}" && \
@@ -23,19 +29,15 @@ RUN ARCH="${TARGETARCH}" && \
     curl -fSL "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-${XRAY_ARCH}.zip" \
         -o /tmp/xray.zip && \
     unzip -o /tmp/xray.zip -d /tmp/xray-extract && \
-    mv /tmp/xray-extract/xray /usr/local/bin/xray && \
-    chmod +x /usr/local/bin/xray && \
+    mv /tmp/xray-extract/xray ${BASE_DIR}/bin/xray && \
+    chmod +x ${BASE_DIR}/bin/xray && \
     rm -rf /tmp/xray.zip /tmp/xray-extract
 
 # Download geo data
-RUN mkdir -p /usr/local/share/xray && \
-    curl -fSL "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" \
-        -o /usr/local/share/xray/geoip.dat && \
+RUN curl -fSL "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" \
+        -o ${BASE_DIR}/data/geoip.dat && \
     curl -fSL "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" \
-        -o /usr/local/share/xray/geosite.dat
-
-# Create config directory
-RUN mkdir -p /root/xray-manager
+        -o ${BASE_DIR}/data/geosite.dat
 
 # Install Python dependencies
 COPY requirements.txt /tmp/requirements.txt
@@ -43,10 +45,10 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
 # Copy application
-COPY app.py /root/xray-manager/app.py
+COPY app.py ${BASE_DIR}/app.py
 
 # Create default xray config if not mounted
-RUN if [ ! -f /root/xray-multi-socks.json ]; then \
+RUN if [ ! -f ${BASE_DIR}/config/xray-multi-socks.json ]; then \
     echo '{ \
   "log": {"loglevel": "warning"}, \
   "inbounds": [{ \
@@ -55,9 +57,9 @@ RUN if [ ! -f /root/xray-multi-socks.json ]; then \
   }], \
   "outbounds": [{"tag": "direct", "protocol": "freedom"}], \
   "routing": {"domainStrategy": "AsIs", "rules": []} \
-}' > /root/xray-multi-socks.json; fi
+}' > ${BASE_DIR}/config/xray-multi-socks.json; fi
 
-WORKDIR /root/xray-manager
+WORKDIR ${BASE_DIR}
 
 EXPOSE 54321
 
@@ -67,6 +69,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 CMD ["python3", "app.py", \
      "--host", "0.0.0.0", \
-     "--port", "54321", \
-     "--xray-config", "/root/xray-multi-socks.json", \
-     "--xray-binary", "/usr/local/bin/xray"]
+     "--port", "54321"]

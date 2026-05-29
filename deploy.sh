@@ -14,10 +14,10 @@ set -euo pipefail
 # Constants
 # ---------------------------------------------------------------------------
 XRAY_MANAGER_HOME="/root/xray-manager"
-XRAY_BIN="/usr/local/bin/xray"
-XRAY_CFG="/root/xray-multi-socks.json"
-GEOIP_PATH="/usr/local/share/xray/geoip.dat"
-GEOSITE_PATH="/usr/local/share/xray/geosite.dat"
+XRAY_BIN="${XRAY_MANAGER_HOME}/bin/xray"
+XRAY_CFG="${XRAY_MANAGER_HOME}/config/xray-multi-socks.json"
+GEOIP_PATH="${XRAY_MANAGER_HOME}/data/geoip.dat"
+GEOSITE_PATH="${XRAY_MANAGER_HOME}/data/geosite.dat"
 XRAY_MGR_SERVICE="xray-manager.service"
 XRAY_SOCKS_SERVICE="xray-multi-socks.service"
 DEPLOY_LOG="${XRAY_MANAGER_HOME}/deploy.log"
