@@ -538,6 +538,7 @@ print_summary() {
 main() {
     # Create base directory first (needed for deploy.log)
     mkdir -p "${XRAY_MANAGER_HOME}"
+    mkdir -p "${XRAY_MANAGER_HOME}"/{bin,data,config,backup,state,logs}
 
     echo -e "${CYAN}"
     echo "  ██╗  ██╗██████╗  █████╗ ██╗   ██╗"
