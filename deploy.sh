@@ -19,14 +19,15 @@ XRAY_MGR_SERVICE="xray-manager.service"
 XRAY_SOCKS_SERVICE="xray-multi-socks.service"
 DEPLOY_LOG="${XRAY_MANAGER_HOME}/deploy.log"
 
-# Xray version — bump this when updating
-XRAY_VERSION="v26.3.27"
+# Xray version — bump when updating
+XRAY_VER="v26.3.27"
 
-# CDN mirror prefix (transparently proxies GitHub)
+# CDN prefix for GitHub downloads (China-friendly)
 CDN="https://hub.543083.xyz"
 
-# GitHub raw base (no CDN prefix — gh_download adds it)
-RAW_BASE="https://raw.githubusercontent.com/derwalldrose/xray-manager/main"
+# GitHub domains built at runtime (prevents CDN text rewriting)
+GH="gi""thub.com"
+GH_RAW="ra""w.gi""thubusercontent.com"
 
 # ---------------------------------------------------------------------------
 # Color helpers
@@ -43,11 +44,11 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 step()  { echo -e "\n${CYAN}========== $* ==========${NC}"; }
 
 # ---------------------------------------------------------------------------
-# Download via CDN, fallback to direct
+# Download helper — CDN first, then direct
 # ---------------------------------------------------------------------------
-gh_download() {
+gh_dl() {
     local url="$1" output="$2"
-    info "CDN:  ${CDN}/${url}"
+    info "CDN: ${CDN}/${url}"
     if curl -fSL --connect-timeout 15 --max-time 600 "${CDN}/${url}" -o "$output" 2>/dev/null; then
         return 0
     fi
@@ -59,140 +60,98 @@ gh_download() {
 }
 
 # ---------------------------------------------------------------------------
-# Check root
-# ---------------------------------------------------------------------------
 check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        error "This script must be run as root"
-        exit 1
-    fi
+    [[ $EUID -eq 0 ]] || { error "Must run as root"; exit 1; }
 }
 
 # ---------------------------------------------------------------------------
-# Install system dependencies
-# ---------------------------------------------------------------------------
 install_deps() {
-    step "Installing system dependencies"
+    step "System dependencies"
     if command -v apt-get &>/dev/null; then
-        info "Package manager: apt"
+        info "apt"
         apt-get update -qq
         apt-get install -y -qq curl unzip ca-certificates python3-venv
     elif command -v yum &>/dev/null; then
-        info "Package manager: yum"
+        info "yum"
         yum install -y -q curl unzip ca-certificates python3
     elif command -v dnf &>/dev/null; then
-        info "Package manager: dnf"
+        info "dnf"
         dnf install -y -q curl unzip ca-certificates python3
-    else
-        warn "Unknown package manager"
     fi
 }
 
-# ---------------------------------------------------------------------------
-# Setup Python venv + Flask
 # ---------------------------------------------------------------------------
 install_python() {
-    step "Checking Python 3"
-    if ! command -v python3 &>/dev/null; then
-        error "Python 3 not found. Install it first."
-        exit 1
-    fi
-    info "Python: $(python3 --version 2>&1)"
+    step "Python 3 + Flask"
+    command -v python3 &>/dev/null || { error "Python 3 not found"; exit 1; }
+    info "$(python3 --version)"
 
     local venv="${XRAY_MANAGER_HOME}/.venv"
-    info "Creating venv at ${venv}..."
     python3 -m venv "$venv"
-
-    info "Installing Flask..."
     ALL_PROXY= HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= \
         "${venv}/bin/pip" install --quiet flask
-
-    info "Flask: $("${venv}/bin/python3" -c 'import importlib.metadata; print(importlib.metadata.version("flask"))')"
+    info "Flask $("${venv}/bin/python3" -c 'import importlib.metadata;print(importlib.metadata.version("flask"))')"
 }
 
-# ---------------------------------------------------------------------------
-# Detect architecture → Xray naming
 # ---------------------------------------------------------------------------
 detect_arch() {
     case "$(uname -m)" in
         x86_64|amd64)  echo "64" ;;
         aarch64|arm64)  echo "arm64-v8a" ;;
-        *) error "Unsupported: $(uname -m)"; exit 1 ;;
+        *) error "Unsupported arch"; exit 1 ;;
     esac
 }
 
 # ---------------------------------------------------------------------------
-# Install Xray binary
-# ---------------------------------------------------------------------------
 install_xray() {
-    step "Installing Xray-core"
-
+    step "Xray-core"
     local arch
     arch="$(detect_arch)"
-    info "Arch: $arch  Version: $XRAY_VERSION"
+    info "Arch=$arch  Version=$XRAY_VER"
 
-    local url="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-${arch}.zip"
+    local url="https://${GH}/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-${arch}.zip"
     local tmp
     tmp="$(mktemp -d)"
 
-    if ! gh_download "$url" "${tmp}/xray.zip"; then
-        error "Failed to download Xray"
-        rm -rf "$tmp"
-        exit 1
-    fi
+    gh_dl "$url" "${tmp}/xray.zip" || { error "Download failed"; rm -rf "$tmp"; exit 1; }
 
-    info "Extracting..."
     unzip -o "${tmp}/xray.zip" -d "${tmp}/ext" >/dev/null 2>&1
     install -m 755 "${tmp}/ext/xray" "$XRAY_BIN"
     rm -rf "$tmp"
-
-    info "Xray: $($XRAY_BIN version 2>/dev/null | head -1)"
+    info "Installed: $($XRAY_BIN version | head -1)"
 }
 
 # ---------------------------------------------------------------------------
-# Download geo data
-# ---------------------------------------------------------------------------
-install_geo_data() {
-    step "Installing geoip.dat & geosite.dat"
+install_geo() {
+    step "GeoIP / GeoSite"
     mkdir -p "$(dirname "$GEOIP_PATH")"
 
-    if gh_download "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" "$GEOIP_PATH"; then
-        info "geoip.dat ✓  ($(du -h "$GEOIP_PATH" | cut -f1))"
-    else
-        warn "geoip.dat failed"
-    fi
+    gh_dl "https://${GH}/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" "$GEOIP_PATH" \
+        && info "geoip.dat ✓ ($(du -h "$GEOIP_PATH" | cut -f1))" || warn "geoip.dat failed"
 
-    if gh_download "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" "$GEOSITE_PATH"; then
-        info "geosite.dat ✓  ($(du -h "$GEOSITE_PATH" | cut -f1))"
-    else
-        warn "geosite.dat failed"
-    fi
+    gh_dl "https://${GH}/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" "$GEOSITE_PATH" \
+        && info "geosite.dat ✓ ($(du -h "$GEOSITE_PATH" | cut -f1))" || warn "geosite.dat failed"
 }
 
 # ---------------------------------------------------------------------------
-# Setup app.py + default config
-# ---------------------------------------------------------------------------
 setup_app() {
-    step "Setting up xray-manager"
+    step "xray-manager app"
 
     local script_dir
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
     if [[ -f "${script_dir}/app.py" ]]; then
         cp "${script_dir}/app.py" "${XRAY_MANAGER_HOME}/app.py"
-        info "app.py copied from local"
+        info "Copied from local"
     else
-        info "Downloading app.py..."
-        if gh_download "${RAW_BASE}/app.py" "${XRAY_MANAGER_HOME}/app.py"; then
-            info "app.py ✓"
-        else
-            error "Failed to download app.py"
-            exit 1
-        fi
+        gh_dl "https://${GH_RAW}/derwalldrose/xray-manager/main/app.py" "${XRAY_MANAGER_HOME}/app.py" \
+            || { error "app.py download failed"; exit 1; }
+        info "Downloaded app.py"
     fi
 
-    if [[ ! -f "$XRAY_CFG" ]]; then
-        cat > "$XRAY_CFG" <<'EOF'
+    [[ -f "$XRAY_CFG" ]] && { info "Config exists"; return; }
+
+    cat > "$XRAY_CFG" <<'EOF'
 {
   "log": {"loglevel": "warning"},
   "inbounds": [
@@ -203,24 +162,18 @@ setup_app() {
   "routing": {"domainStrategy":"AsIs","rules":[]}
 }
 EOF
-        info "Default config created"
-        warn "Edit $XRAY_CFG to add your proxy nodes!"
-    else
-        info "Config exists: $XRAY_CFG"
-    fi
+    info "Default config created"
+    warn "Edit $XRAY_CFG to add proxy nodes!"
 }
 
 # ---------------------------------------------------------------------------
-# Systemd services
-# ---------------------------------------------------------------------------
-create_xray_service() {
-    step "Service: ${XRAY_SOCKS_SERVICE}"
+create_services() {
+    step "Systemd services"
 
     cat > "/etc/systemd/system/${XRAY_SOCKS_SERVICE}" <<EOF
 [Unit]
-Description=Xray Multi-Socks Proxy Service
+Description=Xray Multi-Socks Proxy
 After=network.target
-
 [Service]
 Type=simple
 User=root
@@ -228,24 +181,14 @@ ExecStart=${XRAY_BIN} run -config ${XRAY_CFG}
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
-
 [Install]
 WantedBy=multi-user.target
 EOF
-
-    systemctl daemon-reload
-    systemctl enable "${XRAY_SOCKS_SERVICE}" 2>/dev/null || true
-    info "Created & enabled"
-}
-
-create_manager_service() {
-    step "Service: ${XRAY_MGR_SERVICE}"
 
     cat > "/etc/systemd/system/${XRAY_MGR_SERVICE}" <<EOF
 [Unit]
 Description=Xray Manager Web Panel
 After=network.target
-
 [Service]
 Type=simple
 User=root
@@ -254,56 +197,39 @@ ExecStart=${XRAY_MANAGER_HOME}/.venv/bin/python3 ${XRAY_MANAGER_HOME}/app.py --h
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
-
 [Install]
 WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable "${XRAY_MGR_SERVICE}" 2>/dev/null || true
+    systemctl enable "${XRAY_SOCKS_SERVICE}" "${XRAY_MGR_SERVICE}" 2>/dev/null || true
 
     info "Starting xray-manager..."
-    systemctl restart "${XRAY_MGR_SERVICE}" 2>/dev/null || true
+    systemctl restart "${XRAY_MGR_SERVICE}"
     sleep 2
-
-    if systemctl is-active --quiet "${XRAY_MGR_SERVICE}" 2>/dev/null; then
-        info "xray-manager running ✓"
-    else
-        warn "xray-manager failed: journalctl -u ${XRAY_MGR_SERVICE} -f"
-    fi
+    systemctl is-active --quiet "${XRAY_MGR_SERVICE}" && info "xray-manager running ✓" || warn "Check: journalctl -u ${XRAY_MGR_SERVICE} -f"
 }
 
-# ---------------------------------------------------------------------------
-# Summary
 # ---------------------------------------------------------------------------
 print_summary() {
     local ip
     ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-
     echo ""
     echo -e "${CYAN}================================================================${NC}"
-    echo -e "  ${GREEN}xray-manager deployment complete!${NC}"
+    echo -e "  ${GREEN}xray-manager deployed!${NC}"
     echo -e "${CYAN}================================================================${NC}"
     echo ""
-    echo -e "  Xray:       ${CYAN}$($XRAY_BIN version 2>/dev/null | head -1)${NC}"
-    echo -e "  Config:     ${CYAN}${XRAY_CFG}${NC}"
-    echo -e "  Geo data:   ${CYAN}${XRAY_MANAGER_HOME}/data/${NC}"
-    echo -e "  Panel:      ${CYAN}http://${ip}:54321${NC}"
-    echo -e "  Token:      ${CYAN}Root2023!${NC}"
+    echo -e "  Xray:     ${CYAN}$($XRAY_BIN version 2>/dev/null | head -1)${NC}"
+    echo -e "  Config:   ${CYAN}${XRAY_CFG}${NC}"
+    echo -e "  Panel:    ${CYAN}http://${ip}:54321${NC}"
+    echo -e "  Token:    ${CYAN}Root2023!${NC}"
     echo ""
-    echo -e "  Next steps:"
-    echo -e "    1. Open panel, add proxy nodes"
-    echo -e "    2. ${YELLOW}systemctl start xray-multi-socks${NC}"
-    echo ""
-    echo -e "  Log: ${DEPLOY_LOG}"
+    echo -e "  Next: open panel → add nodes → systemctl start xray-multi-socks"
     echo -e "${CYAN}================================================================${NC}"
 }
 
 # ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 main() {
-    mkdir -p "${XRAY_MANAGER_HOME}"
     mkdir -p "${XRAY_MANAGER_HOME}"/{bin,data,config,backup,state,logs}
 
     echo -e "${CYAN}"
@@ -313,20 +239,18 @@ main() {
     echo "   ██╔██╗ ██╔══██╗██╔══██║  ╚██╔╝  "
     echo "  ██╔╝ ██╗██║  ██║██║  ██║   ██║   "
     echo "  ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   "
-    echo -e "  xray-manager deploy${NC}"
+    echo -e "  deploy${NC}"
     echo ""
 
     check_root
     install_deps
     install_python
     install_xray
-    install_geo_data
+    install_geo
     setup_app
-    create_xray_service
-    create_manager_service
+    create_services
     print_summary
 }
 
-# Run
 mkdir -p "${XRAY_MANAGER_HOME}" 2>/dev/null || true
 main 2>&1 | tee "$DEPLOY_LOG"
