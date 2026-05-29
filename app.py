@@ -386,6 +386,37 @@ def _iptables_cleanup():
         _run(cmd, timeout=5)
 
 
+def _tp_has_iptables_rules():
+    """Check if XRAY_MGR iptables chains currently exist."""
+    out, _, rc = _run(f"iptables -t nat -L {CHAIN_PREFIX}_RULE -n 2>/dev/null", timeout=5)
+    return rc == 0 and CHAIN_PREFIX in (out or "")
+
+
+def _tp_has_dokodemo_inbound():
+    """Check if the xray config has a transparent dokodemo-door inbound."""
+    try:
+        with open(XRAY_CFG) as f:
+            cfg = json.load(f)
+        return any(ib.get("tag") == "transparent" for ib in cfg.get("inbounds", []))
+    except Exception:
+        return False
+
+
+def _tp_startup_cleanup():
+    """On startup: if iptables rules exist but config has no transparent inbound,
+    clean up stale rules to prevent them from intercepting xray's own traffic."""
+    if _tp_has_iptables_rules() and not _tp_has_dokodemo_inbound():
+        print("[transparent-proxy] Stale iptables rules detected without dokodemo inbound — cleaning up")
+        _iptables_cleanup()
+        _tp_state_write({"enabled": False})
+        print("[transparent-proxy] Stale rules cleaned up")
+    elif _tp_has_iptables_rules() and _tp_has_dokodemo_inbound():
+        print("[transparent-proxy] Active — iptables rules and dokodemo inbound present")
+    state = _tp_state_read()
+    if state.get("enabled") and not _tp_has_dokodemo_inbound():
+        _tp_state_write({"enabled": False})
+
+
 def _iptables_setup_redirect(port, bypass_cidrs=None):
     ch = CHAIN_PREFIX
     if bypass_cidrs is None:
@@ -1734,6 +1765,7 @@ td{font-family:'SF Mono',SFMono-Regular,consolas,monospace;font-size:12px}
     <h3 id="modal-ob-title">新增节点</h3>
     <div style="display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid var(--border)">
       <div class="tab active" id="mob-tab-link" onclick="switchObModalTab('link')">解析节点链接</div>
+      <div class="tab" id="mob-tab-form" onclick="switchObModalTab('form')">表单编辑</div>
       <div class="tab" id="mob-tab-json" onclick="switchObModalTab('json')">编辑 JSON</div>
     </div>
     <div id="mob-pane-link">
@@ -1742,6 +1774,26 @@ td{font-family:'SF Mono',SFMono-Regular,consolas,monospace;font-size:12px}
       <div class="btn-group" style="margin-top:12px">
         <button class="btn primary" onclick="parseAndAddVless()">解析并新增</button>
       </div>
+    </div>
+    <div id="mob-pane-form" style="display:none">
+      <div class="edit-row"><label>Tag</label><input id="of-tag"></div>
+      <div class="edit-row"><label>协议</label><select id="of-protocol"><option value="vless">vless</option><option value="vmess">vmess</option><option value="shadowsocks">shadowsocks</option><option value="trojan">trojan</option></select></div>
+      <div class="edit-row"><label>地址</label><input id="of-address"></div>
+      <div class="edit-row"><label>端口</label><input id="of-port" type="number"></div>
+      <div class="edit-row"><label>用户ID/密码</label><input id="of-id"></div>
+      <div class="edit-row"><label>加密/方法</label><input id="of-security" placeholder="vless:none vmess:auto ss:aes-128-gcm"></div>
+      <div class="edit-row"><label>flow</label><input id="of-flow" placeholder="可选，仅 vless/trojan 常见"></div>
+      <div class="edit-row"><label>network</label><select id="of-network"><option value="tcp">tcp</option><option value="ws">ws</option><option value="grpc">grpc</option><option value="xhttp">xhttp</option></select></div>
+      <div class="edit-row"><label>security</label><select id="of-tls-mode"><option value="none">none</option><option value="tls">tls</option><option value="reality">reality</option></select></div>
+      <div class="edit-row"><label>SNI</label><input id="of-sni"></div>
+      <div class="edit-row"><label>Host</label><input id="of-host"></div>
+      <div class="edit-row"><label>Path</label><input id="of-path"></div>
+      <div class="edit-row"><label>Fingerprint</label><input id="of-fp" placeholder="random/chrome"></div>
+      <div class="edit-row"><label>ALPN</label><input id="of-alpn" placeholder="h3 或 h2,http/1.1"></div>
+      <div class="edit-row"><label>allowInsecure</label><select id="of-insecure"><option value="false">false</option><option value="true">true</option></select></div>
+      <div class="edit-row"><label>ECH</label><input id="of-ech" placeholder="cloudflare-ech.com+https://dns.alidns.com/dns-query"></div>
+      <div class="edit-row"><label>mux</label><select id="of-mux"><option value="off">off</option><option value="on">on</option></select></div>
+      <div class="btn-group" style="margin-top:12px"><button class="btn primary" onclick="saveFormOutbound()">从表单生成并保存到编辑区</button></div>
     </div>
     <div id="mob-pane-json" style="display:none">
       <textarea class="config-editor" id="eo-json" spellcheck="false" style="min-height:300px"></textarea>
@@ -1981,8 +2033,9 @@ function editInbound(idx){
   document.getElementById('modal-edit-inbound').classList.add('show');
 }
 
-function saveEditInbound(){
+async function saveEditInbound(){
   const ib=inboundsData[editingIdx];
+  const oldTag=ib.tag;
   ib.tag=document.getElementById('ei-tag').value.trim();
   ib.protocol=document.getElementById('ei-protocol').value.trim();
   ib.listen=document.getElementById('ei-listen').value.trim();
@@ -1991,9 +2044,17 @@ function saveEditInbound(){
   ib.settings.udp=document.getElementById('ei-udp').value==='true';
   if(!ib.sniffing)ib.sniffing={};
   ib.sniffing.enabled=document.getElementById('ei-sniff').value==='true';
-  inboundRouteMap[ib.tag]=document.getElementById('ei-outbound').value||inboundRouteMap[ib.tag]||'';
+  const selectedOutbound=document.getElementById('ei-outbound').value||'';
+  if(oldTag!==ib.tag && inboundRouteMap[oldTag] && !selectedOutbound){
+    inboundRouteMap[ib.tag]=inboundRouteMap[oldTag];
+    delete inboundRouteMap[oldTag];
+  } else {
+    inboundRouteMap[ib.tag]=selectedOutbound||inboundRouteMap[ib.tag]||'';
+    if(oldTag!==ib.tag) delete inboundRouteMap[oldTag];
+  }
   closeModal('modal-edit-inbound');
-  loadInbounds();
+  await saveInbounds();
+  await loadInbounds();
 }
 
 async function saveInbounds(){
@@ -2135,11 +2196,106 @@ async function loadOutbounds(){
   renderOutbounds();
 }
 
+function outboundToForm(ob){
+  const p=ob.protocol||'vless';
+  document.getElementById('of-tag').value=ob.tag||'';
+  document.getElementById('of-protocol').value=p;
+  let address='', port='', ident='', sec='';
+  try{
+    if(p==='shadowsocks'){
+      const s=ob.settings.servers[0]; address=s.address||''; port=s.port||''; ident=s.password||''; sec=s.method||'';
+    }else if(p==='trojan'){
+      const s=ob.settings.servers[0]; address=s.address||''; port=s.port||''; ident=s.password||'';
+    }else{
+      const v=ob.settings.vnext[0]; const u=v.users[0]||{}; address=v.address||''; port=v.port||''; ident=u.id||''; sec=u.security||u.encryption||''; document.getElementById('of-flow').value=u.flow||'';
+    }
+  }catch(e){}
+  document.getElementById('of-address').value=address;
+  document.getElementById('of-port').value=port;
+  document.getElementById('of-id').value=ident;
+  document.getElementById('of-security').value=sec;
+  const ss=ob.streamSettings||{};
+  document.getElementById('of-network').value=ss.network||'tcp';
+  document.getElementById('of-tls-mode').value=ss.security||'none';
+  const tls=ss.tlsSettings||ss.realitySettings||{};
+  document.getElementById('of-sni').value=tls.serverName||'';
+  document.getElementById('of-fp').value=tls.fingerprint||'';
+  document.getElementById('of-alpn').value=Array.isArray(tls.alpn)?tls.alpn.join(','):'';
+  document.getElementById('of-insecure').value=(tls.allowInsecure?'true':'false');
+  document.getElementById('of-ech').value=tls.echConfigList||'';
+  const ws=ss.wsSettings||{};
+  document.getElementById('of-host').value=ws.host || (ws.headers&&ws.headers.Host) || '';
+  document.getElementById('of-path').value=ws.path||'';
+  const mux=ob.mux||{};
+  document.getElementById('of-mux').value=(mux.enabled?'on':'off');
+}
+
+function formToOutbound(){
+  const protocol=document.getElementById('of-protocol').value;
+  const tag=document.getElementById('of-tag').value.trim()||'new-node';
+  const address=document.getElementById('of-address').value.trim();
+  const port=parseInt(document.getElementById('of-port').value||'0');
+  const ident=document.getElementById('of-id').value.trim();
+  const sec=document.getElementById('of-security').value.trim();
+  const flow=document.getElementById('of-flow').value.trim();
+  const network=document.getElementById('of-network').value;
+  const tlsMode=document.getElementById('of-tls-mode').value;
+  const sni=document.getElementById('of-sni').value.trim();
+  const host=document.getElementById('of-host').value.trim();
+  const path=document.getElementById('of-path').value.trim()||'/';
+  const fp=document.getElementById('of-fp').value.trim();
+  const alpn=document.getElementById('of-alpn').value.trim();
+  const allowInsecure=document.getElementById('of-insecure').value==='true';
+  const ech=document.getElementById('of-ech').value.trim();
+  const muxOn=document.getElementById('of-mux').value==='on';
+  let ob={tag, protocol};
+  if(protocol==='shadowsocks'){
+    ob.settings={servers:[{address, port, method:sec||'aes-128-gcm', password:ident, ota:false, level:1}]};
+  }else if(protocol==='trojan'){
+    ob.settings={servers:[{address, port, password:ident}]};
+  }else if(protocol==='vmess'){
+    ob.settings={vnext:[{address, port, users:[{id:ident, alterId:0, security:sec||'auto'}]}]};
+  }else {
+    const user={id:ident, encryption:sec||'none'}; if(flow) user.flow=flow;
+    ob.settings={vnext:[{address, port, users:[user]}]};
+  }
+  ob.streamSettings={network, security:tlsMode};
+  if(tlsMode==='tls'){
+    ob.streamSettings.tlsSettings={serverName:sni||host||address, allowInsecure};
+    if(fp) ob.streamSettings.tlsSettings.fingerprint=fp;
+    if(alpn) ob.streamSettings.tlsSettings.alpn=alpn.split(',').map(s=>s.trim()).filter(Boolean);
+    if(ech){ ob.streamSettings.tlsSettings.echConfigList=ech; ob.streamSettings.tlsSettings.echForceQuery='full'; }
+  }else if(tlsMode==='reality'){
+    ob.streamSettings.realitySettings={serverName:sni||host||address};
+    if(fp) ob.streamSettings.realitySettings.fingerprint=fp;
+  }
+  if(network==='ws'){
+    ob.streamSettings.wsSettings={host, path, headers:{}};
+  }else if(network==='grpc'){
+    ob.streamSettings.grpcSettings={serviceName:path==='/'?'':path};
+  }else if(network==='xhttp'){
+    ob.streamSettings.xhttpSettings={path};
+  }
+  if(muxOn) ob.mux={enabled:true, concurrency:8};
+  else if(protocol==='shadowsocks') ob.mux={enabled:false, concurrency:-1};
+  return ob;
+}
+
+function saveFormOutbound(){
+  try{
+    const ob=formToOutbound();
+    document.getElementById('eo-json').value=JSON.stringify(ob,null,2);
+    switchObModalTab('json');
+    toast('已根据表单生成 JSON');
+  }catch(e){ toast('表单生成失败: '+e.message,false); }
+}
+
 function showAddOutboundModal(){
   editingOutboundIdx=-1;
   document.getElementById('modal-ob-title').textContent='新增节点';
   document.getElementById('vless-link').value='';
-  document.getElementById('eo-json').value=JSON.stringify({tag:'new-proxy',protocol:'vless',settings:{vnext:[{address:'example.com',port:443,users:[{id:'UUID',encryption:'none'}]}]},streamSettings:{network:'ws',security:'tls',tlsSettings:{serverName:'example.com',allowInsecure:false}}}, null, 2);
+  document.getElementById('eo-json').value=JSON.stringify({tag:'new-proxy',protocol:'vless',settings:{vnext:[{address:'example.com',port:443,users:[{id:'UUID',encryption:'none'}]}]},streamSettings:{network:'ws',security:'tls',tlsSettings:{serverName:'example.com',allowInsecure:false},wsSettings:{host:'example.com',path:'/'}}}, null, 2);
+  outboundToForm(JSON.parse(document.getElementById('eo-json').value));
   switchObModalTab('link');
   document.getElementById('modal-outbound').classList.add('show');
 }
@@ -2148,16 +2304,20 @@ function editOutbound(idx){
   editingOutboundIdx=idx;
   document.getElementById('modal-ob-title').textContent='编辑出站 JSON';
   document.getElementById('eo-json').value=JSON.stringify(outboundsData[idx], null, 2);
-  switchObModalTab('json');
+  outboundToForm(outboundsData[idx]);
+  switchObModalTab('form');
   document.getElementById('modal-outbound').classList.add('show');
 }
 
 function switchObModalTab(tab){
   const isLink=tab==='link';
+  const isForm=tab==='form';
   document.getElementById('mob-tab-link').className='tab'+(isLink?' active':'');
-  document.getElementById('mob-tab-json').className='tab'+(isLink?'':' active');
+  document.getElementById('mob-tab-form').className='tab'+(isForm?' active':'');
+  document.getElementById('mob-tab-json').className='tab'+((!isLink&&!isForm)?' active':'');
   document.getElementById('mob-pane-link').style.display=isLink?'block':'none';
-  document.getElementById('mob-pane-json').style.display=isLink?'none':'block';
+  document.getElementById('mob-pane-form').style.display=isForm?'block':'none';
+  document.getElementById('mob-pane-json').style.display=(!isLink&&!isForm)?'block':'none';
 }
 
 function saveEditOutbound(){
@@ -2166,6 +2326,7 @@ function saveEditOutbound(){
   if(editingOutboundIdx>=0) outboundsData[editingOutboundIdx]=ob; else outboundsData.push(ob);
   closeModal('modal-outbound');
   renderOutbounds();
+  saveOutbounds();
 }
 
 function deleteOutbound(idx){
@@ -2388,5 +2549,8 @@ if __name__ == "__main__":
         print(f"  Auth: enabled (token required)")
     else:
         print(f"  Auth: disabled (open access)")
+
+    # Cleanup stale transparent proxy iptables rules on startup
+    _tp_startup_cleanup()
 
     app.run(host=args.host, port=args.port, debug=False)
