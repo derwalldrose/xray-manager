@@ -112,7 +112,8 @@ install_xray() {
     if [[ -x "$XRAY_BIN" ]]; then
         local cur
         cur="$($XRAY_BIN version 2>/dev/null | head -1)"
-        if echo "$cur" | grep -q "$XRAY_VER"; then
+        local ver="${XRAY_VER#v}"  # strip 'v' prefix
+        if echo "$cur" | grep -q "$ver"; then
             info "Already installed: $cur"
             return 0
         fi
@@ -276,5 +277,10 @@ main() {
     print_summary
 }
 
+# Run (pipefail + tee causes SIGPIPE=141 on SSH disconnect)
 mkdir -p "${XRAY_MANAGER_HOME}" 2>/dev/null || true
+set +o pipefail
 main 2>&1 | tee "$DEPLOY_LOG"
+rc=${PIPESTATUS[0]}
+set -o pipefail
+exit $rc
