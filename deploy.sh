@@ -49,7 +49,7 @@ step()  { echo -e "\n${CYAN}========== $* ==========${NC}"; }
 gh_dl() {
     local url="$1" output="$2"
     info "CDN: ${CDN}/${url}"
-    if curl -fSL --connect-timeout 15 --max-time 600 "${CDN}/${url}" -o "$output" 2>/dev/null; then
+    if curl -fSL --connect-timeout 15 --max-time 1200 "${CDN}/${url}" -o "$output" 2>/dev/null; then
         return 0
     fi
     warn "CDN failed, trying direct..."
