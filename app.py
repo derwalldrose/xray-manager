@@ -446,32 +446,98 @@ def _tp_add_dokodemo_to_config(port):
     cfg, err = _parse_config()
     if err:
         return None, err
-    for ib in cfg.get("inbounds", []):
-        if ib.get("tag") == "transparent":
-            return cfg, None
-    dokodemo = {
-        "tag": "transparent", "listen": "127.0.0.1", "port": port,
-        "protocol": "dokodemo-door",
-        "settings": {"network": "tcp,udp", "followRedirect": True},
-        "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
-    }
-    cfg.setdefault("inbounds", []).append(dokodemo)
-    for ob in cfg.get("outbounds", []):
-        if ob.get("protocol") in ("freedom", "blackhole", "dns"):
+
+    # -- Inbound: transparent dokodemo-door --
+    has_tp = any(ib.get("tag") == "transparent" for ib in cfg.get("inbounds", []))
+    if not has_tp:
+        dokodemo = {
+            "tag": "transparent", "listen": "127.0.0.1", "port": port,
+            "protocol": "dokodemo-door",
+            "settings": {"network": "tcp,udp", "followRedirect": True},
+            "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"],
+                         "domainsExcluded": ["argotunnel.com"]},
+        }
+        cfg.setdefault("inbounds", []).append(dokodemo)
+
+    # -- Inbound: DNS (port 5354, 5353 used by avahi-daemon) --
+    has_dns_ib = any(ib.get("tag") == "dns" for ib in cfg.get("inbounds", []))
+    if not has_dns_ib:
+        dns_ib = {
+            "tag": "dns", "listen": "127.0.0.1", "port": 5354,
+            "protocol": "dokodemo-door",
+            "settings": {"address": "119.29.29.29", "port": 53, "network": "tcp,udp"},
+        }
+        cfg["inbounds"].append(dns_ib)
+
+    # -- Outbound: dns-out --
+    outbounds = cfg.get("outbounds", [])
+    has_dns_ob = any(ob.get("tag") == "dns-out" for ob in outbounds)
+    if not has_dns_ob:
+        dns_ob = {
+            "tag": "dns-out", "protocol": "dns",
+            "settings": {"port": 53, "address": "119.29.29.29", "network": "udp"},
+            "streamSettings": {"sockopt": {"mark": 128}},
+        }
+        outbounds.append(dns_ob)
+
+    # -- sockopt.mark: 128 on all proxy outbounds + direct --
+    for ob in outbounds:
+        tag = ob.get("tag", "")
+        proto = ob.get("protocol", "")
+        if proto in ("freedom", "blackhole", "dns"):
+            # direct/dns-out also need mark for anti-loop
+            if proto == "freedom" or proto == "dns":
+                ob.setdefault("streamSettings", {}).setdefault("sockopt", {})["mark"] = 128
+                if proto == "freedom":
+                    ob.setdefault("settings", {})["domainStrategy"] = "UseIP"
             continue
         ob.setdefault("streamSettings", {}).setdefault("sockopt", {})["mark"] = 128
+
+    # -- Routing rules --
+    rules = cfg.get("routing", {}).get("rules", [])
+
+    # Build geoip bypass rules (insert at top, highest priority)
+    geo_rules = []
+    has_geoip_cn = any("geoip:cn" in json.dumps(r) for r in rules)
+    has_geosite_cn = any("geosite:cn" in json.dumps(r) for r in rules)
+    has_geoip_private = any("geoip:private" in json.dumps(r) for r in rules)
+    has_udp_direct = any(r.get("network") == "udp" and r.get("outboundTag") == "direct" for r in rules)
+
+    if not has_geoip_cn:
+        geo_rules.append({"type": "field", "ip": ["geoip:cn"], "outboundTag": "direct"})
+    if not has_geosite_cn:
+        geo_rules.append({"type": "field", "domain": ["geosite:cn"], "outboundTag": "direct"})
+    if not has_geoip_private:
+        geo_rules.append({"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"})
+    if not has_udp_direct:
+        geo_rules.append({"type": "field", "network": "udp", "outboundTag": "direct"})
+
+    # DNS routing rules
+    dns_rules = []
+    has_dns_rule = any(r.get("inboundTag") == ["dns"] for r in rules)
+    if not has_dns_rule:
+        dns_rules.append({"type": "field", "inboundTag": ["dns"], "outboundTag": "direct"})
+
+    # Transparent proxy routing rule
     default_tag = None
-    for ob in cfg.get("outbounds", []):
+    for ob in outbounds:
         if ob.get("protocol") not in ("freedom", "blackhole", "dns"):
             default_tag = ob.get("tag")
             break
     if not default_tag:
         return None, "no proxy outbound found"
-    rules = cfg.get("routing", {}).get("rules", [])
-    has_rule = any(r.get("inboundTag") == ["transparent"] for r in rules)
-    if not has_rule:
+
+    has_tp_rule = any(r.get("inboundTag") == ["transparent"] for r in rules)
+    if not has_tp_rule:
         rules.insert(0, {"type": "field", "inboundTag": ["transparent"], "outboundTag": default_tag})
-    cfg.setdefault("routing", {})["rules"] = rules
+
+    # Insert geo + dns rules at the beginning
+    cfg["routing"]["rules"] = geo_rules + dns_rules + rules
+
+    # -- DNS config --
+    cfg.setdefault("dns", {})
+    cfg["dns"]["servers"] = ["119.29.29.29", "223.5.5.5"]
+
     return cfg, None
 
 
@@ -479,14 +545,40 @@ def _tp_remove_dokodemo_from_config():
     cfg, err = _parse_config()
     if err:
         return None, err
-    cfg["inbounds"] = [ib for ib in cfg.get("inbounds", []) if ib.get("tag") != "transparent"]
+    # Remove transparent + dns inbounds
+    cfg["inbounds"] = [ib for ib in cfg.get("inbounds", []) if ib.get("tag") not in ("transparent", "dns")]
+    # Remove dns-out outbound
+    cfg["outbounds"] = [ob for ob in cfg.get("outbounds", []) if ob.get("tag") != "dns-out"]
+    # Remove routing rules: transparent, dns, geoip, geosite, udp-direct
     rules = cfg.get("routing", {}).get("rules", [])
-    cfg["routing"]["rules"] = [r for r in rules if r.get("inboundTag") != ["transparent"]]
+    def _is_tp_added(r):
+        # Remove rules added by transparent proxy enable
+        if r.get("inboundTag") == ["transparent"]:
+            return True
+        if r.get("inboundTag") == ["dns"]:
+            return True
+        dump = json.dumps(r)
+        if "geoip:cn" in dump or "geosite:cn" in dump or "geoip:private" in dump:
+            return True
+        if r.get("network") == "udp" and r.get("outboundTag") == "direct":
+            return True
+        return False
+    cfg["routing"]["rules"] = [r for r in rules if not _is_tp_added(r)]
+    # Remove sockopt.mark and domainStrategy from outbounds
     for ob in cfg.get("outbounds", []):
         sockopt = ob.get("streamSettings", {}).get("sockopt", {})
         sockopt.pop("mark", None)
         if not sockopt and "sockopt" in ob.get("streamSettings", {}):
             ob["streamSettings"].pop("sockopt", None)
+        # Remove UseIP domainStrategy added for direct
+        if ob.get("protocol") == "freedom":
+            settings = ob.get("settings", {})
+            if settings.get("domainStrategy") == "UseIP":
+                settings.pop("domainStrategy", None)
+    # Remove dns config added by transparent proxy
+    dns = cfg.get("dns", {})
+    if dns.get("servers") == ["119.29.29.29", "223.5.5.5"]:
+        cfg.pop("dns", None)
     return cfg, None
 
 
