@@ -160,6 +160,23 @@ def _curl_via_socks(host, port, url, timeout=25):
         " -w " + shlex.quote("\n__HTTP_CODE__:%{http_code}\n__TIME_TOTAL__:%{time_total}\n") +
         " " + shlex.quote(url)
     )
+    return _curl_proxy_common(cmd, timeout)
+
+
+def _curl_via_http(host, port, url, timeout=25):
+    if host in ("0.0.0.0", "::", ""):
+        host = "127.0.0.1"
+    proxy = f"http://{host}:{int(port)}"
+    cmd = (
+        "curl -L -m " + shlex.quote(str(timeout)) +
+        " -sS --proxy " + shlex.quote(proxy) +
+        " -w " + shlex.quote("\n__HTTP_CODE__:%{http_code}\n__TIME_TOTAL__:%{time_total}\n") +
+        " " + shlex.quote(url)
+    )
+    return _curl_proxy_common(cmd, timeout)
+
+
+def _curl_proxy_common(cmd, timeout):
     started = time.time()
     out, err, rc = _run(cmd, timeout=timeout + 5)
     elapsed = time.time() - started
@@ -1581,8 +1598,14 @@ def api_inbounds_test():
     if not (url.startswith("http://") or url.startswith("https://")):
         return jsonify({"error": "test url must start with http:// or https://"}), 400
 
-    result = _curl_via_socks(str(listen), int(port), url)
+    # Auto-detect protocol
+    protocol = (inbound or {}).get("protocol", "socks").lower()
+    if protocol == "http":
+        result = _curl_via_http(str(listen), int(port), url)
+    else:
+        result = _curl_via_socks(str(listen), int(port), url)
     result["tag"] = tag or (inbound or {}).get("tag", "")
+    result["proxy"] = f"{protocol}://{listen}:{port}"
     return jsonify(result)
 
 

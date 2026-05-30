@@ -4,7 +4,6 @@
   },
   "inbounds": [
     {
-      "tag": "socks-us",
       "listen": "0.0.0.0",
       "port": 10810,
       "protocol": "socks",
@@ -13,16 +12,16 @@
         "udp": true
       },
       "sniffing": {
-        "enabled": true,
         "destOverride": [
           "http",
           "tls",
           "quic"
-        ]
-      }
+        ],
+        "enabled": true
+      },
+      "tag": "socks-us"
     },
     {
-      "tag": "socks-kr",
       "listen": "0.0.0.0",
       "port": 10811,
       "protocol": "socks",
@@ -31,16 +30,16 @@
         "udp": true
       },
       "sniffing": {
-        "enabled": true,
         "destOverride": [
           "http",
           "tls",
           "quic"
-        ]
-      }
+        ],
+        "enabled": true
+      },
+      "tag": "socks-kr"
     },
     {
-      "tag": "socks-jp",
       "listen": "0.0.0.0",
       "port": 10812,
       "protocol": "socks",
@@ -49,16 +48,16 @@
         "udp": true
       },
       "sniffing": {
-        "enabled": true,
         "destOverride": [
           "http",
           "tls",
           "quic"
-        ]
-      }
+        ],
+        "enabled": true
+      },
+      "tag": "socks-jp"
     },
     {
-      "tag": "socks-hk",
       "listen": "0.0.0.0",
       "port": 10813,
       "protocol": "socks",
@@ -67,25 +66,24 @@
         "udp": true
       },
       "sniffing": {
-        "enabled": true,
         "destOverride": [
           "http",
           "tls",
           "quic"
-        ]
-      }
+        ],
+        "enabled": true
+      },
+      "tag": "socks-hk"
     },
     {
-      "tag": "transparent",
       "listen": "0.0.0.0",
       "port": 12345,
       "protocol": "dokodemo-door",
       "settings": {
-        "network": "tcp,udp",
-        "followRedirect": true
+        "followRedirect": true,
+        "network": "tcp,udp"
       },
       "sniffing": {
-        "enabled": true,
         "destOverride": [
           "http",
           "tls",
@@ -93,19 +91,39 @@
         ],
         "domainsExcluded": [
           "argotunnel.com"
-        ]
-      }
+        ],
+        "enabled": true
+      },
+      "tag": "transparent"
     },
     {
-      "tag": "dns",
       "listen": "0.0.0.0",
       "port": 53,
       "protocol": "dokodemo-door",
       "settings": {
         "address": "119.29.29.29",
-        "port": 53,
-        "network": "tcp,udp"
-      }
+        "network": "tcp,udp",
+        "port": 53
+      },
+      "tag": "dns"
+    },
+    {
+      "listen": "0.0.0.0",
+      "port": 10818,
+      "protocol": "socks",
+      "settings": {
+        "udp": true,
+        "auth": "noauth"
+      },
+      "sniffing": {
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "enabled": true
+      },
+      "tag": "http"
     }
   ],
   "outbounds": [
@@ -141,6 +159,9 @@
           "host": "s1.270376.xyz",
           "path": "/socks5://admin:Root2023!@170.9.59.244:38443",
           "headers": {}
+        },
+        "sockopt": {
+          "mark": 128
         }
       }
     },
@@ -394,33 +415,26 @@
     }
   ],
   "routing": {
+    "balancers": [
+      {
+        "selector": [
+          "ss-notls1",
+          "ss-notls2"
+        ],
+        "strategy": {
+          "type": "roundRobin"
+        },
+        "tag": "proxy-balancer"
+      }
+    ],
     "domainStrategy": "IPIfNonMatch",
     "rules": [
       {
         "type": "field",
-        "ip": [
-          "geoip:cn"
+        "inboundTag": [
+          "http"
         ],
-        "outboundTag": "direct"
-      },
-      {
-        "type": "field",
-        "domain": [
-          "geosite:cn"
-        ],
-        "outboundTag": "direct"
-      },
-      {
-        "type": "field",
-        "ip": [
-          "geoip:private"
-        ],
-        "outboundTag": "direct"
-      },
-      {
-        "type": "field",
-        "network": "udp",
-        "outboundTag": "direct"
+        "balancerTag": "proxy-balancer"
       },
       {
         "type": "field",
@@ -439,9 +453,9 @@
       {
         "type": "field",
         "inboundTag": [
-          "socks-us"
+          "socks-jp"
         ],
-        "outboundTag": "proxy-us"
+        "outboundTag": "proxy-jp"
       },
       {
         "type": "field",
@@ -453,21 +467,35 @@
       {
         "type": "field",
         "inboundTag": [
-          "socks-jp"
+          "socks-us"
         ],
-        "outboundTag": "proxy-jp"
-      }
-    ],
-    "balancers": [
+        "outboundTag": "proxy-us"
+      },
       {
-        "tag": "proxy-balancer",
-        "selector": [
-          "ss-notls1",
-          "ss-notls2"
+        "ip": [
+          "geoip:cn"
         ],
-        "strategy": {
-          "type": "roundRobin"
-        }
+        "outboundTag": "direct",
+        "type": "field"
+      },
+      {
+        "domain": [
+          "geosite:cn"
+        ],
+        "outboundTag": "direct",
+        "type": "field"
+      },
+      {
+        "ip": [
+          "geoip:private"
+        ],
+        "outboundTag": "direct",
+        "type": "field"
+      },
+      {
+        "network": "udp",
+        "outboundTag": "direct",
+        "type": "field"
       }
     ]
   },
