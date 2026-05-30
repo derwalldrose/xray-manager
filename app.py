@@ -32,6 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
 import base64 as _b64
+import urllib.request
 
 from flask import Flask, jsonify, request, Response
 
@@ -62,6 +63,9 @@ CHAIN_PREFIX = "XRAY_MGR"
 CUSTOM_BYPASS_FILE = f"{BASE_DIR}/state/transparent-bypass.json"
 BALANCER_CONFIG_FILE = f"{BASE_DIR}/state/balancer-config.json"
 TOKEN_FILE = f"{BASE_DIR}/state/token"
+GEOIP_PATH = f"{BASE_DIR}/data/geoip.dat"
+GEOSITE_PATH = f"{BASE_DIR}/data/geosite.dat"
+GEO_CDN_PREFIX = "https://hub.543083.xyz/"
 
 app = Flask(__name__)
 
@@ -664,7 +668,22 @@ def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
 
     # -- DNS config --
     cfg.setdefault("dns", {})
-    cfg["dns"]["servers"] = ["119.29.29.29", "223.5.5.5", "https://dns.alidns.com/dns-query", "https://doh.pub/dns-query", "https://cloudflare-dns.com/dns-query"]
+    default_servers = [
+        "119.29.29.29",
+        "223.5.5.5",
+        "https://dns.alidns.com/dns-query",
+        "https://doh.pub/dns-query",
+        "https://cloudflare-dns.com/dns-query",
+    ]
+    default_hosts = {
+        "domain:googleapis.cn": "googleapis.com",
+        "geosite:category-ads-all": "127.0.0.1",
+        "domain:evil.com": "127.0.0.1",
+    }
+    if not cfg["dns"].get("servers"):
+        cfg["dns"]["servers"] = default_servers
+    if not cfg["dns"].get("hosts"):
+        cfg["dns"]["hosts"] = default_hosts
 
     return cfg, None
 
@@ -707,7 +726,19 @@ def _tp_remove_dokodemo_from_config():
                 settings.pop("domainStrategy", None)
     # Remove dns config added by transparent proxy
     dns = cfg.get("dns", {})
-    if dns.get("servers") == ["119.29.29.29", "223.5.5.5", "https://dns.alidns.com/dns-query", "https://doh.pub/dns-query", "https://cloudflare-dns.com/dns-query"]:
+    default_servers = [
+        "119.29.29.29",
+        "223.5.5.5",
+        "https://dns.alidns.com/dns-query",
+        "https://doh.pub/dns-query",
+        "https://cloudflare-dns.com/dns-query",
+    ]
+    default_hosts = {
+        "domain:googleapis.cn": "googleapis.com",
+        "geosite:category-ads-all": "127.0.0.1",
+        "domain:evil.com": "127.0.0.1",
+    }
+    if dns.get("servers") == default_servers and (not dns.get("hosts") or dns.get("hosts") == default_hosts):
         cfg.pop("dns", None)
     return cfg, None
 
@@ -1186,6 +1217,117 @@ def api_dns_post():
         return jsonify({"error": "config test failed, rolled back", "detail": test["output"]}), 400
     restart = _restart_xray() if test["ok"] else {}
     return jsonify({"ok": True, "backup": backup, "test": test, "restart": restart})
+
+
+@app.route("/api/dns/hosts")
+def api_dns_hosts_get():
+    cfg, err = _parse_config()
+    if err:
+        return jsonify({"error": err}), 500
+    hosts = cfg.get("dns", {}).get("hosts", {})
+    # Convert to simple format: "domain IP" lines
+    lines = []
+    for domain, ip in hosts.items():
+        if isinstance(ip, list):
+            for i in ip:
+                lines.append(f"{domain} {i}")
+        else:
+            lines.append(f"{domain} {ip}")
+    return jsonify({"hosts": hosts, "text": "\n".join(lines)})
+
+
+@app.route("/api/dns/hosts", methods=["POST"])
+def api_dns_hosts_post():
+    data = request.json or {}
+    text = data.get("text", "").strip()
+    hosts = {}
+    if text:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                domain, ip = parts[0], parts[1]
+                if domain in hosts:
+                    existing = hosts[domain]
+                    if isinstance(existing, list):
+                        existing.append(ip)
+                    else:
+                        hosts[domain] = [existing, ip]
+                else:
+                    hosts[domain] = ip
+    cfg, err = _parse_config()
+    if err:
+        return jsonify({"error": err}), 500
+    cfg.setdefault("dns", {})
+    cfg["dns"]["hosts"] = hosts
+    backup, test = _save_config_object(cfg)
+    if not test["ok"]:
+        return jsonify({"error": "config test failed, rolled back", "detail": test["output"]}), 400
+    restart = _restart_xray() if test["ok"] else {}
+    return jsonify({"ok": True, "hosts": hosts, "backup": backup, "test": test, "restart": restart})
+
+
+@app.route("/api/geo/update", methods=["POST"])
+def api_geo_update():
+    """Download latest geoip.dat and geosite.dat from Loyalsoldier via CDN."""
+    _init_dirs()
+    results = {}
+    geo_files = [
+        {"name": "geoip.dat", "url": f"{GEO_CDN_PREFIX}https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat", "path": GEOIP_PATH},
+        {"name": "geosite.dat", "url": f"{GEO_CDN_PREFIX}https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat", "path": GEOSITE_PATH},
+    ]
+    for gf in geo_files:
+        try:
+            tmp_path = gf["path"] + ".tmp"
+            urllib.request.urlretrieve(gf["url"], tmp_path)
+            # Verify it's a valid file (not empty)
+            if os.path.getsize(tmp_path) < 100:
+                os.remove(tmp_path)
+                results[gf["name"]] = {"ok": False, "error": "downloaded file too small, CDN may be down"}
+                continue
+            os.replace(tmp_path, gf["path"])
+            # Symlink to bin/
+            link_path = f"{BASE_DIR}/bin/{gf['name']}"
+            if os.path.islink(link_path) or os.path.exists(link_path):
+                os.remove(link_path)
+            os.symlink(gf["path"], link_path)
+            stat = os.stat(gf["path"])
+            results[gf["name"]] = {
+                "ok": True,
+                "size": stat.st_size,
+                "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        except Exception as e:
+            results[gf["name"]] = {"ok": False, "error": str(e)}
+    return jsonify({"ok": all(r.get("ok") for r in results.values()), "results": results})
+
+
+@app.route("/api/geo/info")
+def api_geo_info():
+    """Return current geoip/geosite file info."""
+    info = {}
+    for name, path in [("geoip.dat", GEOIP_PATH), ("geosite.dat", GEOSITE_PATH)]:
+        if os.path.exists(path):
+            stat = os.stat(path)
+            info[name] = {
+                "exists": True,
+                "size": stat.st_size,
+                "size_human": _human_size(stat.st_size),
+                "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        else:
+            info[name] = {"exists": False, "size": 0, "size_human": "N/A", "modified": "N/A"}
+    return jsonify(info)
+
+
+def _human_size(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
 
 
 @app.route("/api/config")
@@ -2048,6 +2190,21 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
       <div class="edit-row"><label>确认新 Token</label><input id="token-confirm" type="password" placeholder="再次输入新 Token"></div>
       <div class="btn-group"><button class="btn primary" onclick="changeToken()">修改 Token</button></div>
     </div>
+    <div class="card" style="margin-top:16px">
+      <h2>GeoIP / GeoSite</h2>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">更新 geoip.dat 和 geosite.dat 数据文件（来源：Loyalsoldier v2ray-rules-dat）。</p>
+      <div class="grid" style="margin-bottom:12px">
+        <div class="stat"><div class="label">geoip.dat</div><div class="value" id="geo-ip-size">-</div></div>
+        <div class="stat"><div class="label">geosite.dat</div><div class="value" id="geo-site-size">-</div></div>
+      </div>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:12px">
+        <span id="geo-ip-modified">-</span> &nbsp;|&nbsp; <span id="geo-site-modified">-</span>
+      </div>
+      <div class="btn-group">
+        <button class="btn primary" id="geo-update-btn" onclick="updateGeo()">更新 GeoIP/GeoSite</button>
+      </div>
+      <div id="geo-update-status" style="margin-top:8px;font-size:13px;color:var(--text2)"></div>
+    </div>
   </div>
 
   <!-- DNS -->
@@ -2056,9 +2213,14 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
       <h2>DNS 配置</h2>
       <p style="color:var(--text2);font-size:12px;margin-bottom:12px">编辑 Xray 的 <code>dns</code> 配置。常见 DoH：<code>https://dns.alidns.com/dns-query</code>、<code>https://doh.pub/dns-query</code>、<code>https://cloudflare-dns.com/dns-query</code>、<code>https://dns.google/dns-query</code></p>
       <div class="edit-row"><label>服务器（每行一个）</label><textarea id="dns-servers" style="min-height:140px"></textarea></div>
-      <div class="edit-row"><label>hosts(JSON)</label><textarea id="dns-hosts" style="min-height:120px" placeholder='{"example.com":"1.1.1.1"}'></textarea></div>
       <div class="edit-row"><label>clientIp</label><input id="dns-client-ip" placeholder="可选，如 1.1.1.1"></div>
       <div class="btn-group"><button class="btn primary" onclick="saveDns()">保存 DNS</button></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>DNS Hosts</h2>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">自定义域名解析，类似 /etc/hosts。每行一条：<code>域名 IP</code>。支持 <code>#</code> 注释。可选前缀：<code>domain:</code>、<code>geosite:</code>、<code>full:</code></p>
+      <textarea id="dns-hosts-editor" style="width:100%;min-height:180px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:8px;font-family:monospace;font-size:12px;resize:vertical" placeholder="googleapis.cn 203.208.41.96&#10;domain:google.com 8.8.8.8&#10;full:ads.example.com 127.0.0.1&#10;# 这是注释"></textarea>
+      <div class="btn-group" style="margin-top:8px"><button class="btn primary" onclick="saveDnsHosts()">保存 Hosts</button></div>
     </div>
   </div>
 
@@ -2353,8 +2515,8 @@ function switchTab(name){
   if(name==='inbounds'){loadInbounds();loadTestUrls();}
   if(name==='outbounds'){loadOutbounds();loadObTestUrls();}
   if(name==='routing')loadRouting();
-  if(name==='config')loadConfig();
-  if(name==='dns')loadDns();
+  if(name==='config'){loadConfig();loadGeoInfo();}
+  if(name==='dns'){loadDns();loadDnsHosts();}
   if(name==='logs')loadLogs(200);
   if(name==='transparent')loadTransparent();
   if(name==='backups')loadBackups();
@@ -3069,6 +3231,54 @@ async function saveDns(){
   if(cip) dns.clientIp=cip;
   const d=await api('/api/dns',{method:'POST',body:JSON.stringify({dns})});
   if(d&&d.ok) toast('DNS 已保存'+(d.restart&&d.restart.success?'，Xray 已重启':''));
+}
+
+async function loadDnsHosts(){
+  const d=await api('/api/dns/hosts');
+  if(!d)return;
+  document.getElementById('dns-hosts-editor').value=d.text||'';
+}
+
+async function saveDnsHosts(){
+  const text=document.getElementById('dns-hosts-editor').value;
+  const d=await api('/api/dns/hosts',{method:'POST',body:JSON.stringify({text})});
+  if(d&&d.ok) toast('Hosts 已保存'+(d.restart&&d.restart.success?'，Xray 已重启':''));
+  else if(d&&d.error) toast(d.error,false);
+}
+
+async function loadGeoInfo(){
+  const d=await api('/api/geo/info');
+  if(!d)return;
+  document.getElementById('geo-ip-size').textContent=d['geoip.dat']?d['geoip.dat'].size_human:'N/A';
+  document.getElementById('geo-site-size').textContent=d['geosite.dat']?d['geosite.dat'].size_human:'N/A';
+  document.getElementById('geo-ip-modified').textContent='geoip: '+(d['geoip.dat']?d['geoip.dat'].modified:'N/A');
+  document.getElementById('geo-site-modified').textContent='geosite: '+(d['geosite.dat']?d['geosite.dat'].modified:'N/A');
+}
+
+async function updateGeo(){
+  const btn=document.getElementById('geo-update-btn');
+  const status=document.getElementById('geo-update-status');
+  btn.disabled=true;btn.textContent='更新中...';status.textContent='正在下载，请稍候...';
+  try{
+    const d=await api('/api/geo/update',{method:'POST'});
+    if(d&&d.ok){
+      status.innerHTML='<span style="color:var(--green)">✓ 更新成功</span>';
+      if(d.results){
+        for(const[k,v]of Object.entries(d.results)){
+          status.innerHTML+=`<br>${k}: ${v.ok?v.size_human||'OK':'失败 - '+v.error}`;
+        }
+      }
+      loadGeoInfo();
+    }else{
+      status.innerHTML='<span style="color:var(--red)">✗ 更新失败</span>';
+      if(d&&d.results){
+        for(const[k,v]of Object.entries(d.results)){
+          if(!v.ok)status.innerHTML+=`<br>${k}: ${v.error}`;
+        }
+      }
+    }
+  }catch(e){status.innerHTML='<span style="color:var(--red)">✗ 请求异常: '+e.message+'</span>';}
+  finally{btn.disabled=false;btn.textContent='更新 GeoIP/GeoSite';}
 }
 
 async function loadConfig(){
