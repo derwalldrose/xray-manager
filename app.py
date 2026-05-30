@@ -1436,6 +1436,20 @@ def api_status():
     info["xray_version"] = _xray_version()
     info["config_path"] = XRAY_CFG
     info["binary_path"] = XRAY_BIN
+    # Connect-mode state
+    conn = _connect_state_read()
+    info["connect_mode"] = {
+        "active": conn.get("active", False),
+        "selected_tags": conn.get("selected_tags", []),
+        "strategy": conn.get("balancer_strategy", "roundRobin"),
+        "transparent": conn.get("transparent_enabled", False),
+    }
+    # Transparent proxy actual state
+    info["transparent"] = {
+        "enabled": _tp_state_read().get("enabled", False),
+        "has_iptables": _tp_has_iptables_rules(),
+        "has_dokodemo": _tp_has_dokodemo_inbound(),
+    }
     return jsonify(info)
 
 
@@ -2081,6 +2095,18 @@ def api_balancer_set():
 def api_connect_status():
     """Return current connect-mode state + node list."""
     state = _connect_state_read()
+    xray_running = _service_status().get("running", False)
+
+    # Auto-correct: if state says active but xray is not running, mark inactive
+    if state.get("active") and not xray_running:
+        state["active"] = False
+        state["was_active_but_stopped"] = True
+        _connect_state_write(state)
+
+    # Also check transparent proxy actual state
+    tp_has_rules = _tp_has_iptables_rules()
+    state["transparent_actual"] = tp_has_rules
+
     cfg, err = _parse_config()
     nodes = []
     if not err:
@@ -2091,7 +2117,7 @@ def api_connect_status():
             info["selected"] = info["tag"] in state.get("selected_tags", [])
             nodes.append(info)
     state["nodes"] = nodes
-    state["xray_running"] = _service_status().get("running", False)
+    state["xray_running"] = xray_running
     return jsonify(state)
 
 
@@ -3229,11 +3255,29 @@ async function loadStatus(){
   document.getElementById('version').textContent=d.xray_version||'-';
   const dot=document.getElementById('status-dot');
   dot.className='dot '+(d.running?'on':'off');
+
+  // Connect-mode summary
+  const cm=d.connect_mode||{};
+  const tp=d.transparent||{};
+  const stratMap={roundRobin:'轮询',leastPing:'最低延迟',random:'随机'};
+  let connStr='<span style="color:var(--text2)">未启用</span>';
+  if(cm.active){
+    const n=cm.selected_tags?cm.selected_tags.length:0;
+    const s=cm.strategy?stratMap[cm.strategy]||cm.strategy:'';
+    const t=cm.transparent?' · 透明代理':'';
+    connStr='<span style="color:var(--green)">'+n+'节点 · '+s+t+'</span>';
+  }
+  let tpStr='<span style="color:var(--text2)">关闭</span>';
+  if(tp.has_iptables||tp.has_dokodemo)tpStr='<span style="color:var(--green)">运行中</span>';
+  else if(tp.enabled)tpStr='<span style="color:var(--yellow)">状态异常</span>';
+
   document.getElementById('status-grid').innerHTML=`
     <div class="stat"><div class="label">状态</div><div class="value"><span class="status-pill ${d.running?'active':'inactive'}">${d.running?'运行中':'已停止'}</span></div></div>
     <div class="stat"><div class="label">PID</div><div class="value">${d.pid||'-'}</div></div>
     <div class="stat"><div class="label">内存</div><div class="value">${d.memory||'-'}</div></div>
     <div class="stat"><div class="label">启动时间</div><div class="value" style="font-size:12px">${d.started_at||'-'}</div></div>
+    <div class="stat"><div class="label">连接模式</div><div class="value" style="font-size:12px">${connStr}</div></div>
+    <div class="stat"><div class="label">透明代理</div><div class="value" style="font-size:12px">${tpStr}</div></div>
     <div class="stat"><div class="label">配置文件</div><div class="value" style="font-size:11px">${d.config_path||'-'}</div></div>
     <div class="stat"><div class="label">二进制</div><div class="value" style="font-size:11px">${d.binary_path||'-'}</div></div>
   `;
@@ -4339,10 +4383,10 @@ function updateSelectedCount(){
 }
 
 function updateConnStatus(state){
-  const on=state.active;
   const ind=document.getElementById('conn-indicator');
   const txt=document.getElementById('conn-status-text');
   const ep=document.getElementById('conn-endpoints');
+  const on=state.active&&state.xray_running;
   ind.className='indicator '+(on?'on':'off');
   if(on){
     const tags=state.selected_tags||[];
@@ -4355,6 +4399,9 @@ function updateConnStatus(state){
     eps.push('HTTP → 0.0.0.0:'+(state.inbound_http_port||10818));
     if(state.transparent_enabled)eps.push('透明 → 0.0.0.0:'+(state.transparent_port||12345));
     ep.textContent=eps.join('  |  ');
+  }else if(state.was_active_but_stopped){
+    txt.innerHTML='<span style="color:var(--yellow);font-weight:600">已断开</span> (Xray 未运行，需重新连接)';
+    ep.textContent='';
   }else{
     txt.textContent='未连接';
     ep.textContent='';
