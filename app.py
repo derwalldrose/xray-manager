@@ -161,7 +161,7 @@ def _curl_via_socks(host, port, url, timeout=25):
         " -w " + shlex.quote("\n__HTTP_CODE__:%{http_code}\n__TIME_TOTAL__:%{time_total}\n") +
         " " + shlex.quote(url)
     )
-    return _curl_proxy_common(cmd, timeout)
+    return _curl_proxy_common(cmd, timeout, proxy, url)
 
 
 def _curl_via_http(host, port, url, timeout=25):
@@ -174,10 +174,10 @@ def _curl_via_http(host, port, url, timeout=25):
         " -w " + shlex.quote("\n__HTTP_CODE__:%{http_code}\n__TIME_TOTAL__:%{time_total}\n") +
         " " + shlex.quote(url)
     )
-    return _curl_proxy_common(cmd, timeout)
+    return _curl_proxy_common(cmd, timeout, proxy, url)
 
 
-def _curl_proxy_common(cmd, timeout):
+def _curl_proxy_common(cmd, timeout, proxy="", url=""):
     started = time.time()
     out, err, rc = _run(cmd, timeout=timeout + 5)
     elapsed = time.time() - started
@@ -2372,7 +2372,7 @@ def api_logs():
     # Try journalctl first (systemd)
     if _has_systemd():
         out, _, _ = _run(f"journalctl -u {SVC_NAME} --no-pager -n {lines} 2>&1")
-        if out.strip() and "No journal files" not in out:
+        if out.strip() and "No journal files" not in out and "-- No entries --" not in out:
             return jsonify({"logs": out})
 
     # Fallback: read log files (works in Docker and systemd with file logging)
