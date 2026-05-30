@@ -4146,9 +4146,9 @@ function routingRenderRules(){
       <td style="font-size:11px;font-family:monospace;max-width:400px;word-break:break-all">${condVal}</td>
       <td><span class="${obColor}">${ob}</span></td>
       <td>
-        <button class="btn" onclick="routingMoveUp(${i})" ${i===0?'disabled':''}>上移</button>
-        <button class="btn" onclick="routingMoveDown(${i})" ${i>=rules.length-1?'disabled':''}>下移</button>
-        <button class="btn danger" onclick="routingDeleteRule(${i})">删除</button>
+        <button class="btn" onclick="routingMoveUp(${i})" ${i===0?'disabled':''} style="padding:3px 8px;font-size:11px">上移</button>
+        <button class="btn" onclick="routingMoveDown(${i})" ${i>=rules.length-1?'disabled':''} style="padding:3px 8px;font-size:11px">下移</button>
+        <button class="btn danger" onclick="routingDeleteRule(${i})" style="padding:3px 8px;font-size:11px">删除</button>
       </td>
     </tr>`;
   }).join('');
