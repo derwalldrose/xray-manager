@@ -2064,6 +2064,7 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
     Xray Manager
   </h1>
   <div style="display:flex;align-items:center;gap:10px">
+    <span id="header-stats" style="font-size:11px;color:var(--text2);font-family:monospace">↓ - ↑ -</span>
     <span class="version" id="version">-</span>
     <button onclick="doLogout()" style="padding:4px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text2);font-size:12px;cursor:pointer">退出</button>
   </div>
@@ -2574,15 +2575,23 @@ let statsTimer=null;
 async function loadStats(){
   const d=await api('/api/stats');
   if(!d)return;
-  document.getElementById('stat-rx').textContent=fmtSpeed(d.total_rx_speed);
-  document.getElementById('stat-tx').textContent=fmtSpeed(d.total_tx_speed);
-  const ifaces=Object.entries(d.interfaces||{}).map(([name,info])=>
-    '<div style=\"display:flex;justify-content:space-between;padding:2px 0\">'+
-    '<span>'+name+'</span>'+
-    '<span>↓'+fmtBytes(info.rx_bytes)+' ↑'+fmtBytes(info.tx_bytes)+'</span>'+
-    '</div>'
-  ).join('');
-  document.getElementById('stats-interfaces').innerHTML=ifaces;
+  const rx=fmtSpeed(d.total_rx_speed);
+  const tx=fmtSpeed(d.total_tx_speed);
+  // Update header
+  const hdr=document.getElementById('header-stats');
+  if(hdr)hdr.textContent='↓ '+rx+' ↑ '+tx;
+  // Update status tab detail
+  const rxEl=document.getElementById('stat-rx');
+  const txEl=document.getElementById('stat-tx');
+  if(rxEl)rxEl.textContent=rx;
+  if(txEl)txEl.textContent=tx;
+  const ifEl=document.getElementById('stats-interfaces');
+  if(ifEl){
+    ifEl.innerHTML=Object.entries(d.interfaces||{}).map(function(e){
+      var name=e[0], info=e[1];
+      return '<div style="display:flex;justify-content:space-between;padding:2px 0"><span>'+name+'</span><span>↓'+fmtBytes(info.rx_bytes)+' ↑'+fmtBytes(info.tx_bytes)+'</span></div>';
+    }).join('');
+  }
 }
 function startStatsPolling(){
   if(statsTimer)return;
@@ -2590,7 +2599,8 @@ function startStatsPolling(){
   statsTimer=setInterval(loadStats,2000);
 }
 function stopStatsPolling(){
-  if(statsTimer){clearInterval(statsTimer);statsTimer=null;}
+  // Never stop — always show in header
+  // if(statsTimer){clearInterval(statsTimer);statsTimer=null;}
 }
 
 async function svcAction(action){
@@ -3348,6 +3358,7 @@ function closeModal(id){document.getElementById(id).classList.remove('show')}
 
 // init
 loadStatus();
+startStatsPolling();
 
 // Transparent proxy
 async function loadBypass(){
