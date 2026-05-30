@@ -490,21 +490,35 @@ def _tp_has_dokodemo_inbound():
 
 
 def _tp_startup_cleanup():
-    """On startup: if iptables rules exist but config has no transparent inbound,
-    clean up stale rules to prevent them from intercepting xray's own traffic.
-    Also restore DNS if hijacked but transparent proxy is off."""
-    if _tp_has_iptables_rules() and not _tp_has_dokodemo_inbound():
+    """On startup: restore iptables if state says enabled, clean up stale rules otherwise."""
+    state = _tp_state_read()
+    has_dokodemo = _tp_has_dokodemo_inbound()
+    has_iptables = _tp_has_iptables_rules()
+
+    # Case 1: State says enabled + config has dokodemo → restore iptables if missing
+    if state.get("enabled") and has_dokodemo:
+        if not has_iptables:
+            port = state.get("port", DEFAULT_TRANSPARENT_PORT)
+            print(f"[transparent-proxy] Restoring iptables rules (port {port})...")
+            _iptables_setup_redirect(port)
+            _dns_hijack_apply()
+            print("[transparent-proxy] iptables + DNS restored")
+        else:
+            print("[transparent-proxy] Active — iptables rules and dokodemo inbound present")
+
+    # Case 2: iptables exist but no dokodemo → stale, clean up
+    elif has_iptables and not has_dokodemo:
         print("[transparent-proxy] Stale iptables rules detected without dokodemo inbound — cleaning up")
         _iptables_cleanup()
         _tp_state_write({"enabled": False})
         print("[transparent-proxy] Stale rules cleaned up")
-    elif _tp_has_iptables_rules() and _tp_has_dokodemo_inbound():
-        print("[transparent-proxy] Active — iptables rules and dokodemo inbound present")
-    state = _tp_state_read()
-    if state.get("enabled") and not _tp_has_dokodemo_inbound():
+
+    # Case 3: State says enabled but no dokodemo → inconsistent, fix state
+    elif state.get("enabled") and not has_dokodemo:
         _tp_state_write({"enabled": False})
-    # Restore stale DNS hijack
-    if _dns_hijack_is_active() and not _tp_has_dokodemo_inbound():
+
+    # Restore stale DNS hijack if transparent proxy is off
+    if _dns_hijack_is_active() and not has_dokodemo:
         if _dns_hijack_restore():
             print("[transparent-proxy] Stale DNS hijack restored")
 
@@ -1499,6 +1513,14 @@ def api_outbounds_post():
     if err:
         return jsonify({"error": err}), 500
     cfg["outbounds"] = data["outbounds"]
+    # If transparent proxy is enabled, ensure all outbounds have mark:128
+    state = _tp_state_read()
+    if state.get("enabled"):
+        for ob in cfg["outbounds"]:
+            ss = ob.setdefault("streamSettings", {})
+            so = ss.setdefault("sockopt", {})
+            if "mark" not in so:
+                so["mark"] = 128
     backup, test = _save_config_object(cfg)
     if not test["ok"]:
         return jsonify({"error": "config test failed, rolled back", "detail": test["output"]}), 400

@@ -258,7 +258,12 @@
     },
     {
       "protocol": "blackhole",
-      "tag": "block"
+      "tag": "block",
+      "streamSettings": {
+        "sockopt": {
+          "mark": 128
+        }
+      }
     },
     {
       "protocol": "vless",
