@@ -62,6 +62,7 @@ RESOLV_BACKUP_FILE = f"{BASE_DIR}/backup/resolv.conf.bak"
 CHAIN_PREFIX = "XRAY_MGR"
 CUSTOM_BYPASS_FILE = f"{BASE_DIR}/state/transparent-bypass.json"
 BALANCER_CONFIG_FILE = f"{BASE_DIR}/state/balancer-config.json"
+CONNECT_STATE_FILE = f"{BASE_DIR}/state/connect-mode.json"
 TOKEN_FILE = f"{BASE_DIR}/state/token"
 GEOIP_PATH = f"{BASE_DIR}/data/geoip.dat"
 GEOSITE_PATH = f"{BASE_DIR}/data/geosite.dat"
@@ -357,6 +358,183 @@ def _balancer_write(cfg):
         json.dump(cfg, f, indent=2)
 
 
+def _connect_state_read():
+    """Load connect-mode state from file."""
+    try:
+        with open(CONNECT_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {"active": False, "selected_tags": [], "balancer_strategy": "roundRobin", "transparent_enabled": False}
+
+
+def _connect_state_write(state):
+    """Save connect-mode state to file."""
+    Path(CONNECT_STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
+    with open(CONNECT_STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2, ensure_ascii=False)
+
+
+def _extract_node_info(ob):
+    """Extract display info from an outbound."""
+    tag = ob.get("tag", "")
+    protocol = ob.get("protocol", "")
+    address = ""
+    port = ""
+    network = ""
+    try:
+        v = ob.get("settings", {}).get("vnext", [{}])[0]
+        s = ob.get("settings", {}).get("servers", [{}])[0]
+        src = v or s
+        if src:
+            address = str(src.get("address", ""))
+            port = src.get("port", "")
+        network = (ob.get("streamSettings") or {}).get("network", "tcp")
+    except Exception:
+        pass
+    return {"tag": tag, "protocol": protocol, "address": address, "port": port, "network": network}
+
+
+def _build_connect_config(selected_tags, strategy, transparent, ports):
+    """Build complete xray config based on user's node selection.
+    Only modifies inbounds + routing, preserves all outbounds.
+    """
+    cfg, err = _parse_config()
+    if err:
+        return None, err
+
+    # --- Inbounds ---
+    # Connect mode takes full control: remove ALL existing inbounds
+    # (they'll be restored on stop)
+    cfg["inbounds"] = []
+
+    socks_port = ports.get("socks", 10810)
+    http_port = ports.get("http", 10818)
+    tp_port = ports.get("transparent", 12345)
+
+    # SOCKS5 inbound
+    cfg["inbounds"].append({
+        "tag": "socks-in",
+        "listen": "0.0.0.0",
+        "port": socks_port,
+        "protocol": "socks",
+        "settings": {"auth": "noauth", "udp": True},
+        "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"]},
+    })
+
+    # HTTP inbound
+    cfg["inbounds"].append({
+        "tag": "http-in",
+        "listen": "0.0.0.0",
+        "port": http_port,
+        "protocol": "http",
+        "settings": {},
+    })
+
+    # DNS inbound (always)
+    cfg["inbounds"].append({
+        "tag": "dns", "listen": "0.0.0.0", "port": 53,
+        "protocol": "dokodemo-door",
+        "settings": {"address": "119.29.29.29", "port": 53, "network": "tcp,udp"},
+    })
+
+    # Transparent inbound (optional)
+    if transparent:
+        cfg["inbounds"].append({
+            "tag": "transparent", "listen": "0.0.0.0", "port": tp_port,
+            "protocol": "dokodemo-door",
+            "settings": {"network": "tcp,udp", "followRedirect": True},
+            "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"],
+                         "domainsExcluded": ["argotunnel.com"]},
+        })
+
+    # --- Outbounds: ensure mark=128 for anti-loop ---
+    outbounds = cfg.get("outbounds", [])
+    for ob in outbounds:
+        tag = ob.get("tag", "")
+        proto = ob.get("protocol", "")
+        if proto in ("freedom", "blackhole", "dns"):
+            if proto in ("freedom", "dns"):
+                ob.setdefault("streamSettings", {}).setdefault("sockopt", {})["mark"] = 128
+                if proto == "freedom":
+                    ob.setdefault("settings", {})["domainStrategy"] = "UseIP"
+            continue
+        ob.setdefault("streamSettings", {}).setdefault("sockopt", {})["mark"] = 128
+
+    # Ensure direct/block/dns-out exist
+    has_direct = any(ob.get("tag") == "direct" for ob in outbounds)
+    has_block = any(ob.get("tag") == "block" for ob in outbounds)
+    has_dns_out = any(ob.get("tag") == "dns-out" for ob in outbounds)
+    if not has_direct:
+        outbounds.append({
+            "tag": "direct", "protocol": "freedom",
+            "settings": {"domainStrategy": "UseIP"},
+            "streamSettings": {"sockopt": {"mark": 128}},
+        })
+    if not has_block:
+        outbounds.append({"tag": "block", "protocol": "blackhole", "streamSettings": {"sockopt": {"mark": 128}}})
+    if not has_dns_out:
+        outbounds.append({
+            "tag": "dns-out", "protocol": "dns",
+            "settings": {"port": 53, "address": "119.29.29.29", "network": "udp"},
+            "streamSettings": {"sockopt": {"mark": 128}},
+        })
+    cfg["outbounds"] = outbounds
+
+    # --- Routing ---
+    is_multi = len(selected_tags) > 1
+    routing = cfg.setdefault("routing", {})
+    routing["domainStrategy"] = routing.get("domainStrategy", "IPIfNonMatch")
+
+    # Balancers
+    if is_multi:
+        balancer = {
+            "tag": "proxy-balancer",
+            "selector": selected_tags,
+            "strategy": {"type": strategy},
+        }
+        routing["balancers"] = [balancer]
+    else:
+        routing["balancers"] = []
+
+    # Rules
+    rules = []
+    rules.append({"type": "field", "inboundTag": ["dns"], "outboundTag": "direct"})
+
+    if is_multi:
+        rules.append({"type": "field", "inboundTag": ["socks-in"], "balancerTag": "proxy-balancer"})
+        rules.append({"type": "field", "inboundTag": ["http-in"], "balancerTag": "proxy-balancer"})
+        if transparent:
+            rules.append({"type": "field", "inboundTag": ["transparent"], "balancerTag": "proxy-balancer"})
+    else:
+        tag = selected_tags[0] if selected_tags else "direct"
+        rules.append({"type": "field", "inboundTag": ["socks-in"], "outboundTag": tag})
+        rules.append({"type": "field", "inboundTag": ["http-in"], "outboundTag": tag})
+        if transparent:
+            rules.append({"type": "field", "inboundTag": ["transparent"], "outboundTag": tag})
+
+    # GeoIP bypass
+    rules.append({"type": "field", "ip": ["geoip:cn"], "outboundTag": "direct"})
+    rules.append({"type": "field", "domain": ["geosite:cn"], "outboundTag": "direct"})
+    rules.append({"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"})
+    rules.append({"type": "field", "network": "udp", "outboundTag": "direct"})
+
+    routing["rules"] = rules
+
+    # --- DNS ---
+    cfg["dns"] = {
+        "servers": ["119.29.29.29", "223.5.5.5",
+                     "https://dns.alidns.com/dns-query",
+                     "https://cloudflare-dns.com/dns-query"],
+        "tag": "dns",
+        "hosts": {
+            "domain:googleapis.cn": "googleapis.com",
+            "geosite:category-ads-all": "127.0.0.1",
+        },
+    }
+
+    return cfg, None
+
+
 def _tp_load_custom_bypass():
     """Load user-customized bypass CIDRs from file."""
     try:
@@ -521,6 +699,16 @@ def _tp_startup_cleanup():
     if _dns_hijack_is_active() and not has_dokodemo:
         if _dns_hijack_restore():
             print("[transparent-proxy] Stale DNS hijack restored")
+
+    # Connect-mode: restore transparent proxy if was active
+    conn_state = _connect_state_read()
+    if conn_state.get("active") and conn_state.get("transparent_enabled"):
+        if not has_iptables and has_dokodemo:
+            tp_port = conn_state.get("transparent_port", 12345)
+            print(f"[connect-mode] Restoring transparent proxy iptables (port {tp_port})...")
+            _iptables_setup_redirect(tp_port)
+            _dns_hijack_apply()
+            print("[connect-mode] iptables + DNS restored")
 
 
 def _dns_hijack_backup():
@@ -1532,10 +1720,13 @@ def api_outbounds_post():
 def api_outbounds_parse_vless():
     data = request.json
     link = (data or {}).get("link", "")
+    tfo = (data or {}).get("tfo", False)
     try:
         outbound = _parse_share_link(link)
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+    if tfo:
+        outbound.setdefault("streamSettings", {}).setdefault("sockopt", {})["tcpFastOpen"] = True
     return jsonify({"outbound": outbound, "protocol": outbound.get("protocol",""), "json": json.dumps(outbound, ensure_ascii=False, indent=2)})
 
 
@@ -1882,6 +2073,218 @@ def api_balancer_set():
     return jsonify({"ok": True, "config": cfg, "reloaded": reloaded})
 
 
+# ---------------------------------------------------------------------------
+# Connect Mode API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/connect/status")
+def api_connect_status():
+    """Return current connect-mode state + node list."""
+    state = _connect_state_read()
+    cfg, err = _parse_config()
+    nodes = []
+    if not err:
+        for ob in cfg.get("outbounds", []):
+            if ob.get("protocol") in ("freedom", "blackhole", "dns"):
+                continue
+            info = _extract_node_info(ob)
+            info["selected"] = info["tag"] in state.get("selected_tags", [])
+            nodes.append(info)
+    state["nodes"] = nodes
+    state["xray_running"] = _service_status().get("running", False)
+    return jsonify(state)
+
+
+@app.route("/api/connect/start", methods=["POST"])
+def api_connect_start():
+    """One-click start: apply selected nodes, routing, optional transparent proxy."""
+    data = request.json or {}
+    tags = data.get("tags", [])
+    strategy = data.get("strategy", "roundRobin")
+    transparent = bool(data.get("transparent", False))
+    ports = data.get("ports", {"socks": 10810, "http": 10818, "transparent": 12345})
+
+    if not tags:
+        return jsonify({"error": "请至少选择一个节点"}), 400
+
+    # Verify tags exist in outbounds
+    cfg_check, err = _parse_config()
+    if err:
+        return jsonify({"error": err}), 500
+    existing = {ob.get("tag") for ob in cfg_check.get("outbounds", [])}
+    invalid = [t for t in tags if t not in existing]
+    if invalid:
+        return jsonify({"error": f"节点不存在: {', '.join(invalid)}"}), 400
+
+    if strategy not in ("roundRobin", "leastPing", "random"):
+        strategy = "roundRobin"
+
+    # Build config
+    cfg, err = _build_connect_config(tags, strategy, transparent, ports)
+    if err:
+        return jsonify({"error": str(err)}), 400
+
+    # Save original inbounds for restoration on stop
+    original_inbounds = cfg_check.get("inbounds", [])
+
+    # If transparent proxy requested, backup iptables first
+    backed_up = False
+    if transparent:
+        _iptables_cleanup()
+        backed_up = _iptables_save()
+
+    # Save config
+    backup, test = _save_config_object(cfg)
+    if not test["ok"]:
+        if backed_up:
+            _iptables_restore()
+        return jsonify({"error": "配置测试失败", "detail": test["output"]}), 400
+
+    # Setup iptables if transparent
+    if transparent:
+        tp_port = ports.get("transparent", 12345)
+        ok, msg = _iptables_setup_redirect(tp_port)
+        if not ok:
+            if backed_up:
+                _iptables_restore()
+            return jsonify({"error": f"iptables 设置失败: {msg}"}), 400
+        _dns_hijack_apply()
+
+    # Restart xray
+    restart = _restart_xray()
+
+    # Save state
+    import datetime as _dt
+    state = {
+        "active": True,
+        "selected_tags": tags,
+        "balancer_strategy": strategy,
+        "transparent_enabled": transparent,
+        "started_at": _dt.datetime.now().isoformat(),
+        "inbound_socks_port": ports.get("socks", 10810),
+        "inbound_http_port": ports.get("http", 10818),
+        "transparent_port": ports.get("transparent", 12345),
+        "original_inbounds": original_inbounds,
+    }
+    _connect_state_write(state)
+
+    return jsonify({"ok": True, "state": state, "restart": restart})
+
+
+@app.route("/api/connect/stop", methods=["POST"])
+def api_connect_stop():
+    """Stop connect mode: clean up iptables, restore default routing."""
+    state = _connect_state_read()
+
+    # Clean up transparent proxy if enabled
+    if state.get("transparent_enabled"):
+        _iptables_cleanup()
+        _dns_hijack_restore()
+
+    # Remove connect-mode inbounds and restore minimal config
+    cfg, err = _parse_config()
+    if not err:
+        # Restore original inbounds
+        original = state.get("original_inbounds", [])
+        if original:
+            cfg["inbounds"] = original
+        else:
+            cfg["inbounds"] = [ib for ib in cfg.get("inbounds", [])
+                               if ib.get("tag") not in ("socks-in", "http-in", "dns", "transparent")]
+        routing = cfg.get("routing", {})
+        routing["balancers"] = []
+        # Keep only non-connect-mode rules
+        new_rules = []
+        for r in routing.get("rules", []):
+            ib_tags = r.get("inboundTag", [])
+            if any(t in ib_tags for t in ("socks-in", "http-in", "transparent")):
+                continue
+            new_rules.append(r)
+        routing["rules"] = new_rules
+        _save_config_object(cfg)
+
+    restart = _restart_xray()
+
+    _connect_state_write({
+        "active": False,
+        "selected_tags": [],
+        "balancer_strategy": "roundRobin",
+        "transparent_enabled": False,
+    })
+
+    return jsonify({"ok": True, "restart": restart})
+
+
+@app.route("/api/connect/test-selected", methods=["POST"])
+def api_connect_test_selected():
+    """Batch test latency/speed for selected outbound nodes (reuses outbounds batch-test logic)."""
+    data = request.json or {}
+    tags = data.get("tags", [])
+    url = (data.get("url") or DEFAULT_TEST_URLS[0]).strip()
+    speed_url = (data.get("speed_url") or DEFAULT_SPEEDTEST_URL).strip()
+    mode = data.get("mode", "ping")
+
+    cfg, err = _parse_config()
+    if err:
+        return jsonify({"error": err}), 500
+
+    all_obs = [ob for ob in cfg.get("outbounds", []) if ob.get("protocol") not in ("freedom", "blackhole", "dns")]
+    if tags:
+        all_obs = [ob for ob in all_obs if ob.get("tag") in tags]
+    if not all_obs:
+        return jsonify({"error": "没有可测试的节点"}), 400
+
+    base_port = random.randint(30000, 40000)
+    temp_cfg, port_map = _build_temp_multi_config(all_obs, base_port=base_port)
+    proc, tmp, error = _start_temp_xray(temp_cfg)
+    if error:
+        return jsonify({"ok": False, "error": "xray 启动失败", "detail": error})
+
+    results = []
+    try:
+        import concurrent.futures
+        def test_one(ob):
+            tag = ob.get("tag", "")
+            port = port_map.get(tag)
+            if not port:
+                return {"tag": tag, "ok": False, "error": "port not found"}
+            r = {"tag": tag}
+            addr = ""
+            try:
+                v = ob.get("settings", {}).get("vnext", [{}])[0]
+                s = ob.get("settings", {}).get("servers", [{}])[0]
+                src = v or s
+                if src:
+                    addr = str(src.get("address", "?")) + ":" + str(src.get("port", "?"))
+            except Exception:
+                pass
+            r["outbound_addr"] = addr
+            ping = _curl_via_socks("127.0.0.1", port, url, timeout=15)
+            r["ping_ok"] = ping.get("ok", False)
+            r["ping_ms"] = ping.get("time_total", "")
+            r["ping_code"] = ping.get("http_code", "")
+            r["exit_ip"] = ping.get("stdout", "").strip()
+            if mode == "speed" and r["ping_ok"]:
+                sp = _curl_speedtest("127.0.0.1", port, speed_url, timeout=DEFAULT_SPEEDTEST_TIMEOUT)
+                r["speed_ok"] = sp.get("ok", False)
+                r["speed_mbps"] = sp.get("speed_mbps", 0)
+            else:
+                r["speed_ok"] = False
+                r["speed_mbps"] = 0
+            return r
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(all_obs), 6)) as ex:
+            futures = {ex.submit(test_one, ob): ob for ob in all_obs}
+            for fut in concurrent.futures.as_completed(futures):
+                results.append(fut.result())
+    finally:
+        _stop_temp_xray(proc, tmp)
+
+    tag_order = {ob.get("tag", ""): i for i, ob in enumerate(all_obs)}
+    results.sort(key=lambda r: tag_order.get(r.get("tag", ""), 999))
+    return jsonify({"ok": True, "count": len(results), "results": results})
+
+
 @app.route("/api/service/<action>", methods=["POST"])
 def api_service_action(action):
     if action not in ("restart", "stop", "start"):
@@ -2026,6 +2429,84 @@ def api_restore():
 
 
 # ---------------------------------------------------------------------------
+# Sysctl tuning API
+# ---------------------------------------------------------------------------
+SYSCTL_PARAMS = [
+    ("net.ipv4.tcp_slow_start_after_idle", "tcp_slow_start_after_idle", "空闲后重置拥塞窗口", "0"),
+    ("net.ipv4.tcp_fastopen", "tcp_fastopen", "TCP Fast Open (0=关 1=客户端 2=服务端 3=两端)", "3"),
+    ("net.ipv4.tcp_max_syn_backlog", "tcp_max_syn_backlog", "SYN 队列长度", "4096"),
+    ("net.core.netdev_max_backlog", "netdev_max_backlog", "网卡收包队列长度", "5000"),
+    ("net.ipv4.tcp_fin_timeout", "tcp_fin_timeout", "FIN_WAIT2 超时(秒)", "15"),
+    ("net.ipv4.tcp_keepalive_time", "tcp_keepalive_time", "Keepalive 探测间隔(秒)", "300"),
+    ("net.core.somaxconn", "somaxconn", "Listen 队列最大值", "4096"),
+    ("net.ipv4.tcp_window_scaling", "tcp_window_scaling", "窗口缩放 (0/1)", "1"),
+    ("net.ipv4.tcp_timestamps", "tcp_timestamps", "时间戳 (0/1)", "1"),
+    ("net.ipv4.tcp_sack", "tcp_sack", "选择性确认 (0/1)", "1"),
+    ("net.ipv4.tcp_congestion_control", "tcp_congestion_control", "拥塞控制算法", ""),
+]
+
+
+@app.route("/api/sysctl")
+def api_sysctl_get():
+    result = []
+    for full_key, short, desc, recommended in SYSCTL_PARAMS:
+        proc_path = "/proc/sys/" + full_key.replace(".", "/")
+        try:
+            val = Path(proc_path).read_text().strip()
+        except Exception:
+            try:
+                val = subprocess.check_output(["sysctl", "-n", full_key], stderr=subprocess.DEVNULL, timeout=3).decode().strip()
+            except Exception:
+                val = "(unavailable)"
+        result.append({"key": full_key, "short": short, "value": val, "desc": desc, "recommended": recommended})
+    return jsonify({"params": result})
+
+
+@app.route("/api/sysctl", methods=["POST"])
+def api_sysctl_set():
+    data = request.json or {}
+    changes = data.get("changes", {})
+    if not changes:
+        return jsonify({"error": "no changes"}), 400
+    applied = []
+    errors = []
+    for key, val in changes.items():
+        if not any(key == p[0] for p in SYSCTL_PARAMS):
+            errors.append(f"{key}: not allowed")
+            continue
+        proc_path = "/proc/sys/" + key.replace(".", "/")
+        try:
+            Path(proc_path).write_text(str(val))
+            applied.append(f"{key}={val}")
+        except Exception:
+            try:
+                subprocess.check_call(["sysctl", "-w", f"{key}={val}"], stderr=subprocess.PIPE, timeout=5)
+                applied.append(f"{key}={val}")
+            except Exception as e:
+                errors.append(f"{key}: {e}")
+    # persist to /etc/sysctl.conf
+    if applied:
+        try:
+            existing = Path("/etc/sysctl.conf").read_text() if Path("/etc/sysctl.conf").exists() else ""
+            lines = existing.splitlines()
+            for item in applied:
+                k, v = item.split("=", 1)
+                k = k.strip()
+                found = False
+                for i, line in enumerate(lines):
+                    if line.strip().startswith(k):
+                        lines[i] = f"{k} = {v}"
+                        found = True
+                        break
+                if not found:
+                    lines.append(f"{k} = {v}")
+            Path("/etc/sysctl.conf").write_text("\n".join(lines) + "\n")
+        except Exception as e:
+            errors.append(f"persist: {e}")
+    return jsonify({"ok": True, "applied": applied, "errors": errors})
+
+
+# ---------------------------------------------------------------------------
 # HTML UI (single page, embedded)
 # ---------------------------------------------------------------------------
 
@@ -2068,6 +2549,22 @@ a{color:var(--accent);text-decoration:none}
 .btn.danger:hover{opacity:.85}
 .btn.success{background:var(--green);color:#fff;border-color:var(--green)}
 .btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
+.conn-node-list{max-height:420px;overflow-y:auto;border:1px solid var(--border);border-radius:6px}
+.conn-node{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .15s;font-size:13px}
+.conn-node:last-child{border-bottom:none}
+.conn-node:hover{background:var(--bg3)}
+.conn-node.selected{background:rgba(56,139,253,.1);border-left:3px solid var(--accent)}
+.conn-node .cb{flex-shrink:0}
+.conn-node .tag-col{min-width:120px;font-weight:500;font-family:monospace}
+.conn-node .proto-col{min-width:70px;color:var(--text2);font-size:12px}
+.conn-node .addr-col{flex:1;color:var(--text2);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.conn-node .latency-col{min-width:70px;text-align:right;font-family:monospace;font-size:12px}
+.conn-ctrl{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.conn-ctrl .card-inner{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px}
+.conn-status-bar{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-top:12px;font-size:13px}
+.conn-status-bar .indicator{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.conn-status-bar .indicator.on{background:var(--green);box-shadow:0 0 6px var(--green)}
+.conn-status-bar .indicator.off{background:var(--text2)}
 textarea.config-editor{width:100%;min-height:500px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:'SF Mono',SFMono-Regular,consolas,monospace;font-size:13px;resize:vertical;tab-size:2;white-space:pre;overflow:auto}
 table{width:100%;border-collapse:collapse}
 th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px}
@@ -2158,7 +2655,8 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
 
 <div class="container">
   <div class="tabs">
-    <div class="tab active" onclick="switchTab('status')">状态</div>
+    <div class="tab active" onclick="switchTab('connect')">连接</div>
+    <div class="tab" onclick="switchTab('status')">状态</div>
     <div class="tab" onclick="switchTab('inbounds')">入站</div>
     <div class="tab" onclick="switchTab('outbounds')">出站</div>
     <div class="tab" onclick="switchTab('routing')">路由</div>
@@ -2166,11 +2664,78 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
     <div class="tab" onclick="switchTab('dns')">DNS</div>
     <div class="tab" onclick="switchTab('logs')">日志</div>
     <div class="tab" onclick="switchTab('transparent')">透明代理</div>
+    <div class="tab" onclick="switchTab('system')">系统</div>
     <div class="tab" onclick="switchTab('backups')">备份</div>
   </div>
 
+  <!-- Connect Mode -->
+  <div class="tab-content active" id="tab-connect">
+    <div class="card">
+      <h2>🔌 连接模式</h2>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">选择出站节点 → 一键启动代理。支持多节点负载均衡和可选透明代理。</p>
+
+      <!-- Node List -->
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="color:var(--text2);font-size:13px" id="conn-selected-count">已选: 0 个节点</span>
+        <div style="display:flex;gap:6px">
+          <button class="btn" onclick="connSelectAll()">全选</button>
+          <button class="btn" onclick="connClearAll()">清空</button>
+          <button class="btn primary" onclick="connTestSelected()">测试选中</button>
+          <button class="btn" onclick="connTestAll()">测试全部</button>
+        </div>
+      </div>
+      <div class="conn-node-list" id="conn-node-list">
+        <div style="padding:20px;text-align:center;color:var(--text2)">加载中...</div>
+      </div>
+
+      <!-- Connection Controls -->
+      <div class="conn-ctrl">
+        <div class="card-inner">
+          <label style="color:var(--text2);font-size:12px;display:block;margin-bottom:6px">负载均衡策略</label>
+          <select id="conn-strategy" style="width:100%;padding:6px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:13px">
+            <option value="roundRobin">轮询 (roundRobin)</option>
+            <option value="leastPing">最低延迟 (leastPing)</option>
+            <option value="random">随机 (random)</option>
+          </select>
+          <p style="color:var(--text2);font-size:11px;margin-top:4px">多选节点时自动启用负载均衡</p>
+        </div>
+        <div class="card-inner">
+          <label style="color:var(--text2);font-size:12px;display:block;margin-bottom:6px">透明代理</label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
+            <input type="checkbox" id="conn-transparent"> <span style="font-size:13px">启用 (iptables REDIRECT)</span>
+          </label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span style="color:var(--text2);font-size:12px">SOCKS</span>
+            <input id="conn-port-socks" type="number" value="10810" style="width:80px;padding:4px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px;font-family:monospace">
+            <span style="color:var(--text2);font-size:12px">HTTP</span>
+            <input id="conn-port-http" type="number" value="10818" style="width:80px;padding:4px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px;font-family:monospace">
+            <span style="color:var(--text2);font-size:12px">透明</span>
+            <input id="conn-port-tp" type="number" value="12345" style="width:80px;padding:4px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px;font-family:monospace">
+          </div>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="btn-group" style="margin-top:16px">
+        <button class="btn success" onclick="connStart()" id="btn-conn-start">▶ 启动连接</button>
+        <button class="btn danger" onclick="connStop()" id="btn-conn-stop">■ 断开连接</button>
+      </div>
+
+      <!-- Status Bar -->
+      <div class="conn-status-bar" id="conn-status-bar">
+        <div class="indicator off" id="conn-indicator"></div>
+        <span id="conn-status-text">未连接</span>
+        <span style="flex:1"></span>
+        <span id="conn-endpoints" style="color:var(--text2);font-size:12px"></span>
+      </div>
+
+      <!-- Test Output -->
+      <div class="log-box" id="conn-test-output" style="display:none;margin-top:12px;max-height:300px;overflow-y:auto"></div>
+    </div>
+  </div>
+
   <!-- Status -->
-  <div class="tab-content active" id="tab-status">
+  <div class="tab-content" id="tab-status">
     <div class="card">
       <h2><span class="dot" id="status-dot"></span> 服务状态</h2>
       <div class="grid" id="status-grid"></div>
@@ -2238,7 +2803,10 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
       </div>
       <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:12px;flex-wrap:wrap">
         <textarea id="quick-import-links" placeholder="快速导入：粘贴 vless:// vmess:// ss:// trojan:// 链接（支持多行）" style="flex:1;min-width:400px;min-height:60px;padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:12px;resize:vertical"></textarea>
-        <button class="btn primary" onclick="quickImportLinks()" style="align-self:flex-end">解析导入</button>
+        <div style="display:flex;flex-direction:column;gap:6px;align-self:flex-end">
+          <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text2);cursor:pointer"><input type="checkbox" id="quick-import-tfo"> TCP Fast Open</label>
+          <button class="btn primary" onclick="quickImportLinks()">解析导入</button>
+        </div>
       </div>
       <div class="log-box" id="outbound-test-output" style="display:none;margin-bottom:12px;max-height:400px;overflow-y:auto"></div>
       <table>
@@ -2415,6 +2983,23 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
     </div>
   </div>
 
+  <!-- System / Sysctl -->
+  <div class="tab-content" id="tab-system">
+    <div class="card">
+      <h2>内核参数调优</h2>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">修改后立即生效并持久化到 /etc/sysctl.conf。标黄的值与推荐值不一致。</p>
+      <table>
+        <thead><tr><th>参数</th><th>说明</th><th>当前值</th><th>推荐值</th><th>操作</th></tr></thead>
+        <tbody id="sysctl-tbody"></tbody>
+      </table>
+      <div class="btn-group" style="margin-top:12px">
+        <button class="btn primary" onclick="saveSysctl()">保存修改</button>
+        <button class="btn" onclick="loadSysctl()">刷新</button>
+        <button class="btn" onclick="applyRecommended()">一键应用推荐值</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Backups -->
   <div class="tab-content" id="tab-backups">
     <div class="card">
@@ -2466,6 +3051,7 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
     <div id="mob-pane-link">
       <textarea class="config-editor" id="vless-link" spellcheck="false" style="min-height:120px" placeholder="vless:// vmess:// ss:// trojan:// ..."></textarea>
       <p style="color:var(--text2);font-size:12px;margin-top:8px">支持 vless:// vmess:// ss:// trojan://，可粘贴多行批量添加。</p>
+      <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text2);margin-top:6px;cursor:pointer"><input type="checkbox" id="modal-tfo"> TCP Fast Open</label>
       <div class="btn-group" style="margin-top:12px">
         <button class="btn primary" onclick="parseAndAddVless()">解析并新增</button>
       </div>
@@ -2610,10 +3196,11 @@ async function api(path, opts={}){
 
 function switchTab(name){
   document.querySelectorAll('.tab').forEach((t,i)=>{
-    t.classList.toggle('active',t.textContent.trim()===({status:'状态',inbounds:'入站',outbounds:'出站',routing:'路由',config:'配置',dns:'DNS',logs:'日志',transparent:'透明代理',backups:'备份'}[name]));
+    t.classList.toggle('active',t.textContent.trim()===({connect:'连接',status:'状态',inbounds:'入站',outbounds:'出站',routing:'路由',config:'配置',dns:'DNS',logs:'日志',transparent:'透明代理',system:'系统',backups:'备份'}[name]));
   });
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
+  if(name==='connect')loadConnect();
   if(name==='status'){loadStatus();startStatsPolling();}else{stopStatsPolling();}
   if(name==='inbounds'){loadInbounds();loadTestUrls();}
   if(name==='outbounds'){loadOutbounds();loadObTestUrls();}
@@ -2622,6 +3209,7 @@ function switchTab(name){
   if(name==='dns'){loadDns();loadDnsHosts();}
   if(name==='logs')loadLogs(200);
   if(name==='transparent')loadTransparent();
+  if(name==='system')loadSysctl();
   if(name==='backups')loadBackups();
 }
 
@@ -3194,11 +3782,12 @@ function deleteOutbound(idx){
 async function parseAndAddVless(){
   const raw=document.getElementById('vless-link').value.trim();
   if(!raw){toast('请输入节点链接',false);return;}
+  const tfo=document.getElementById('modal-tfo')?.checked||false;
   const lines=raw.split('\n').map(l=>l.trim()).filter(l=>l&&l.includes('://'));
   if(!lines.length){toast('未识别到有效链接',false);return;}
   let added=0;
   for(const link of lines){
-    const d=await api('/api/outbounds/parse-vless',{method:'POST',body:JSON.stringify({link})});
+    const d=await api('/api/outbounds/parse-vless',{method:'POST',body:JSON.stringify({link,tfo})});
     if(d&&d.outbound){outboundsData.push(d.outbound);added++;}
   }
   closeModal('modal-outbound');
@@ -3354,11 +3943,12 @@ function batchExportOutbounds(){
 async function quickImportLinks(){
   const raw=(document.getElementById('quick-import-links')?.value||'').trim();
   if(!raw){toast('请粘贴节点链接',false);return;}
+  const tfo=document.getElementById('quick-import-tfo')?.checked||false;
   const lines=raw.split('\n').map(l=>l.trim()).filter(l=>l&&l.includes('://'));
   if(!lines.length){toast('未识别到有效链接',false);return;}
   let added=0;
   for(const link of lines){
-    const d=await api('/api/outbounds/parse-vless',{method:'POST',body:JSON.stringify({link})});
+    const d=await api('/api/outbounds/parse-vless',{method:'POST',body:JSON.stringify({link,tfo})});
     if(d&&d.outbound){outboundsData.push(d.outbound);added++;}
   }
   renderOutbounds();
@@ -3638,6 +4228,213 @@ async function tpSaveBalancer(){
   if(!d||!d.ok){box.textContent="Failed: "+(d&&d.error||"unknown");return;}
   box.textContent="Balancer saved. "+(d.reloaded?"Xray restarted.":"");
 }
+
+// --- Sysctl ---
+async function loadSysctl(){
+  const d=await api('/api/sysctl');
+  if(!d)return;
+  const tbody=document.getElementById('sysctl-tbody');
+  tbody.innerHTML=d.params.map(p=>{
+    const mismatch=p.recommended&&p.value!==p.recommended;
+    const style=mismatch?'color:var(--yellow)':'';
+    const rec=p.recommended?`<span style="color:var(--text2)">${p.recommended}</span>`:'<span style="color:var(--text2)">—</span>';
+    return `<tr>
+      <td style="font-family:monospace;font-size:12px">${p.key}</td>
+      <td style="color:var(--text2);font-size:12px">${p.desc}</td>
+      <td><input class="sysctl-val" data-key="${p.key}" value="${p.value}" style="width:120px;padding:4px;background:var(--bg);color:var(--text);border:1px solid ${mismatch?'var(--yellow)':'var(--border)'};border-radius:4px;font-family:monospace;font-size:12px"></td>
+      <td>${rec}</td>
+      <td>${mismatch?`<button class="btn" style="font-size:11px;padding:2px 8px" onclick="applyOne('${p.key}','${p.recommended}')">应用</button>`:''}</td>
+    </tr>`;
+  }).join('');
+}
+async function saveSysctl(){
+  const changes={};
+  document.querySelectorAll('.sysctl-val').forEach(inp=>{
+    const key=inp.dataset.key;
+    const val=inp.value.trim();
+    if(val)changes[key]=val;
+  });
+  if(!Object.keys(changes).length){toast('无修改',false);return;}
+  const d=await api('/api/sysctl',{method:'POST',body:JSON.stringify({changes})});
+  if(d&&d.ok){toast('已保存'+(d.applied.length?' ('+d.applied.length+'项)':''));loadSysctl();}
+  else toast('保存失败: '+(d&&d.error||'unknown'),false);
+}
+function applyOne(key,val){
+  const inp=document.querySelector(`.sysctl-val[data-key="${key}"]`);
+  if(inp)inp.value=val;
+}
+async function applyRecommended(){
+  const d=await api('/api/sysctl');
+  if(!d)return;
+  const changes={};
+  d.params.forEach(p=>{if(p.recommended&&p.value!==p.recommended)changes[p.key]=p.recommended;});
+  if(!Object.keys(changes).length){toast('全部已是推荐值');return;}
+  const r=await api('/api/sysctl',{method:'POST',body:JSON.stringify({changes})});
+  if(r&&r.ok){toast('已应用推荐值 ('+r.applied.length+'项)');loadSysctl();}
+  else toast('应用失败',false);
+}
+
+// ===================== Connect Mode =====================
+let connNodes=[];  // [{tag,protocol,address,port,network,selected}]
+let connLatency={}; // {tag: {ping_ms, ping_ok, exit_ip, speed_mbps}}
+
+async function loadConnect(){
+  const d=await api('/api/connect/status');
+  if(!d)return;
+  connNodes=d.nodes||[];
+  // Restore latency data from previous tests
+  renderConnNodes();
+  // Update status bar
+  updateConnStatus(d);
+  // Restore settings
+  if(d.balancer_strategy)document.getElementById('conn-strategy').value=d.balancer_strategy;
+  if(d.transparent_enabled!==undefined)document.getElementById('conn-transparent').checked=!!d.transparent_enabled;
+  if(d.inbound_socks_port)document.getElementById('conn-port-socks').value=d.inbound_socks_port;
+  if(d.inbound_http_port)document.getElementById('conn-port-http').value=d.inbound_http_port;
+  if(d.transparent_port)document.getElementById('conn-port-tp').value=d.transparent_port;
+}
+
+function renderConnNodes(){
+  const list=document.getElementById('conn-node-list');
+  if(!connNodes.length){
+    list.innerHTML='<div style="padding:20px;text-align:center;color:var(--text2)">无可用节点，请先在"出站" tab 添加</div>';
+    updateSelectedCount();
+    return;
+  }
+  list.innerHTML=connNodes.map((n,i)=>{
+    const lat=connLatency[n.tag];
+    const latStr=lat?(lat.ping_ok?(parseFloat(lat.ping_ms)*1000).toFixed(0)+'ms':'FAIL'):'';
+    const latColor=lat?(lat.ping_ok?'var(--green)':'var(--red)'):'var(--text2)';
+    const speedStr=lat&&lat.speed_mbps?lat.speed_mbps+' Mbps':'';
+    return `<div class="conn-node${n.selected?' selected':''}" onclick="connToggle(${i})">
+      <input type="checkbox" class="cb" ${n.selected?'checked':''} onclick="event.stopPropagation();connToggle(${i})">
+      <span class="tag-col">${n.tag||'-'}</span>
+      <span class="proto-col">${n.protocol||'-'}</span>
+      <span class="addr-col" title="${n.address}:${n.port}">${n.address||'-'}:${n.port||'-'}</span>
+      <span class="proto-col">${n.network||'tcp'}</span>
+      <span class="latency-col" style="color:${latColor}">${latStr}</span>
+      <span class="latency-col" style="color:var(--yellow)">${speedStr}</span>
+    </div>`;
+  }).join('');
+  updateSelectedCount();
+}
+
+function connToggle(idx){
+  connNodes[idx].selected=!connNodes[idx].selected;
+  renderConnNodes();
+}
+
+function connSelectAll(){
+  connNodes.forEach(n=>n.selected=true);
+  renderConnNodes();
+}
+function connClearAll(){
+  connNodes.forEach(n=>n.selected=false);
+  renderConnNodes();
+}
+
+function updateSelectedCount(){
+  const cnt=connNodes.filter(n=>n.selected).length;
+  document.getElementById('conn-selected-count').textContent='已选: '+cnt+' 个节点'+(cnt>1?' (负载均衡)':'');
+}
+
+function updateConnStatus(state){
+  const on=state.active;
+  const ind=document.getElementById('conn-indicator');
+  const txt=document.getElementById('conn-status-text');
+  const ep=document.getElementById('conn-endpoints');
+  ind.className='indicator '+(on?'on':'off');
+  if(on){
+    const tags=state.selected_tags||[];
+    const stratMap={roundRobin:'轮询',leastPing:'最低延迟',random:'随机'};
+    const stratStr=state.balancer_strategy&&tags.length>1?' · '+stratMap[state.balancer_strategy]||state.balancer_strategy:'';
+    const tpStr=state.transparent_enabled?' · 透明代理':'';
+    txt.innerHTML='<span style="color:var(--green);font-weight:600">已连接</span> ('+tags.length+'节点'+stratStr+tpStr+')';
+    const eps=[];
+    eps.push('SOCKS5 → 0.0.0.0:'+(state.inbound_socks_port||10810));
+    eps.push('HTTP → 0.0.0.0:'+(state.inbound_http_port||10818));
+    if(state.transparent_enabled)eps.push('透明 → 0.0.0.0:'+(state.transparent_port||12345));
+    ep.textContent=eps.join('  |  ');
+  }else{
+    txt.textContent='未连接';
+    ep.textContent='';
+  }
+}
+
+async function connStart(){
+  const tags=connNodes.filter(n=>n.selected).map(n=>n.tag);
+  if(!tags.length){toast('请至少选择一个节点',false);return;}
+  const strategy=document.getElementById('conn-strategy').value;
+  const transparent=document.getElementById('conn-transparent').checked;
+  const ports={
+    socks:parseInt(document.getElementById('conn-port-socks').value)||10810,
+    http:parseInt(document.getElementById('conn-port-http').value)||10818,
+    transparent:parseInt(document.getElementById('conn-port-tp').value)||12345,
+  };
+  const box=document.getElementById('conn-test-output');
+  box.style.display='block';
+  box.textContent='正在启动连接... ('+tags.length+'节点, '+strategy+(transparent?', 透明代理':'')+')\n';
+  const d=await api('/api/connect/start',{method:'POST',body:JSON.stringify({tags,strategy,transparent,ports})});
+  if(!d||!d.ok){
+    box.textContent+='失败: '+(d&&d.error||'unknown')+'\n'+(d&&d.detail||'');
+    return;
+  }
+  box.textContent+='✅ 连接成功!\n';
+  box.textContent+='节点: '+(d.state.selected_tags||[]).join(', ')+'\n';
+  box.textContent+='SOCKS5: 0.0.0.0:'+ports.socks+'\n';
+  box.textContent+='HTTP: 0.0.0.0:'+ports.http+'\n';
+  if(transparent)box.textContent+='透明代理: 0.0.0.0:'+ports.transparent+'\n';
+  box.textContent+='Xray 重启: '+(d.restart&&d.restart.success?'成功':'失败')+'\n';
+  loadConnect();
+}
+
+async function connStop(){
+  if(!confirm('确认断开连接？'))return;
+  const box=document.getElementById('conn-test-output');
+  box.style.display='block';
+  box.textContent='正在断开...';
+  const d=await api('/api/connect/stop',{method:'POST',body:'{}'});
+  if(!d||!d.ok){box.textContent='失败';return;}
+  box.textContent='✅ 已断开连接\n';
+  box.textContent+='Xray 重启: '+(d.restart&&d.restart.success?'成功':'失败')+'\n';
+  loadConnect();
+}
+
+async function connTestSelected(){
+  const tags=connNodes.filter(n=>n.selected).map(n=>n.tag);
+  if(!tags.length){toast('请至少选择一个节点',false);return;}
+  await connDoTest(tags);
+}
+
+async function connTestAll(){
+  const tags=connNodes.map(n=>n.tag);
+  if(!tags.length){toast('无可用节点',false);return;}
+  await connDoTest(tags);
+}
+
+async function connDoTest(tags){
+  const box=document.getElementById('conn-test-output');
+  box.style.display='block';
+  box.textContent='测试 '+tags.length+' 个节点延迟...\n启动临时 Xray...';
+  const d=await api('/api/connect/test-selected',{method:'POST',body:JSON.stringify({tags,mode:'ping'})});
+  if(!d||!d.ok){
+    box.textContent='失败: '+(d&&d.error||'unknown');
+    return;
+  }
+  let lines=['=== 延迟测试 ('+d.count+' nodes) ===',''];
+  for(const r of d.results){
+    connLatency[r.tag]={ping_ok:r.ping_ok,ping_ms:r.ping_ms,exit_ip:r.exit_ip,speed_mbps:r.speed_mbps||0};
+    const tag=(r.tag||'').padEnd(18);
+    const ping=r.ping_ok?(parseFloat(r.ping_ms)*1000).toFixed(0)+'ms':'FAIL';
+    const ip=(r.exit_ip||'-').slice(0,20);
+    lines.push(tag+ping.padStart(8)+'  '+ip+(r.ping_ok?' ✓':' ✗'));
+  }
+  box.textContent=lines.join('\n');
+  renderConnNodes();
+}
+
+// Init connect mode on page load
+loadConnect();
 </script>
 </body>
 </html>
