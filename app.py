@@ -3002,10 +3002,51 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
   <div class="tab-content" id="tab-routing">
     <div class="card">
       <h2>路由规则</h2>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">规则从上到下匹配，命中即停止。支持域名/IP/入站/网络条件，可指定出口为直连、阻止、代理节点或负载均衡。</p>
+
+      <!-- Add Rule Form -->
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:12px">
+        <div style="display:grid;grid-template-columns:120px 1fr 160px auto;gap:8px;align-items:end">
+          <div>
+            <label style="color:var(--text2);font-size:11px;display:block;margin-bottom:3px">条件类型</label>
+            <select id="rt-cond-type" style="width:100%;padding:5px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+              <option value="domain">域名</option>
+              <option value="ip">IP/CIDR</option>
+              <option value="inbound">入站 Tag</option>
+              <option value="network">网络 (tcp/udp)</option>
+            </select>
+          </div>
+          <div>
+            <label style="color:var(--text2);font-size:11px;display:block;margin-bottom:3px">匹配值 (逗号分隔)</label>
+            <input id="rt-cond-value" placeholder="domain:example.com, geosite:cn" style="width:100%;padding:5px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:12px">
+          </div>
+          <div>
+            <label style="color:var(--text2);font-size:11px;display:block;margin-bottom:3px">出口</label>
+            <select id="rt-outbound" style="width:100%;padding:5px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px"></select>
+          </div>
+          <div>
+            <button class="btn primary" onclick="routingAddRule()">添加</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+          <span style="color:var(--text2);font-size:11px">快捷:</span>
+          <button class="btn" onclick="routingQuickDomain()" style="font-size:11px;padding:2px 8px">域名直连</button>
+          <button class="btn" onclick="routingQuickBlock()" style="font-size:11px;padding:2px 8px">域名阻止</button>
+          <button class="btn" onclick="routingQuickIP()" style="font-size:11px;padding:2px 8px">IP 直连</button>
+          <button class="btn" onclick="routingQuickProxy()" style="font-size:11px;padding:2px 8px">域名走代理</button>
+        </div>
+      </div>
+
+      <!-- Rules Table -->
       <table>
-        <thead><tr><th>类型</th><th>条件</th><th>出口</th></tr></thead>
+        <thead><tr><th style="width:30px">#</th><th style="width:80px">条件</th><th>匹配值</th><th style="width:100px">出口</th><th style="width:80px">操作</th></tr></thead>
         <tbody id="routing-tbody"></tbody>
       </table>
+      <div class="btn-group" style="margin-top:8px">
+        <button class="btn primary" onclick="routingSave()">保存路由规则</button>
+        <button class="btn" onclick="loadRouting()">重新加载</button>
+      </div>
+      <div class="log-box" id="routing-output" style="display:none;margin-top:8px;max-height:150px"></div>
     </div>
   </div>
 
@@ -4084,16 +4125,132 @@ async function loadRouting(){
   const d=await api('/api/routing');
   if(!d)return;
   routingData=d.routing||{};
+  routingRenderRules();
+  routingLoadOutbounds();
+}
+
+function routingRenderRules(){
   const rules=routingData.rules||[];
   const tb=document.getElementById('routing-tbody');
-  tb.innerHTML=rules.map(r=>{
-    let cond='-';
-    if(r.inboundTag)cond='入口: '+r.inboundTag.join(', ');
-    if(r.domain)cond='域名: '+r.domain.join(', ');
-    if(r.ip)cond='IP: '+r.ip.join(', ');
+  tb.innerHTML=rules.map((r,i)=>{
+    let condType='-',condVal='-';
+    if(r.inboundTag){condType='入站';condVal=r.inboundTag.join(', ');}
+    else if(r.domain){condType='域名';condVal=r.domain.join(', ');}
+    else if(r.ip){condType='IP';condVal=r.ip.join(', ');}
+    else if(r.network){condType='网络';condVal=r.network;}
     const ob=r.outboundTag||r.balancerTag||'-';
-    return `<tr><td>${r.type||'-'}</td><td style="font-size:11px">${cond}</td><td><span class="tag ${tagForPort(0)}">${ob}</span></td></tr>`;
+    const obColor=ob==='direct'?'tag jp':ob==='block'?'tag default':'tag us';
+    return `<tr>
+      <td style="color:var(--text2)">${i+1}</td>
+      <td><span class="tag default">${condType}</span></td>
+      <td style="font-size:11px;font-family:monospace;max-width:400px;word-break:break-all">${condVal}</td>
+      <td><span class="${obColor}">${ob}</span></td>
+      <td>
+        <button class="btn" onclick="routingMoveUp(${i})" ${i===0?'disabled':''} style="padding:2px 6px;font-size:10px">↑</button>
+        <button class="btn" onclick="routingMoveDown(${i})" ${i>=rules.length-1?'disabled':''} style="padding:2px 6px;font-size:10px">↓</button>
+        <button class="btn danger" onclick="routingDeleteRule(${i})" style="padding:2px 6px;font-size:10px">删除</button>
+      </td>
+    </tr>`;
   }).join('');
+}
+
+async function routingLoadOutbounds(){
+  const d=await api('/api/outbounds');
+  if(!d)return;
+  const sel=document.getElementById('rt-outbound');
+  if(!sel)return;
+  const obs=(d.outbounds||[]).filter(ob=>!['_delay'].includes(ob.tag||''));
+  let opts='<option value="direct">direct (直连)</option><option value="block">block (阻止)</option>';
+  for(const ob of obs){
+    if(ob.protocol==='freedom'||ob.protocol==='blackhole'||ob.protocol==='dns')continue;
+    opts+=`<option value="${ob.tag}">${ob.tag} (${ob.protocol})</option>`;
+  }
+  // Add balancer if exists
+  const bal=(routingData.balancers||[]).map(b=>`<option value="bal:${b.tag}">${b.tag} (负载均衡)</option>`).join('');
+  if(bal)opts+=bal;
+  sel.innerHTML=opts;
+}
+
+function routingAddRule(){
+  const condType=document.getElementById('rt-cond-type').value;
+  const condValue=(document.getElementById('rt-cond-value').value||'').trim();
+  const outbound=document.getElementById('rt-outbound').value;
+  if(!condValue){toast('请输入匹配值',false);return;}
+
+  const vals=condValue.split(',').map(s=>s.trim()).filter(Boolean);
+  const rule={type:'field'};
+
+  if(condType==='domain')rule.domain=vals;
+  else if(condType==='ip')rule.ip=vals;
+  else if(condType==='inbound')rule.inboundTag=vals;
+  else if(condType==='network')rule.network=vals[0];
+
+  if(outbound.startsWith('bal:')){
+    rule.balancerTag=outbound.slice(4);
+  }else{
+    rule.outboundTag=outbound;
+  }
+
+  if(!routingData.rules)routingData.rules=[];
+  routingData.rules.push(rule);
+  routingRenderRules();
+  document.getElementById('rt-cond-value').value='';
+  toast('已添加规则');
+}
+
+function routingDeleteRule(idx){
+  routingData.rules.splice(idx,1);
+  routingRenderRules();
+}
+
+function routingMoveUp(idx){
+  if(idx<=0)return;
+  const r=routingData.rules;
+  [r[idx-1],r[idx]]=[r[idx],r[idx-1]];
+  routingRenderRules();
+}
+
+function routingMoveDown(idx){
+  const r=routingData.rules;
+  if(idx>=r.length-1)return;
+  [r[idx],r[idx+1]]=[r[idx+1],r[idx]];
+  routingRenderRules();
+}
+
+async function routingSave(){
+  const box=document.getElementById('routing-output');
+  box.style.display='block';
+  box.textContent='保存中...';
+  const d=await api('/api/routing',{method:'POST',body:JSON.stringify({routing:routingData})});
+  if(d&&d.ok){
+    box.textContent='✅ 保存成功'+(d.restart&&d.restart.success?'，Xray 已重启':'');
+    loadRouting();
+  }else{
+    box.textContent='❌ 失败: '+(d&&d.error||'unknown')+'\n'+(d&&d.detail||'');
+  }
+}
+
+// Quick add helpers
+function routingQuickDomain(){
+  document.getElementById('rt-cond-type').value='domain';
+  document.getElementById('rt-cond-value').value='domain:example.com';
+  document.getElementById('rt-cond-value').focus();
+}
+function routingQuickBlock(){
+  document.getElementById('rt-cond-type').value='domain';
+  document.getElementById('rt-cond-value').value='domain:ads.example.com';
+  document.getElementById('rt-outbound').value='block';
+  document.getElementById('rt-cond-value').focus();
+}
+function routingQuickIP(){
+  document.getElementById('rt-cond-type').value='ip';
+  document.getElementById('rt-cond-value').value='1.2.3.4/32';
+  document.getElementById('rt-cond-value').focus();
+}
+function routingQuickProxy(){
+  document.getElementById('rt-cond-type').value='domain';
+  document.getElementById('rt-cond-value').value='domain:google.com, domain:youtube.com';
+  document.getElementById('rt-cond-value').focus();
 }
 
 async function loadDns(){
