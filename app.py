@@ -2165,7 +2165,8 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
         <tbody id="inbounds-tbody"></tbody>
       </table>
       <div class="btn-group">
-        <button class="btn primary" onclick="saveInbounds()">保存变更</button>
+        <button class="btn primary" onclick="showAddInboundModal()">新增入站</button>
+        <button class="btn success" onclick="saveInbounds()">保存变更</button>
       </div>
     </div>
   </div>
@@ -2381,22 +2382,28 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
 <!-- Edit Inbound Modal -->
 <div class="modal-overlay" id="modal-edit-inbound">
   <div class="modal">
-    <h3>编辑入站</h3>
-    <div class="edit-row"><label>Tag</label><input id="ei-tag"></div>
-    <div class="edit-row"><label>协议</label><input id="ei-protocol" value="socks"></div>
-    <div class="edit-row"><label>监听地址</label><input id="ei-listen"></div>
-    <div class="edit-row"><label>端口</label><input id="ei-port" type="number"></div>
+    <h3 id="modal-inbound-title">编辑入站</h3>
+    <div class="edit-row"><label>Tag</label><input id="ei-tag" placeholder="my-proxy"></div>
+    <div class="edit-row"><label>协议</label>
+      <select id="ei-protocol">
+        <option value="socks">SOCKS5</option>
+        <option value="http">HTTP</option>
+      </select>
+    </div>
+    <div class="edit-row"><label>监听地址</label><input id="ei-listen" value="0.0.0.0"></div>
+    <div class="edit-row"><label>端口</label><input id="ei-port" type="number" placeholder="10808"></div>
     <div class="edit-row"><label>UDP</label>
       <select id="ei-udp"><option value="true">是</option><option value="false">否</option></select>
     </div>
     <div class="edit-row"><label>Sniffing</label>
       <select id="ei-sniff"><option value="true">是</option><option value="false">否</option></select>
     </div>
-    <div class="edit-row"><label>出站</label>
+    <div class="edit-row"><label>出口</label>
       <select id="ei-outbound"></select>
     </div>
     <div class="btn-group" style="margin-top:16px">
       <button class="btn primary" onclick="saveEditInbound()">确定</button>
+      <button class="btn danger" onclick="deleteInbound()" id="btn-delete-inbound" style="display:none">删除</button>
       <button class="btn" onclick="closeModal('modal-edit-inbound')">取消</button>
     </div>
   </div>
@@ -2701,7 +2708,10 @@ async function loadInbounds(){
   const rout=(d.routing||{});
   if(rout&&rout.rules){
     rout.rules.forEach(r=>{
-      if(r.inboundTag)r.inboundTag.forEach(t=>{inboundRouteMap[t]=r.outboundTag||r.balancerTag||'?'});
+      if(r.inboundTag){
+        const dest=r.balancerTag||r.outboundTag||'?';
+        r.inboundTag.forEach(t=>{inboundRouteMap[t]=dest;});
+      }
     });
   }
   const tb=document.getElementById('inbounds-tbody');
@@ -2721,41 +2731,97 @@ async function loadInbounds(){
 function editInbound(idx){
   editingIdx=idx;
   const ib=inboundsData[idx];
+  document.getElementById('modal-inbound-title').textContent='编辑入站';
+  document.getElementById('btn-delete-inbound').style.display='';
   document.getElementById('ei-tag').value=ib.tag||'';
   document.getElementById('ei-protocol').value=ib.protocol||'socks';
-  document.getElementById('ei-listen').value=ib.listen||'';
+  document.getElementById('ei-listen').value=ib.listen||'0.0.0.0';
   document.getElementById('ei-port').value=ib.port||'';
   document.getElementById('ei-udp').value=(ib.settings&&ib.settings.udp)?'true':'false';
   document.getElementById('ei-sniff').value=(ib.sniffing&&ib.sniffing.enabled)?'true':'false';
-  api('/api/outbounds').then(od=>{
-    const sel=document.getElementById('ei-outbound');
-    if(od&&od.outbounds){
-      sel.innerHTML=od.outbounds.filter(ob=>ob.tag).map(ob=>`<option value="${ob.tag}">${ob.tag}</option>`).join('');
-      sel.value=inboundRouteMap[ib.tag]||'';
-    }
-  });
+  loadOutboundSelector(inboundRouteMap[ib.tag]||'');
   document.getElementById('modal-edit-inbound').classList.add('show');
 }
 
+function showAddInboundModal(){
+  editingIdx=-1;
+  document.getElementById('modal-inbound-title').textContent='新增入站';
+  document.getElementById('btn-delete-inbound').style.display='none';
+  document.getElementById('ei-tag').value='';
+  document.getElementById('ei-protocol').value='socks';
+  document.getElementById('ei-listen').value='0.0.0.0';
+  document.getElementById('ei-port').value='';
+  document.getElementById('ei-udp').value='true';
+  document.getElementById('ei-sniff').value='true';
+  loadOutboundSelector('');
+  document.getElementById('modal-edit-inbound').classList.add('show');
+}
+
+async function loadOutboundSelector(selected){
+  const sel=document.getElementById('ei-outbound');
+  // Load outbounds
+  const od=await api('/api/outbounds');
+  let opts='<option value="">(未绑定)</option>';
+  const obTags=[];
+  if(od&&od.outbounds){
+    od.outbounds.filter(ob=>ob.tag).forEach(ob=>{
+      obTags.push(ob.tag);
+      opts+=`<option value="${ob.tag}">${ob.tag}</option>`;
+    });
+  }
+  // Load balancers
+  const rd=await api('/api/routing');
+  if(rd&&rd.routing&&rd.routing.balancers){
+    rd.routing.balancers.forEach(b=>{
+      opts+=`<option value="bal:${b.tag}">⚖ ${b.tag} (${(b.selector||[]).join(', ')})</option>`;
+    });
+  }
+  sel.innerHTML=opts;
+  // Find matching option
+  for(const opt of sel.options){
+    if(opt.value===selected||opt.value===('bal:'+selected)){opt.selected=true;break;}
+  }
+}
+
 async function saveEditInbound(){
-  const ib=inboundsData[editingIdx];
-  const oldTag=ib.tag;
+  const isNew=editingIdx<0;
+  const ib=isNew?{}:inboundsData[editingIdx];
+  const oldTag=ib.tag||'';
   ib.tag=document.getElementById('ei-tag').value.trim();
   ib.protocol=document.getElementById('ei-protocol').value.trim();
-  ib.listen=document.getElementById('ei-listen').value.trim();
+  ib.listen=document.getElementById('ei-listen').value.trim()||'0.0.0.0';
   ib.port=parseInt(document.getElementById('ei-port').value);
+  if(!ib.tag||!ib.port){toast('Tag 和端口必填',false);return;}
   if(!ib.settings)ib.settings={};
   ib.settings.udp=document.getElementById('ei-udp').value==='true';
+  if(ib.protocol==='socks'){ib.settings.auth='noauth';}
   if(!ib.sniffing)ib.sniffing={};
   ib.sniffing.enabled=document.getElementById('ei-sniff').value==='true';
-  const selectedOutbound=document.getElementById('ei-outbound').value||'';
-  if(oldTag!==ib.tag && inboundRouteMap[oldTag] && !selectedOutbound){
-    inboundRouteMap[ib.tag]=inboundRouteMap[oldTag];
-    delete inboundRouteMap[oldTag];
-  } else {
-    inboundRouteMap[ib.tag]=selectedOutbound||inboundRouteMap[ib.tag]||'';
-    if(oldTag!==ib.tag) delete inboundRouteMap[oldTag];
+  ib.sniffing.destOverride=['http','tls','quic'];
+  const selVal=document.getElementById('ei-outbound').value||'';
+  if(isNew){
+    inboundsData.push(ib);
   }
+  // Handle bal: prefix
+  if(selVal.startsWith('bal:')){
+    inboundRouteMap[ib.tag]=selVal.slice(4);
+  } else {
+    inboundRouteMap[ib.tag]=selVal;
+  }
+  if(oldTag&&oldTag!==ib.tag){
+    delete inboundRouteMap[oldTag];
+  }
+  closeModal('modal-edit-inbound');
+  await saveInbounds();
+  await loadInbounds();
+}
+
+async function deleteInbound(){
+  if(editingIdx<0)return;
+  const ib=inboundsData[editingIdx];
+  if(!confirm('确定删除入站 '+ib.tag+'?'))return;
+  delete inboundRouteMap[ib.tag];
+  inboundsData.splice(editingIdx,1);
   closeModal('modal-edit-inbound');
   await saveInbounds();
   await loadInbounds();
@@ -2767,7 +2833,16 @@ async function saveInbounds(){
   const rules=(routing.rules||[]).filter(r=>!(r.inboundTag&&r.inboundTag.some(t=>inboundsData.some(ib=>ib.tag===t))));
   for(const ib of inboundsData){
     const out=inboundRouteMap[ib.tag];
-    if(out){ rules.unshift({type:'field', inboundTag:[ib.tag], outboundTag:out}); }
+    if(out){
+      const rule={type:'field', inboundTag:[ib.tag]};
+      // Check if it's a balancer
+      if(routing.balancers&&routing.balancers.some(b=>b.tag===out)){
+        rule.balancerTag=out;
+      } else {
+        rule.outboundTag=out;
+      }
+      rules.unshift(rule);
+    }
   }
   routing.rules=rules;
   const d=await api('/api/inbounds',{method:'POST',body:JSON.stringify({inbounds:inboundsData,routing})});
