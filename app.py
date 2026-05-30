@@ -66,6 +66,32 @@ TOKEN_FILE = f"{BASE_DIR}/state/token"
 GEOIP_PATH = f"{BASE_DIR}/data/geoip.dat"
 GEOSITE_PATH = f"{BASE_DIR}/data/geosite.dat"
 GEO_CDN_PREFIX = "https://hub.543083.xyz/"
+GEO_URLS_FILE = f"{BASE_DIR}/state/geo-urls.json"
+
+DEFAULT_GEO_URLS = {
+    "geoip": f"{GEO_CDN_PREFIX}https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
+    "geosite": f"{GEO_CDN_PREFIX}https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
+}
+
+
+def _load_geo_urls():
+    """Load geo URLs from state file, fallback to defaults."""
+    try:
+        with open(GEO_URLS_FILE) as f:
+            saved = json.load(f)
+        # Merge with defaults (in case new keys added)
+        result = dict(DEFAULT_GEO_URLS)
+        result.update(saved)
+        return result
+    except Exception:
+        return dict(DEFAULT_GEO_URLS)
+
+
+def _save_geo_urls(urls):
+    """Save geo URLs to state file."""
+    Path(GEO_URLS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    with open(GEO_URLS_FILE, "w") as f:
+        json.dump(urls, f, indent=2)
 
 app = Flask(__name__)
 
@@ -1271,12 +1297,13 @@ def api_dns_hosts_post():
 
 @app.route("/api/geo/update", methods=["POST"])
 def api_geo_update():
-    """Download latest geoip.dat and geosite.dat from Loyalsoldier via CDN."""
+    """Download latest geoip.dat and geosite from configured URLs."""
     _init_dirs()
+    urls = _load_geo_urls()
     results = {}
     geo_files = [
-        {"name": "geoip.dat", "url": f"{GEO_CDN_PREFIX}https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat", "path": GEOIP_PATH},
-        {"name": "geosite.dat", "url": f"{GEO_CDN_PREFIX}https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat", "path": GEOSITE_PATH},
+        {"name": "geoip.dat", "url": urls.get("geoip", DEFAULT_GEO_URLS["geoip"]), "path": GEOIP_PATH},
+        {"name": "geosite.dat", "url": urls.get("geosite", DEFAULT_GEO_URLS["geosite"]), "path": GEOSITE_PATH},
     ]
     for gf in geo_files:
         try:
@@ -1306,8 +1333,9 @@ def api_geo_update():
 
 @app.route("/api/geo/info")
 def api_geo_info():
-    """Return current geoip/geosite file info."""
-    info = {}
+    """Return current geoip/geosite file info and URLs."""
+    urls = _load_geo_urls()
+    info = {"urls": urls}
     for name, path in [("geoip.dat", GEOIP_PATH), ("geosite.dat", GEOSITE_PATH)]:
         if os.path.exists(path):
             stat = os.stat(path)
@@ -1320,6 +1348,19 @@ def api_geo_info():
         else:
             info[name] = {"exists": False, "size": 0, "size_human": "N/A", "modified": "N/A"}
     return jsonify(info)
+
+
+@app.route("/api/geo/urls", methods=["POST"])
+def api_geo_urls():
+    """Save configurable geo URLs."""
+    data = request.json or {}
+    urls = _load_geo_urls()
+    if "geoip" in data:
+        urls["geoip"] = data["geoip"].strip()
+    if "geosite" in data:
+        urls["geosite"] = data["geosite"].strip()
+    _save_geo_urls(urls)
+    return jsonify({"ok": True, "urls": urls})
 
 
 def _human_size(n):
@@ -2193,7 +2234,15 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
     </div>
     <div class="card" style="margin-top:16px">
       <h2>GeoIP / GeoSite</h2>
-      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">更新 geoip.dat 和 geosite.dat 数据文件（来源：Loyalsoldier v2ray-rules-dat）。</p>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">更新 geoip.dat 和 geosite.dat 数据文件。可自定义下载地址。</p>
+      <div class="edit-row" style="margin-bottom:8px">
+        <label>geoip URL</label>
+        <input id="geo-ip-url" style="font-size:11px" placeholder="https://hub.543083.xyz/https://github.com/.../geoip.dat">
+      </div>
+      <div class="edit-row" style="margin-bottom:8px">
+        <label>geosite URL</label>
+        <input id="geo-site-url" style="font-size:11px" placeholder="https://hub.543083.xyz/https://github.com/.../geosite.dat">
+      </div>
       <div class="grid" style="margin-bottom:12px">
         <div class="stat"><div class="label">geoip.dat</div><div class="value" id="geo-ip-size">-</div></div>
         <div class="stat"><div class="label">geosite.dat</div><div class="value" id="geo-site-size">-</div></div>
@@ -2202,6 +2251,7 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
         <span id="geo-ip-modified">-</span> &nbsp;|&nbsp; <span id="geo-site-modified">-</span>
       </div>
       <div class="btn-group">
+        <button class="btn" onclick="saveGeoUrls()">保存 URL</button>
         <button class="btn primary" id="geo-update-btn" onclick="updateGeo()">更新 GeoIP/GeoSite</button>
       </div>
       <div id="geo-update-status" style="margin-top:8px;font-size:13px;color:var(--text2)"></div>
@@ -3263,6 +3313,18 @@ async function loadGeoInfo(){
   document.getElementById('geo-site-size').textContent=d['geosite.dat']?d['geosite.dat'].size_human:'N/A';
   document.getElementById('geo-ip-modified').textContent='geoip: '+(d['geoip.dat']?d['geoip.dat'].modified:'N/A');
   document.getElementById('geo-site-modified').textContent='geosite: '+(d['geosite.dat']?d['geosite.dat'].modified:'N/A');
+  if(d.urls){
+    document.getElementById('geo-ip-url').value=d.urls.geoip||'';
+    document.getElementById('geo-site-url').value=d.urls.geosite||'';
+  }
+}
+
+async function saveGeoUrls(){
+  const geoip=document.getElementById('geo-ip-url').value.trim();
+  const geosite=document.getElementById('geo-site-url').value.trim();
+  const d=await api('/api/geo/urls',{method:'POST',body:JSON.stringify({geoip,geosite})});
+  if(d&&d.ok)toast('Geo URL 已保存');
+  else toast('保存失败',false);
 }
 
 async function updateGeo(){
