@@ -413,6 +413,17 @@ def _iptables_cleanup():
     ]
     for cmd in cmds:
         _run(cmd, timeout=5)
+    # Clean up LAN gateway rules (FORWARD ACCEPT + MASQUERADE)
+    _run("iptables -D FORWARD -j ACCEPT 2>/dev/null", timeout=5)
+    # Remove MASQUERADE rules we added (for detected subnets)
+    try:
+        import subprocess as _sp
+        _out = _sp.check_output(["iptables-legacy", "-t", "nat", "-S", "POSTROUTING"], text=True, timeout=5)
+        for _line in _out.splitlines():
+            if "MASQUERADE" in _line and "! -o lo" in _line:
+                _run(_line.replace("-A", "-D"), timeout=5)
+    except Exception:
+        pass
 
 
 def _tp_has_iptables_rules():
@@ -511,7 +522,25 @@ def _iptables_setup_redirect(port, bypass_cidrs=None):
     setup.append(f"iptables -t nat -A {ch}_OUT -j {ch}_RULE")
     # LAN gateway support: FORWARD + MASQUERADE
     setup.append("iptables -C FORWARD -j ACCEPT 2>/dev/null || iptables -I FORWARD -j ACCEPT")
-    setup.append("iptables -t nat -C POSTROUTING -s 192.168.0.0/16 ! -o lo -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 192.168.0.0/16 ! -o lo -j MASQUERADE")
+    # Auto-detect local subnets for MASQUERADE
+    import subprocess as _sp
+    try:
+        _out = _sp.check_output(["ip", "-4", "-o", "addr", "show"], text=True, timeout=5)
+        _seen = set()
+        for _line in _out.splitlines():
+            parts = _line.split()
+            if len(parts) >= 4 and "/" in parts[3]:
+                _cidr = parts[3]
+                _net = _cidr.split("/")[0]
+                # Skip loopback and docker subnets
+                if _net.startswith("127.") or _net.startswith("172."):
+                    continue
+                if _cidr not in _seen:
+                    _seen.add(_cidr)
+                    setup.append(f"iptables -t nat -C POSTROUTING -s {_cidr} ! -o lo -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s {_cidr} ! -o lo -j MASQUERADE")
+    except Exception:
+        # Fallback: broad LAN range
+        setup.append("iptables -t nat -C POSTROUTING -s 192.168.0.0/16 ! -o lo -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 192.168.0.0/16 ! -o lo -j MASQUERADE")
     for cmd in setup:
         out, err, rc = _run(cmd, timeout=5)
         if rc != 0:
@@ -1652,6 +1681,58 @@ def api_service_action(action):
     return jsonify(info)
 
 
+# ---------------------------------------------------------------------------
+# Traffic stats (reads /proc/net/dev)
+# ---------------------------------------------------------------------------
+_prev_net_stats = {}
+_prev_net_time = 0
+
+def _read_net_dev():
+    """Read /proc/net/dev, return {iface: (rx_bytes, tx_bytes)}."""
+    stats = {}
+    try:
+        with open("/proc/net/dev") as f:
+            for line in f:
+                line = line.strip()
+                if ":" not in line or line.startswith("Inter") or line.startswith("face"):
+                    continue
+                parts = line.split()
+                iface = parts[0].rstrip(":")
+                if iface == "lo":
+                    continue
+                rx = int(parts[1])
+                tx = int(parts[9])
+                stats[iface] = (rx, tx)
+    except Exception:
+        pass
+    return stats
+
+
+@app.route("/api/stats")
+def api_stats():
+    global _prev_net_stats, _prev_net_time
+    import time
+    now = time.time()
+    cur = _read_net_dev()
+
+    result = {"interfaces": {}, "total_rx_speed": 0, "total_tx_speed": 0}
+    elapsed = now - _prev_net_time if _prev_net_time > 0 else 0
+
+    for iface, (rx, tx) in cur.items():
+        info = {"rx_bytes": rx, "tx_bytes": tx, "rx_speed": 0, "tx_speed": 0}
+        if elapsed > 0.5 and iface in _prev_net_stats:
+            prev_rx, prev_tx = _prev_net_stats[iface]
+            info["rx_speed"] = max(0, (rx - prev_rx) / elapsed)
+            info["tx_speed"] = max(0, (tx - prev_tx) / elapsed)
+            result["total_rx_speed"] += info["rx_speed"]
+            result["total_tx_speed"] += info["tx_speed"]
+        result["interfaces"][iface] = info
+
+    _prev_net_stats = cur
+    _prev_net_time = now
+    return jsonify(result)
+
+
 @app.route("/api/logs")
 def api_logs():
     lines = request.args.get("lines", 80, type=int)
@@ -1871,6 +1952,14 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
       </div>
     </div>
     <div class="card">
+      <h2>流量监控</h2>
+      <div id="stats-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="stat"><div class="label">↓ 下载速度</div><div class="value" id="stat-rx" style="color:var(--green)">-</div></div>
+        <div class="stat"><div class="label">↑ 上传速度</div><div class="value" id="stat-tx" style="color:var(--yellow)">-</div></div>
+      </div>
+      <div id="stats-interfaces" style="font-size:12px;color:var(--text2)"></div>
+    </div>
+    <div class="card">
       <h2>监听端口</h2>
       <table><thead><tr><th>地址</th><th>出口</th></tr></thead><tbody id="listen-tbody"></tbody></table>
     </div>
@@ -1991,6 +2080,13 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
       <div class="edit-row" style="margin-bottom:12px">
         <label>端口</label>
         <input id="tp-port-input" type="number" value="12345" style="width:100px">
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;padding:10px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="tp-ip-forward" onchange="tpToggleForward(this.checked)">
+          <span style="font-size:13px">开启 IP 转发 (ip_forward)</span>
+        </label>
+        <span id="tp-forward-status" style="font-size:12px;color:var(--text2)"></span>
       </div>
       <div class="btn-group" style="margin-bottom:16px">
         <button class="btn success" onclick="tpEnable()">启用</button>
@@ -2253,7 +2349,7 @@ function switchTab(name){
   });
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
-  if(name==='status')loadStatus();
+  if(name==='status'){loadStatus();startStatsPolling();}else{stopStatsPolling();}
   if(name==='inbounds'){loadInbounds();loadTestUrls();}
   if(name==='outbounds'){loadOutbounds();loadObTestUrls();}
   if(name==='routing')loadRouting();
@@ -2295,6 +2391,44 @@ async function loadStatus(){
     const tf=tagForPort(parseInt(port));
     return `<tr><td>${a}</td><td><span class="tag ${tf}">${nameForTag(tf)}</span></td></tr>`;
   }).join('');
+}
+
+function fmtSpeed(bps){
+  if(bps<=0)return '0 B/s';
+  if(bps<1024)return bps.toFixed(0)+' B/s';
+  if(bps<1048576)return (bps/1024).toFixed(1)+' KB/s';
+  if(bps<1073741824)return (bps/1048576).toFixed(1)+' MB/s';
+  return (bps/1073741824).toFixed(2)+' GB/s';
+}
+function fmtBytes(b){
+  if(b<1024)return b+' B';
+  if(b<1048576)return (b/1024).toFixed(1)+' KB';
+  if(b<1073741824)return (b/1048576).toFixed(1)+' MB';
+  if(b<1099511627776)return (b/1073741824).toFixed(2)+' GB';
+  return (b/1099511627776).toFixed(2)+' TB';
+}
+
+let statsTimer=null;
+async function loadStats(){
+  const d=await api('/api/stats');
+  if(!d)return;
+  document.getElementById('stat-rx').textContent=fmtSpeed(d.total_rx_speed);
+  document.getElementById('stat-tx').textContent=fmtSpeed(d.total_tx_speed);
+  const ifaces=Object.entries(d.interfaces||{}).map(([name,info])=>
+    '<div style=\"display:flex;justify-content:space-between;padding:2px 0\">'+
+    '<span>'+name+'</span>'+
+    '<span>↓'+fmtBytes(info.rx_bytes)+' ↑'+fmtBytes(info.tx_bytes)+'</span>'+
+    '</div>'
+  ).join('');
+  document.getElementById('stats-interfaces').innerHTML=ifaces;
+}
+function startStatsPolling(){
+  if(statsTimer)return;
+  loadStats();
+  statsTimer=setInterval(loadStats,2000);
+}
+function stopStatsPolling(){
+  if(statsTimer){clearInterval(statsTimer);statsTimer=null;}
 }
 
 async function svcAction(action){
