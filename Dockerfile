@@ -12,7 +12,9 @@ ENV BASE_DIR=/root/xray-manager
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl unzip ca-certificates supervisor iptables iproute2 && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    update-alternatives --set iptables /usr/sbin/iptables-legacy && \
+    update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
 
 # Create directory structure
 RUN mkdir -p ${BASE_DIR}/bin && \
