@@ -406,6 +406,7 @@ def _iptables_cleanup():
         f"iptables -t nat -X {ch}_OUT 2>/dev/null",
         f"iptables -t nat -F {ch}_PRE 2>/dev/null",
         f"iptables -t nat -D PREROUTING -p tcp -j {ch}_PRE 2>/dev/null",
+        f"iptables -t nat -D PREROUTING -p udp --dport 53 -j {ch}_PRE 2>/dev/null",
         f"iptables -t nat -X {ch}_PRE 2>/dev/null",
         f"iptables -t nat -F {ch}_RULE 2>/dev/null",
         f"iptables -t nat -X {ch}_RULE 2>/dev/null",
@@ -502,10 +503,15 @@ def _iptables_setup_redirect(port, bypass_cidrs=None):
         setup.append(f"iptables -t nat -A {ch}_RULE -d {cidr} -j RETURN")
     setup.append(f"iptables -t nat -A {ch}_RULE -m mark --mark 0x80/0x80 -j RETURN")
     setup.append(f"iptables -t nat -A {ch}_RULE -p tcp -j REDIRECT --to-ports {port}")
+    setup.append(f"iptables -t nat -A {ch}_RULE -p udp --dport 53 -j REDIRECT --to-ports {port}")
     setup.append(f"iptables -t nat -I PREROUTING -p tcp -j {ch}_PRE")
+    setup.append(f"iptables -t nat -I PREROUTING -p udp --dport 53 -j {ch}_PRE")
     setup.append(f"iptables -t nat -I OUTPUT -p tcp -j {ch}_OUT")
     setup.append(f"iptables -t nat -A {ch}_PRE -j {ch}_RULE")
     setup.append(f"iptables -t nat -A {ch}_OUT -j {ch}_RULE")
+    # LAN gateway support: FORWARD + MASQUERADE
+    setup.append("iptables -C FORWARD -j ACCEPT 2>/dev/null || iptables -I FORWARD -j ACCEPT")
+    setup.append("iptables -t nat -C POSTROUTING -s 192.168.0.0/16 ! -o lo -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 192.168.0.0/16 ! -o lo -j MASQUERADE")
     for cmd in setup:
         out, err, rc = _run(cmd, timeout=5)
         if rc != 0:
@@ -523,7 +529,7 @@ def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
     has_tp = any(ib.get("tag") == "transparent" for ib in cfg.get("inbounds", []))
     if not has_tp:
         dokodemo = {
-            "tag": "transparent", "listen": "127.0.0.1", "port": port,
+            "tag": "transparent", "listen": "0.0.0.0", "port": port,
             "protocol": "dokodemo-door",
             "settings": {"network": "tcp,udp", "followRedirect": True},
             "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"],
@@ -535,7 +541,7 @@ def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
     has_dns_ib = any(ib.get("tag") == "dns" for ib in cfg.get("inbounds", []))
     if not has_dns_ib:
         dns_ib = {
-            "tag": "dns", "listen": "127.0.0.1", "port": 53,
+            "tag": "dns", "listen": "0.0.0.0", "port": 53,
             "protocol": "dokodemo-door",
             "settings": {"address": "119.29.29.29", "port": 53, "network": "tcp,udp"},
         }
@@ -629,7 +635,7 @@ def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
 
     # -- DNS config --
     cfg.setdefault("dns", {})
-    cfg["dns"]["servers"] = ["119.29.29.29", "223.5.5.5"]
+    cfg["dns"]["servers"] = ["119.29.29.29", "223.5.5.5", "https://dns.alidns.com/dns-query", "https://doh.pub/dns-query", "https://cloudflare-dns.com/dns-query"]
 
     return cfg, None
 
@@ -672,7 +678,7 @@ def _tp_remove_dokodemo_from_config():
                 settings.pop("domainStrategy", None)
     # Remove dns config added by transparent proxy
     dns = cfg.get("dns", {})
-    if dns.get("servers") == ["119.29.29.29", "223.5.5.5"]:
+    if dns.get("servers") == ["119.29.29.29", "223.5.5.5", "https://dns.alidns.com/dns-query", "https://doh.pub/dns-query", "https://cloudflare-dns.com/dns-query"]:
         cfg.pop("dns", None)
     return cfg, None
 
