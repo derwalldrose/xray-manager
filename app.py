@@ -417,6 +417,21 @@ def _reconcile_connect_state():
         if tp_has_rules:
             print("[reconcile] Stale iptables, cleaning...")
             _iptables_cleanup()
+        # Clean stale dokodemo/dns inbound from config
+        if _tp_has_dokodemo_inbound():
+            print("[reconcile] Stale dokodemo inbound, removing...")
+            cfg, err = _parse_config()
+            if not err:
+                cfg["inbounds"] = [ib for ib in cfg.get("inbounds", [])
+                                   if ib.get("tag") not in ("transparent", "dns")]
+                cfg["outbounds"] = [ob for ob in cfg.get("outbounds", [])
+                                    if ob.get("tag") != "dns-out"]
+                routing = cfg.get("routing", {})
+                routing["rules"] = [r for r in routing.get("rules", [])
+                                    if r.get("inboundTag") not in (["transparent"], ["dns"])]
+                routing["balancers"] = [b for b in routing.get("balancers", [])
+                                        if b.get("tag") != "proxy-balancer"]
+                _save_config_object(cfg)
 
     state["xray_running"] = xray_running
     state["dns_actual"] = _dns_hijack_is_active()
@@ -1069,9 +1084,27 @@ def _service_status():
         out, _, rc = _run("supervisorctl status xray-all:xray 2>/dev/null")
         info["active"] = "active" if "RUNNING" in out else "inactive"
         info["running"] = "RUNNING" in out
-        info["started_at"] = ""
-        info["pid"] = ""
-        info["memory"] = "N/A"
+        # Parse: "xray-all:xray  RUNNING  pid 8, uptime 0:12:34"
+        import re as _re
+        pid_m = _re.search(r"pid (\d+)", out)
+        uptime_m = _re.search(r"uptime (.+?)(?:,|$)", out)
+        info["pid"] = pid_m.group(1) if pid_m else ""
+        info["started_at"] = uptime_m.group(1).strip() if uptime_m else ""
+        # Memory from /proc
+        if info["pid"]:
+            try:
+                with open(f"/proc/{info['pid']}/status") as f:
+                    for line in f:
+                        if line.startswith("VmRSS:"):
+                            mem_kb = int(line.split()[1])
+                            info["memory"] = f"{mem_kb / 1024:.1f} MB"
+                            break
+                if "memory" not in info:
+                    info["memory"] = "N/A"
+            except Exception:
+                info["memory"] = "N/A"
+        else:
+            info["memory"] = "N/A"
     else:
         # Try checking if xray process is running
         out, _, rc = _run("pgrep -x xray")
@@ -3276,8 +3309,8 @@ async function loadStatus(){
     connStr='<span style="color:var(--green)">'+n+'节点 · '+s+t+'</span>';
   }
   let tpStr='<span style="color:var(--text2)">关闭</span>';
-  if(tp.has_iptables||tp.has_dokodemo)tpStr='<span style="color:var(--green)">运行中</span>';
-  else if(tp.enabled)tpStr='<span style="color:var(--yellow)">状态异常</span>';
+  if(tp.has_iptables)tpStr='<span style="color:var(--green)">运行中</span>';
+  else if(tp.has_dokodemo)tpStr='<span style="color:var(--yellow)">配置残留</span>';
 
   document.getElementById('status-grid').innerHTML=`
     <div class="stat"><div class="label">状态</div><div class="value"><span class="status-pill ${d.running?'active':'inactive'}">${d.running?'运行中':'已停止'}</span></div></div>
