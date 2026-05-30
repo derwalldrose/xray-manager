@@ -409,7 +409,7 @@ def _reconcile_connect_state():
             _iptables_cleanup()
         _connect_state_write(state)
 
-    # Case 3: inactive → ensure everything is clean
+    # Case 3: inactive → ensure iptables/DNS are clean (but keep config as-is)
     elif not active_expected:
         if dns_active:
             print("[reconcile] Stale DNS hijack, restoring...")
@@ -417,21 +417,9 @@ def _reconcile_connect_state():
         if tp_has_rules:
             print("[reconcile] Stale iptables, cleaning...")
             _iptables_cleanup()
-        # Clean stale dokodemo/dns inbound from config
-        if _tp_has_dokodemo_inbound():
-            print("[reconcile] Stale dokodemo inbound, removing...")
-            cfg, err = _parse_config()
-            if not err:
-                cfg["inbounds"] = [ib for ib in cfg.get("inbounds", [])
-                                   if ib.get("tag") not in ("transparent", "dns")]
-                cfg["outbounds"] = [ob for ob in cfg.get("outbounds", [])
-                                    if ob.get("tag") != "dns-out"]
-                routing = cfg.get("routing", {})
-                routing["rules"] = [r for r in routing.get("rules", [])
-                                    if r.get("inboundTag") not in (["transparent"], ["dns"])]
-                routing["balancers"] = [b for b in routing.get("balancers", [])
-                                        if b.get("tag") != "proxy-balancer"]
-                _save_config_object(cfg)
+
+    # Always ensure dokodemo/dns inbound exist in config
+    _ensure_dns_inbound_in_config()
 
     state["xray_running"] = xray_running
     state["dns_actual"] = _dns_hijack_is_active()
@@ -810,6 +798,62 @@ def _dns_hijack_is_active():
         return "127.0.0.1" in content and "Xray DNS hijack" in content
     except Exception:
         return False
+
+
+def _ensure_dns_inbound_in_config():
+    """Ensure dokodemo-door transparent + dns inbound always exist in config.
+    Does NOT touch iptables or DNS hijack — those are separate on/off switches.
+    """
+    cfg, err = _parse_config()
+    if err:
+        return
+
+    changed = False
+    inbounds = cfg.get("inbounds", [])
+    outbounds = cfg.get("outbounds", [])
+    routing = cfg.get("routing", {})
+    rules = routing.get("rules", [])
+
+    # Ensure transparent dokodemo-door inbound
+    if not any(ib.get("tag") == "transparent" for ib in inbounds):
+        inbounds.append({
+            "tag": "transparent", "listen": "0.0.0.0", "port": 12345,
+            "protocol": "dokodemo-door",
+            "settings": {"network": "tcp,udp", "followRedirect": True},
+            "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"],
+                         "domainsExcluded": ["argotunnel.com"]},
+        })
+        changed = True
+
+    # Ensure dns dokodemo-door inbound
+    if not any(ib.get("tag") == "dns" for ib in inbounds):
+        inbounds.append({
+            "tag": "dns", "listen": "0.0.0.0", "port": 53,
+            "protocol": "dokodemo-door",
+            "settings": {"address": "119.29.29.29", "port": 53, "network": "tcp,udp"},
+        })
+        changed = True
+
+    # Ensure dns-out outbound
+    if not any(ob.get("tag") == "dns-out" for ob in outbounds):
+        outbounds.append({
+            "tag": "dns-out", "protocol": "dns",
+            "settings": {"port": 53, "address": "119.29.29.29", "network": "udp"},
+            "streamSettings": {"sockopt": {"mark": 128}},
+        })
+        changed = True
+
+    # Ensure dns routing rule
+    if not any(r.get("inboundTag") == ["dns"] for r in rules):
+        rules.append({"type": "field", "inboundTag": ["dns"], "outboundTag": "direct"})
+        changed = True
+
+    if changed:
+        cfg["inbounds"] = inbounds
+        cfg["outbounds"] = outbounds
+        routing["rules"] = rules
+        _save_config_object(cfg)
+        print("[dns-config] Added missing dokodemo/dns inbound to config")
 
 
 def _iptables_setup_redirect(port, bypass_cidrs=None):
@@ -2269,33 +2313,25 @@ def api_connect_start():
 
 @app.route("/api/connect/stop", methods=["POST"])
 def api_connect_stop():
-    """Stop connect mode: clean up iptables, restore default routing."""
+    """Stop connect mode: clean up iptables, restore DNS, remove connect routing rules."""
     state = _connect_state_read()
 
-    # Clean up transparent proxy if enabled
-    if state.get("transparent_enabled"):
-        _iptables_cleanup()
+    # Clean up iptables (always, regardless of what state says)
+    _iptables_cleanup()
 
-    # Always restore DNS hijack
+    # Restore DNS hijack (always)
     _dns_hijack_restore()
 
-    # Remove connect-mode inbounds and restore minimal config
+    # Remove connect-mode routing rules but KEEP dokodemo/dns inbound
     cfg, err = _parse_config()
     if not err:
-        # Restore original inbounds
-        original = state.get("original_inbounds", [])
-        if original:
-            cfg["inbounds"] = original
-        else:
-            cfg["inbounds"] = [ib for ib in cfg.get("inbounds", [])
-                               if ib.get("tag") not in ("socks-in", "http-in", "dns", "transparent")]
         routing = cfg.get("routing", {})
         routing["balancers"] = []
-        # Keep only non-connect-mode rules
+        # Remove rules that reference connect-mode inbounds
         new_rules = []
         for r in routing.get("rules", []):
             ib_tags = r.get("inboundTag", [])
-            if any(t in ib_tags for t in ("socks-in", "http-in", "transparent")):
+            if any(t in ib_tags for t in ("socks-in", "http-in")):
                 continue
             new_rules.append(r)
         routing["rules"] = new_rules
