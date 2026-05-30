@@ -2715,6 +2715,22 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
           <button class="btn" onclick="connClearAll()">清空</button>
           <button class="btn primary" onclick="connTestSelected()">测试选中</button>
           <button class="btn" onclick="connTestAll()">测试全部</button>
+          <button class="btn" onclick="connSpeedTest()">测速</button>
+          <button class="btn primary" onclick="showAddOutboundModal()">新增节点</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+        <label style="color:var(--text2);font-size:12px">测试URL</label>
+        <select id="conn-test-url-select" style="min-width:240px;padding:5px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px"></select>
+        <input id="conn-test-url-custom" placeholder="自定义" style="min-width:200px;padding:5px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:12px">
+        <label style="color:var(--text2);font-size:12px">测速URL</label>
+        <input id="conn-speed-url" value="https://speed.cloudflare.com/__down?bytes=10000000" style="min-width:300px;padding:5px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:12px">
+      </div>
+      <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:10px;flex-wrap:wrap">
+        <textarea id="conn-import-links" placeholder="快速导入：vless:// vmess:// ss:// trojan://（支持多行）" style="flex:1;min-width:350px;min-height:50px;padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:12px;resize:vertical"></textarea>
+        <div style="display:flex;flex-direction:column;gap:4px;align-self:flex-end">
+          <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text2);cursor:pointer"><input type="checkbox" id="conn-import-tfo"> TFO</label>
+          <button class="btn primary" onclick="connImportLinks()" style="font-size:12px">导入</button>
         </div>
       </div>
       <div class="conn-node-list" id="conn-node-list">
@@ -4323,6 +4339,11 @@ function renderConnNodes(){
       <span class="proto-col">${n.network||'tcp'}</span>
       <span class="latency-col" style="color:${latColor}">${latStr}</span>
       <span class="latency-col" style="color:var(--yellow)">${speedStr}</span>
+      <span class="ob-actions" onclick="event.stopPropagation()">
+        <button class="btn" onclick="connTestOne(${i})" title="测试" style="padding:2px 6px;font-size:10px">⏱</button>
+        <button class="btn" onclick="connEditNode(${i})" title="编辑" style="padding:2px 6px;font-size:10px">✏</button>
+        <button class="btn" onclick="connDeleteNode(${i})" title="删除" style="padding:2px 6px;font-size:10px;color:var(--red)">✕</button>
+      </span>
     </div>`;
   }).join('');
   updateSelectedCount();
@@ -4428,7 +4449,8 @@ async function connDoTest(tags){
   const box=document.getElementById('conn-test-output');
   box.style.display='block';
   box.textContent='测试 '+tags.length+' 个节点延迟...\n启动临时 Xray...';
-  const d=await api('/api/connect/test-selected',{method:'POST',body:JSON.stringify({tags,mode:'ping'})});
+  const url=connTestUrl();
+  const d=await api('/api/connect/test-selected',{method:'POST',body:JSON.stringify({tags,mode:'ping',url})});
   if(!d||!d.ok){
     box.textContent='失败: '+(d&&d.error||'unknown');
     return;
@@ -4445,8 +4467,128 @@ async function connDoTest(tags){
   renderConnNodes();
 }
 
+// Test URL helpers
+function connTestUrl(){
+  const custom=(document.getElementById('conn-test-url-custom')?.value||'').trim();
+  if(custom)return custom;
+  return document.getElementById('conn-test-url-select')?.value||'https://api.ipify.org';
+}
+
+async function loadConnTestUrls(){
+  const d=await api('/api/test-urls');
+  if(!d)return;
+  const sel=document.getElementById('conn-test-url-select');
+  if(!sel)return;
+  sel.innerHTML=(d.urls||[]).map(u=>`<option value="${u.replace(/"/g,'&quot;')}">${u}</option>`).join('');
+}
+
+// Single node test
+async function connTestOne(idx){
+  const n=connNodes[idx];
+  if(!n)return;
+  const box=document.getElementById('conn-test-output');
+  box.style.display='block';
+  box.textContent=`测试 ${n.tag} ...\n`;
+  const d=await api('/api/connect/test-selected',{method:'POST',body:JSON.stringify({tags:[n.tag],mode:'ping',url:connTestUrl()})});
+  if(!d||!d.ok){box.textContent+='失败';return;}
+  for(const r of d.results){
+    connLatency[r.tag]={ping_ok:r.ping_ok,ping_ms:r.ping_ms,exit_ip:r.exit_ip,speed_mbps:r.speed_mbps||0};
+    box.textContent+=`${r.tag}: ${r.ping_ok?(parseFloat(r.ping_ms)*1000).toFixed(0)+'ms':'FAIL'}  ${r.exit_ip||''}\n`;
+  }
+  renderConnNodes();
+}
+
+// Speed test
+async function connSpeedTest(){
+  const tags=connNodes.filter(n=>n.selected).map(n=>n.tag);
+  if(!tags.length){toast('请至少选择一个节点',false);return;}
+  const speedUrl=(document.getElementById('conn-speed-url')?.value||'').trim()||'https://speed.cloudflare.com/__down?bytes=10000000';
+  const box=document.getElementById('conn-test-output');
+  box.style.display='block';
+  box.textContent='测速 '+tags.length+' 个节点...\n下载: '+speedUrl+'\n启动临时 Xray...';
+  const d=await api('/api/connect/test-selected',{method:'POST',body:JSON.stringify({tags,mode:'speed',url:connTestUrl(),speed_url:speedUrl})});
+  if(!d||!d.ok){box.textContent+='失败: '+(d&&d.error||'');return;}
+  let lines=['=== 测速 ('+d.count+' nodes) ===',''];
+  for(const r of d.results){
+    connLatency[r.tag]={ping_ok:r.ping_ok,ping_ms:r.ping_ms,exit_ip:r.exit_ip,speed_mbps:r.speed_mbps||0};
+    const tag=(r.tag||'').padEnd(18);
+    const speed=r.speed_ok?(r.speed_mbps+' Mbps').padStart(12):'      FAIL';
+    const ping=r.ping_ok?(parseFloat(r.ping_ms)*1000).toFixed(0)+'ms':'FAIL';
+    lines.push(tag+speed+ping.padStart(10));
+  }
+  box.textContent=lines.join('\n');
+  renderConnNodes();
+}
+
+// Edit node (reuse outbounds modal)
+function connEditNode(idx){
+  const n=connNodes[idx];
+  if(!n)return;
+  // Find the actual outbound data index
+  if(typeof outboundsData!=='undefined'){
+    const obIdx=outboundsData.findIndex(ob=>ob.tag===n.tag);
+    if(obIdx>=0){editOutbound(obIdx);return;}
+  }
+  toast('请在出站 tab 编辑',false);
+}
+
+// Delete node
+async function connDeleteNode(idx){
+  const n=connNodes[idx];
+  if(!n||!confirm('删除节点 '+n.tag+' ?'))return;
+  // Load fresh outbounds, remove this one, save
+  const d=await api('/api/outbounds');
+  if(!d)return;
+  const obs=(d.outbounds||[]).filter(ob=>ob.tag!==n.tag);
+  const r=await api('/api/outbounds',{method:'POST',body:JSON.stringify({outbounds:obs})});
+  if(r&&r.ok){toast('已删除 '+n.tag);loadConnect();}
+  else toast('删除失败',false);
+}
+
+// Quick import links
+async function connImportLinks(){
+  const text=(document.getElementById('conn-import-links')?.value||'').trim();
+  if(!text){toast('请粘贴节点链接',false);return;}
+  const tfo=document.getElementById('conn-import-tfo')?.checked||false;
+  const links=text.split('\n').map(s=>s.trim()).filter(Boolean);
+  if(!links.length){toast('无有效链接',false);return;}
+
+  // Parse all links
+  const newObs=[];
+  for(const link of links){
+    try{
+      const r=await api('/api/outbounds/parse-vless',{method:'POST',body:JSON.stringify({link,tfo})});
+      if(r&&r.outbound)newObs.push(r.outbound);
+      else toast('解析失败: '+link.slice(0,40),false);
+    }catch(e){toast('解析异常',false);}
+  }
+  if(!newObs.length)return;
+
+  // Load existing outbounds, append new ones, save
+  const d=await api('/api/outbounds');
+  if(!d)return;
+  const existing=d.outbounds||[];
+  // Deduplicate by tag
+  const existingTags=new Set(existing.map(ob=>ob.tag));
+  for(const ob of newObs){
+    let tag=ob.tag;
+    let n=1;
+    while(existingTags.has(tag)){tag=ob.tag+'-'+n;n++;}
+    ob.tag=tag;
+    existingTags.add(tag);
+    existing.push(ob);
+  }
+  const r=await api('/api/outbounds',{method:'POST',body:JSON.stringify({outbounds:existing})});
+  if(r&&r.ok){
+    toast('导入 '+newObs.length+' 个节点');
+    document.getElementById('conn-import-links').value='';
+    loadConnect();
+  }else toast('保存失败',false);
+}
+
 // Init connect mode on page load
 loadConnect();
+loadConnTestUrls();
 
 // Connect tab: transparent proxy helpers
 function connToggleTp(){
