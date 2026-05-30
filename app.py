@@ -707,8 +707,12 @@ def _tp_startup_cleanup():
             tp_port = conn_state.get("transparent_port", 12345)
             print(f"[connect-mode] Restoring transparent proxy iptables (port {tp_port})...")
             _iptables_setup_redirect(tp_port)
-            _dns_hijack_apply()
-            print("[connect-mode] iptables + DNS restored")
+            print("[connect-mode] iptables restored")
+    # Connect-mode: restore DNS hijack if was active
+    if conn_state.get("active") and not _dns_hijack_is_active():
+        print("[connect-mode] Restoring DNS hijack...")
+        _dns_hijack_apply()
+        print("[connect-mode] DNS hijack restored")
 
 
 def _dns_hijack_backup():
@@ -2174,7 +2178,9 @@ def api_connect_start():
             if backed_up:
                 _iptables_restore()
             return jsonify({"error": f"iptables 设置失败: {msg}"}), 400
-        _dns_hijack_apply()
+
+    # DNS hijack (always, independent of transparent proxy)
+    _dns_hijack_apply()
 
     # Restart xray
     restart = _restart_xray()
@@ -2205,7 +2211,9 @@ def api_connect_stop():
     # Clean up transparent proxy if enabled
     if state.get("transparent_enabled"):
         _iptables_cleanup()
-        _dns_hijack_restore()
+
+    # Always restore DNS hijack
+    _dns_hijack_restore()
 
     # Remove connect-mode inbounds and restore minimal config
     cfg, err = _parse_config()
@@ -2689,7 +2697,6 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
     <div class="tab" onclick="switchTab('config')">配置</div>
     <div class="tab" onclick="switchTab('dns')">DNS</div>
     <div class="tab" onclick="switchTab('logs')">日志</div>
-    <div class="tab" onclick="switchTab('transparent')">透明代理</div>
     <div class="tab" onclick="switchTab('system')">系统</div>
     <div class="tab" onclick="switchTab('backups')">备份</div>
   </div>
@@ -2728,9 +2735,42 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
         <div class="card-inner">
           <label style="color:var(--text2);font-size:12px;display:block;margin-bottom:6px">透明代理</label>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
-            <input type="checkbox" id="conn-transparent"> <span style="font-size:13px">启用 (iptables REDIRECT)</span>
+            <input type="checkbox" id="conn-transparent" onchange="connToggleTp()"> <span style="font-size:13px">启用 iptables REDIRECT (局域网/本机全走代理)</span>
           </label>
-          <div style="display:flex;gap:8px;align-items:center">
+          <div id="conn-tp-details" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;padding:8px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                <input type="checkbox" id="tp-ip-forward" onchange="tpToggleForward(this.checked)">
+                <span style="font-size:12px">IP 转发 (ip_forward)</span>
+              </label>
+              <span id="tp-forward-status" style="font-size:11px;color:var(--text2)"></span>
+            </div>
+            <details style="margin-bottom:8px">
+              <summary style="cursor:pointer;color:var(--text2);font-size:12px;margin-bottom:6px">绕过 IP/CIDR 配置</summary>
+              <p style="color:var(--text2);font-size:11px;margin-bottom:6px">默认绕过私有/保留地址 + 自动提取 DNS 相关 IP。每行一个 CIDR。</p>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+                <div>
+                  <label style="color:var(--text2);font-size:11px;display:block;margin-bottom:3px">默认（只读）</label>
+                  <textarea id="tp-default-cidrs" readonly style="width:100%;min-height:100px;background:var(--bg);color:var(--text2);border:1px solid var(--border);border-radius:4px;padding:6px;font-family:monospace;font-size:10px;resize:vertical"></textarea>
+                </div>
+                <div>
+                  <label style="color:var(--text2);font-size:11px;display:block;margin-bottom:3px">自动（DNS）</label>
+                  <textarea id="tp-auto-cidrs" readonly style="width:100%;min-height:100px;background:var(--bg);color:var(--yellow);border:1px solid var(--border);border-radius:4px;padding:6px;font-family:monospace;font-size:10px;resize:vertical"></textarea>
+                </div>
+                <div>
+                  <label style="color:var(--text2);font-size:11px;display:block;margin-bottom:3px">自定义</label>
+                  <textarea id="tp-custom-cidrs" placeholder="1.1.1.1/32&#10;8.8.8.8/32" style="width:100%;min-height:100px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px;font-family:monospace;font-size:10px;resize:vertical"></textarea>
+                </div>
+              </div>
+              <div class="btn-group" style="margin-top:6px">
+                <button class="btn" onclick="tpSaveBypass()" style="font-size:11px;padding:3px 10px">保存绕过规则</button>
+              </div>
+            </details>
+          </div>
+        </div>
+        <div class="card-inner">
+          <label style="color:var(--text2);font-size:12px;display:block;margin-bottom:6px">端口配置</label>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <span style="color:var(--text2);font-size:12px">SOCKS</span>
             <input id="conn-port-socks" type="number" value="10810" style="width:80px;padding:4px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px;font-family:monospace">
             <span style="color:var(--text2);font-size:12px">HTTP</span>
@@ -2916,85 +2956,6 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
   </div>
 
   <!-- Transparent Proxy -->
-  <div class="tab-content" id="tab-transparent">
-    <div class="card">
-      <h2><span class="dot" id="tp-dot"></span> 透明代理 (Redirect)</h2>
-      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">通过 iptables REDIRECT 将本机及局域网 TCP 流量透明转发到 Xray dokodemo-door。所有设备自动走代理，无需手动配置。</p>
-      <div class="grid" style="margin-bottom:12px">
-        <div class="stat"><div class="label">状态</div><div class="value" id="tp-status">-</div></div>
-        <div class="stat"><div class="label">监听端口</div><div class="value" id="tp-port">-</div></div>
-        <div class="stat"><div class="label">iptables</div><div class="value" id="tp-chains">-</div></div>
-      </div>
-      <div class="edit-row" style="margin-bottom:12px">
-        <label>代理出口</label>
-        <select id="tp-proxy-tag" style="padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px" onchange="loadBalancer()"></select>
-      </div>
-      <div id="tp-mode-hint" style="font-size:12px;color:var(--text2);margin-bottom:12px;padding:6px 10px;background:var(--bg);border-radius:4px;border-left:3px solid var(--border)"></div>
-      <div class="edit-row" style="margin-bottom:12px">
-        <label>端口</label>
-        <input id="tp-port-input" type="number" value="12345" style="width:100px">
-      </div>
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;padding:10px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-          <input type="checkbox" id="tp-ip-forward" onchange="tpToggleForward(this.checked)">
-          <span style="font-size:13px">开启 IP 转发 (ip_forward)</span>
-        </label>
-        <span id="tp-forward-status" style="font-size:12px;color:var(--text2)"></span>
-      </div>
-      <div class="btn-group" style="margin-bottom:16px">
-        <button class="btn success" onclick="tpEnable()">启用</button>
-        <button class="btn danger" onclick="tpDisable()">关闭</button>
-        <button class="btn" onclick="tpRestore()">恢复 iptables</button>
-      </div>
-      <div class="log-box" id="tp-output" style="display:none;margin-bottom:16px;max-height:200px"></div>
-      <details>
-        <summary style="cursor:pointer;color:var(--text2);font-size:13px;margin-bottom:8px">绕过 IP/CIDR 配置</summary>
-        <p style="color:var(--text2);font-size:12px;margin-bottom:8px">默认绕过所有私有/保留地址。并自动从当前 DNS 配置中提取所有相关 IP 作为自动绕过。可在下方添加自定义 CIDR，每行一个。保存后如果透明代理已启用，会自动重载 iptables 规则。</p>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
-          <div>
-            <label style="color:var(--text2);font-size:12px;display:block;margin-bottom:4px">默认列表（只读）</label>
-            <textarea id="tp-default-cidrs" readonly style="width:100%;min-height:160px;background:var(--bg);color:var(--text2);border:1px solid var(--border);border-radius:4px;padding:8px;font-family:monospace;font-size:11px;resize:vertical"></textarea>
-          </div>
-          <div>
-            <label style="color:var(--text2);font-size:12px;display:block;margin-bottom:4px">自动提取（DNS相关）</label>
-            <textarea id="tp-auto-cidrs" readonly style="width:100%;min-height:160px;background:var(--bg);color:var(--yellow);border:1px solid var(--border);border-radius:4px;padding:8px;font-family:monospace;font-size:11px;resize:vertical"></textarea>
-          </div>
-          <div>
-            <label style="color:var(--text2);font-size:12px;display:block;margin-bottom:4px">自定义列表（可编辑）</label>
-            <textarea id="tp-custom-cidrs" placeholder="1.1.1.1/32&#10;8.8.8.8/32&#10;203.0.113.0/24" style="width:100%;min-height:160px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:8px;font-family:monospace;font-size:11px;resize:vertical"></textarea>
-          </div>
-        </div>
-        <div class="btn-group" style="margin-top:8px">
-          <button class="btn primary" onclick="tpSaveBypass()">保存绕过规则</button>
-        </div>
-      </details>
-      <details style="margin-top:12px">
-        <summary style="cursor:pointer;color:var(--text2);font-size:13px;margin-bottom:8px">负载均衡配置</summary>
-        <p style="color:var(--text2);font-size:12px;margin-bottom:8px">选择多个代理节点进行负载均衡。启用后，透明代理流量将通过负载均衡器分配到所选节点，而非固定单一出口。策略说明：roundRobin（轮询）、leastPing（最低延迟）、random（随机）。</p>
-        <div style="margin-bottom:12px">
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
-            <input type="checkbox" id="tp-bal-enabled"> <span style="font-size:13px">启用负载均衡</span>
-          </label>
-          <div class="edit-row" style="margin-bottom:8px">
-            <label>策略</label>
-            <select id="tp-bal-strategy" style="padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
-              <option value="roundRobin">轮询 (roundRobin)</option>
-              <option value="leastPing">最低延迟 (leastPing)</option>
-              <option value="random">随机 (random)</option>
-            </select>
-          </div>
-          <div id="tp-bal-nodes" style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:8px;background:var(--bg)">
-            <span style="color:var(--text2);font-size:12px">加载中...</span>
-          </div>
-          <p style="color:var(--text2);font-size:11px;margin-top:4px">回退出口 (fallback): direct</p>
-        </div>
-        <div class="btn-group" style="margin-top:8px">
-          <button class="btn primary" onclick="tpSaveBalancer()">保存负载均衡配置</button>
-        </div>
-      </details>
-    </div>
-  </div>
-
   <!-- Logs -->
   <div class="tab-content" id="tab-logs">
     <div class="card">
@@ -3222,7 +3183,7 @@ async function api(path, opts={}){
 
 function switchTab(name){
   document.querySelectorAll('.tab').forEach((t,i)=>{
-    t.classList.toggle('active',t.textContent.trim()===({connect:'连接',status:'状态',inbounds:'入站',outbounds:'出站',routing:'路由',config:'配置',dns:'DNS',logs:'日志',transparent:'透明代理',system:'系统',backups:'备份'}[name]));
+    t.classList.toggle('active',t.textContent.trim()===({connect:'连接',status:'状态',inbounds:'入站',outbounds:'出站',routing:'路由',config:'配置',dns:'DNS',logs:'日志',system:'系统',backups:'备份'}[name]));
   });
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
@@ -4326,16 +4287,20 @@ async function loadConnect(){
   const d=await api('/api/connect/status');
   if(!d)return;
   connNodes=d.nodes||[];
-  // Restore latency data from previous tests
   renderConnNodes();
-  // Update status bar
   updateConnStatus(d);
   // Restore settings
   if(d.balancer_strategy)document.getElementById('conn-strategy').value=d.balancer_strategy;
-  if(d.transparent_enabled!==undefined)document.getElementById('conn-transparent').checked=!!d.transparent_enabled;
+  if(d.transparent_enabled!==undefined){
+    document.getElementById('conn-transparent').checked=!!d.transparent_enabled;
+    connToggleTp();
+  }
   if(d.inbound_socks_port)document.getElementById('conn-port-socks').value=d.inbound_socks_port;
   if(d.inbound_http_port)document.getElementById('conn-port-http').value=d.inbound_http_port;
   if(d.transparent_port)document.getElementById('conn-port-tp').value=d.transparent_port;
+  // Load bypass CIDRs + IP forward status
+  loadTpBypass();
+  loadTpForward();
 }
 
 function renderConnNodes(){
@@ -4482,6 +4447,50 @@ async function connDoTest(tags){
 
 // Init connect mode on page load
 loadConnect();
+
+// Connect tab: transparent proxy helpers
+function connToggleTp(){
+  const on=document.getElementById('conn-transparent').checked;
+  document.getElementById('conn-tp-details').style.display=on?'block':'none';
+}
+
+async function loadTpBypass(){
+  const d=await api('/api/transparent/bypass');
+  if(!d)return;
+  const el1=document.getElementById('tp-default-cidrs');
+  const el2=document.getElementById('tp-auto-cidrs');
+  const el3=document.getElementById('tp-custom-cidrs');
+  if(el1)el1.value=(d.defaults||[]).join('\n');
+  if(el2)el2.value=(d.auto||[]).join('\n');
+  if(el3)el3.value=(d.custom||[]).join('\n');
+}
+
+async function loadTpForward(){
+  const d=await api('/api/sysctl');
+  if(!d)return;
+  const fp=d.params&&d.params.find(p=>p.key==='net.ipv4.ip_forward');
+  if(fp){
+    const el=document.getElementById('tp-ip-forward');
+    const st=document.getElementById('tp-forward-status');
+    if(el)el.checked=fp.value==='1'||fp.value===1;
+    if(st)st.textContent='当前: '+fp.value+(fp.value==='1'?' ✓':'');
+  }
+}
+
+async function tpToggleForward(on){
+  const v=on?'1':'0';
+  const r=await api('/api/sysctl',{method:'POST',body:JSON.stringify({changes:{'net.ipv4.ip_forward':v}})});
+  if(r&&r.ok)toast('IP 转发: '+(on?'开启':'关闭'));
+  else toast('设置失败',false);
+  loadTpForward();
+}
+
+async function tpSaveBypass(){
+  const custom=(document.getElementById('tp-custom-cidrs').value||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  const r=await api('/api/transparent/bypass',{method:'POST',body:JSON.stringify({custom})});
+  if(r&&r.ok){toast('绕过规则已保存');loadTpBypass();}
+  else toast('保存失败',false);
+}
 </script>
 </body>
 </html>
