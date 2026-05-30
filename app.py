@@ -374,6 +374,56 @@ def _connect_state_write(state):
         json.dump(state, f, indent=2, ensure_ascii=False)
 
 
+def _reconcile_connect_state():
+    """Reconcile actual system state with connect-mode.json.
+    Returns the corrected state dict with actual_* fields.
+    """
+    state = _connect_state_read()
+    xray_running = _service_status().get("running", False)
+    dns_active = _dns_hijack_is_active()
+    tp_has_rules = _tp_has_iptables_rules()
+    tp_expected = state.get("transparent_enabled", False)
+    active_expected = state.get("active", False)
+
+    # Case 1: active + xray running → ensure DNS + iptables match
+    if active_expected and xray_running:
+        if not dns_active:
+            print("[reconcile] DNS hijack missing, applying...")
+            _dns_hijack_apply()
+        if tp_expected and not tp_has_rules:
+            tp_port = state.get("transparent_port", 12345)
+            print(f"[reconcile] iptables missing, applying (port {tp_port})...")
+            _iptables_setup_redirect(tp_port)
+        if not tp_expected and tp_has_rules:
+            print("[reconcile] Stale iptables, cleaning...")
+            _iptables_cleanup()
+
+    # Case 2: active but xray NOT running → mark inactive, clean all
+    elif active_expected and not xray_running:
+        print("[reconcile] Active but xray stopped → cleaning up")
+        state["active"] = False
+        state["was_active_but_stopped"] = True
+        if dns_active:
+            _dns_hijack_restore()
+        if tp_has_rules:
+            _iptables_cleanup()
+        _connect_state_write(state)
+
+    # Case 3: inactive → ensure everything is clean
+    elif not active_expected:
+        if dns_active:
+            print("[reconcile] Stale DNS hijack, restoring...")
+            _dns_hijack_restore()
+        if tp_has_rules:
+            print("[reconcile] Stale iptables, cleaning...")
+            _iptables_cleanup()
+
+    state["xray_running"] = xray_running
+    state["dns_actual"] = _dns_hijack_is_active()
+    state["transparent_actual"] = _tp_has_iptables_rules()
+    return state
+
+
 def _extract_node_info(ob):
     """Extract display info from an outbound."""
     tag = ob.get("tag", "")
@@ -700,19 +750,12 @@ def _tp_startup_cleanup():
         if _dns_hijack_restore():
             print("[transparent-proxy] Stale DNS hijack restored")
 
-    # Connect-mode: restore transparent proxy if was active
-    conn_state = _connect_state_read()
-    if conn_state.get("active") and conn_state.get("transparent_enabled"):
-        if not has_iptables and has_dokodemo:
-            tp_port = conn_state.get("transparent_port", 12345)
-            print(f"[connect-mode] Restoring transparent proxy iptables (port {tp_port})...")
-            _iptables_setup_redirect(tp_port)
-            print("[connect-mode] iptables restored")
-    # Connect-mode: restore DNS hijack if was active
-    if conn_state.get("active") and not _dns_hijack_is_active():
-        print("[connect-mode] Restoring DNS hijack...")
-        _dns_hijack_apply()
-        print("[connect-mode] DNS hijack restored")
+    # Connect-mode: reconcile state on startup
+    conn_state = _reconcile_connect_state()
+    if conn_state.get("active"):
+        print("[connect-mode] Active, state reconciled")
+    elif conn_state.get("was_active_but_stopped"):
+        print("[connect-mode] Was active but xray stopped, cleaned up")
 
 
 def _dns_hijack_backup():
@@ -2097,19 +2140,8 @@ def api_balancer_set():
 
 @app.route("/api/connect/status")
 def api_connect_status():
-    """Return current connect-mode state + node list."""
-    state = _connect_state_read()
-    xray_running = _service_status().get("running", False)
-
-    # Auto-correct: if state says active but xray is not running, mark inactive
-    if state.get("active") and not xray_running:
-        state["active"] = False
-        state["was_active_but_stopped"] = True
-        _connect_state_write(state)
-
-    # Also check transparent proxy actual state
-    tp_has_rules = _tp_has_iptables_rules()
-    state["transparent_actual"] = tp_has_rules
+    """Return current connect-mode state + node list, with state reconciliation."""
+    state = _reconcile_connect_state()
 
     cfg, err = _parse_config()
     nodes = []
@@ -2121,7 +2153,6 @@ def api_connect_status():
             info["selected"] = info["tag"] in state.get("selected_tags", [])
             nodes.append(info)
     state["nodes"] = nodes
-    state["xray_running"] = xray_running
     return jsonify(state)
 
 
@@ -4372,21 +4403,37 @@ function updateConnStatus(state){
   const ind=document.getElementById('conn-indicator');
   const txt=document.getElementById('conn-status-text');
   const ep=document.getElementById('conn-endpoints');
+  const btnStart=document.getElementById('btn-conn-start');
+  const btnStop=document.getElementById('btn-conn-stop');
   const on=state.active&&state.xray_running;
   ind.className='indicator '+(on?'on':'off');
+
+  // Button state: running → only stop; stopped → only start
+  if(btnStart)btnStart.disabled=on;
+  if(btnStop)btnStop.disabled=!on;
+  if(btnStart)btnStart.style.opacity=on?'0.4':'1';
+  if(btnStop)btnStop.style.opacity=on?'1':'0.4';
+
+  // Node list and controls: lock when running
+  const nodeEls=document.querySelectorAll('#conn-node-list input,#conn-node-list button');
+  nodeEls.forEach(el=>{el.disabled=on;el.style.pointerEvents=on?'none':'auto';});
+  const ctrlEls=['conn-strategy','conn-port-socks','conn-port-http','conn-port-tp','conn-transparent'];
+  ctrlEls.forEach(id=>{const el=document.getElementById(id);if(el)el.disabled=on;});
+
   if(on){
     const tags=state.selected_tags||[];
     const stratMap={roundRobin:'轮询',leastPing:'最低延迟',random:'随机'};
     const stratStr=state.balancer_strategy&&tags.length>1?' · '+stratMap[state.balancer_strategy]||state.balancer_strategy:'';
     const tpStr=state.transparent_enabled?' · 透明代理':'';
-    txt.innerHTML='<span style="color:var(--green);font-weight:600">已连接</span> ('+tags.length+'节点'+stratStr+tpStr+')';
+    const dnsStr=state.dns_actual?' · DNS':'';
+    txt.innerHTML='<span style="color:var(--green);font-weight:600">已连接</span> ('+tags.length+'节点'+stratStr+tpStr+dnsStr+')';
     const eps=[];
     eps.push('SOCKS5 → 0.0.0.0:'+(state.inbound_socks_port||10810));
     eps.push('HTTP → 0.0.0.0:'+(state.inbound_http_port||10818));
     if(state.transparent_enabled)eps.push('透明 → 0.0.0.0:'+(state.transparent_port||12345));
     ep.textContent=eps.join('  |  ');
   }else if(state.was_active_but_stopped){
-    txt.innerHTML='<span style="color:var(--yellow);font-weight:600">已断开</span> (Xray 未运行，需重新连接)';
+    txt.innerHTML='<span style="color:var(--yellow);font-weight:600">已断开</span> (需重新连接)';
     ep.textContent='';
   }else{
     txt.textContent='未连接';
