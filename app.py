@@ -4371,9 +4371,11 @@ function renderConnNodes(){
       <span class="latency-col" style="color:${latColor}">${latStr}</span>
       <span class="latency-col" style="color:var(--yellow)">${speedStr}</span>
       <span class="ob-actions" onclick="event.stopPropagation()">
-        <button class="btn" onclick="connTestOne(${i})" title="测试" style="padding:2px 6px;font-size:10px">⏱</button>
-        <button class="btn" onclick="connEditNode(${i})" title="编辑" style="padding:2px 6px;font-size:10px">✏</button>
-        <button class="btn" onclick="connDeleteNode(${i})" title="删除" style="padding:2px 6px;font-size:10px;color:var(--red)">✕</button>
+        <button class="btn primary" onclick="connTestOne(${i})">延迟</button>
+        <button class="btn" onclick="connSpeedOne(${i})">测速</button>
+        <button class="btn" onclick="connEditNode(${i})">编辑</button>
+        <button class="btn" onclick="connExportNode(${i})">导出</button>
+        <button class="btn danger" onclick="connDeleteNode(${i})">删除</button>
       </span>
     </div>`;
   }).join('');
@@ -4577,6 +4579,35 @@ function connEditNode(idx){
     if(obIdx>=0){editOutbound(obIdx);return;}
   }
   toast('请在出站 tab 编辑',false);
+}
+
+// Single node speed test
+async function connSpeedOne(idx){
+  const n=connNodes[idx];
+  if(!n)return;
+  const speedUrl=(document.getElementById('conn-speed-url')?.value||'').trim()||'https://speed.cloudflare.com/__down?bytes=10000000';
+  const box=document.getElementById('conn-test-output');
+  box.style.display='block';
+  box.textContent=`测速 ${n.tag} ...\n下载: ${speedUrl}\n`;
+  const d=await api('/api/connect/test-selected',{method:'POST',body:JSON.stringify({tags:[n.tag],mode:'speed',url:connTestUrl(),speed_url:speedUrl})});
+  if(!d||!d.ok){box.textContent+='失败';return;}
+  for(const r of d.results){
+    connLatency[r.tag]={ping_ok:r.ping_ok,ping_ms:r.ping_ms,exit_ip:r.exit_ip,speed_mbps:r.speed_mbps||0};
+    box.textContent+=`${r.tag}: ${r.speed_ok?r.speed_mbps+' Mbps':'FAIL'}  延迟: ${r.ping_ok?(parseFloat(r.ping_ms)*1000).toFixed(0)+'ms':'FAIL'}\n`;
+  }
+  renderConnNodes();
+}
+
+// Export single node
+function connExportNode(idx){
+  const n=connNodes[idx];
+  if(!n)return;
+  // Reuse outbounds export if data available
+  if(typeof outboundsData!=='undefined'){
+    const obIdx=outboundsData.findIndex(ob=>ob.tag===n.tag);
+    if(obIdx>=0&&typeof exportOutbound==='function'){exportOutbound(obIdx);return;}
+  }
+  toast('请在出站 tab 导出',false);
 }
 
 // Delete node
