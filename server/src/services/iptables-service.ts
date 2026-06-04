@@ -1,9 +1,11 @@
 
 import { exec } from '../utils/shell.js';
 import { IS_WINDOWS } from '../constants.js';
+import { networkInterfaces } from 'os';
 
 let cachedBinary: string | null = null;
 
+/** Detect iptables-legacy first (matches working v1/v2 behavior). */
 async function ipt(): Promise<string> {
   if (IS_WINDOWS) return 'unsupported-windows-iptables';
   if (cachedBinary) return cachedBinary;
@@ -31,6 +33,26 @@ async function delLoop(bin: string, args: string[]): Promise<void> {
   }
 }
 
+/** Detect local LAN subnets for MASQUERADE (gateway mode). */
+function getLocalSubnets(): string[] {
+  const subnets: string[] = [];
+  const ifaces = networkInterfaces();
+  for (const [name, addrs] of Object.entries(ifaces)) {
+    if (!addrs || name === 'lo' || name.startsWith('docker') || name.startsWith('br-') || name.startsWith('veth')) continue;
+    for (const addr of addrs) {
+      if (addr.family === 'IPv4' && !addr.internal) {
+        // Convert IP + netmask to CIDR
+        const parts = addr.address.split('.').map(Number);
+        const maskParts = addr.netmask.split('.').map(Number);
+        const network = parts.map((p, i) => p & maskParts[i]).join('.');
+        const cidrBits = maskParts.reduce((acc, m) => acc + m.toString(2).split('1').length - 1, 0);
+        subnets.push(`${network}/${cidrBits}`);
+      }
+    }
+  }
+  return [...new Set(subnets)];
+}
+
 export async function getIptablesRules(): Promise<{ binary: string; nat: string; filter: string; mangle: string }> {
   if (IS_WINDOWS) {
     return { binary: 'unsupported-windows-iptables', nat: '', filter: '', mangle: '' };
@@ -50,7 +72,7 @@ export async function setupTransparentProxy(redirPort: number, bypassCidrs: stri
   }
   const bin = await ipt();
 
-  // Idempotency: remove stale v3/v1 jumps first, then rebuild chains.
+  // Idempotency: remove stale jumps first, then rebuild chains.
   await cleanupTransparentProxy();
 
   for (const chain of ['XRAY_MGR_OUT', 'XRAY_MGR_PRE', 'XRAY_MGR_RULE']) {
@@ -61,12 +83,14 @@ export async function setupTransparentProxy(redirPort: number, bypassCidrs: stri
   await run(bin, ['-t', 'nat', '-A', 'XRAY_MGR_OUT', '-j', 'XRAY_MGR_RULE']);
   await run(bin, ['-t', 'nat', '-A', 'XRAY_MGR_PRE', '-j', 'XRAY_MGR_RULE']);
 
+  // Full bypass list matching working v1/v2 (transparent-bypass.json + hardcoded).
   const bypass = new Set([
     ...bypassCidrs,
-    // Keep upstream DNS and localhost out of the redirect path, matching the working v1 rules.
-    '127.0.0.1/32',
-    '119.29.29.29/32',
-    '223.5.5.5/32',
+    '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
+    '169.254.0.0/16', '172.16.0.0/12', '192.0.0.0/24', '192.0.2.0/24',
+    '192.88.99.0/24', '192.168.0.0/16', '198.18.0.0/15', '198.51.100.0/24',
+    '203.0.113.0/24', '224.0.0.0/4', '240.0.0.0/4', '255.255.255.255/32',
+    '127.0.0.1/32', '119.29.29.29/32', '223.5.5.5/32',
   ]);
   for (const cidr of bypass) {
     await run(bin, ['-t', 'nat', '-A', 'XRAY_MGR_RULE', '-d', cidr, '-j', 'RETURN']);
@@ -76,8 +100,6 @@ export async function setupTransparentProxy(redirPort: number, bypassCidrs: stri
   await run(bin, ['-t', 'nat', '-A', 'XRAY_MGR_RULE', '-m', 'mark', '--mark', '0x80/0x80', '-j', 'RETURN']);
 
   // Mirror the proven v1/v2 REDIRECT shape:
-  // - TCP traffic -> transparent dokodemo-door
-  // - only UDP DNS (53) -> transparent dokodemo-door
   await run(bin, ['-t', 'nat', '-A', 'XRAY_MGR_RULE', '-p', 'tcp', '-j', 'REDIRECT', '--to-ports', String(redirPort)]);
   await run(bin, ['-t', 'nat', '-A', 'XRAY_MGR_RULE', '-p', 'udp', '--dport', '53', '-j', 'REDIRECT', '--to-ports', String(redirPort)]);
 
@@ -86,11 +108,19 @@ export async function setupTransparentProxy(redirPort: number, bypassCidrs: stri
   await run(bin, ['-t', 'nat', '-I', 'PREROUTING', '1', '-p', 'udp', '--dport', '53', '-j', 'XRAY_MGR_PRE']);
   await run(bin, ['-t', 'nat', '-I', 'OUTPUT', '1', '-p', 'tcp', '-j', 'XRAY_MGR_OUT']);
 
+  // POSTROUTING MASQUERADE — required for gateway mode (LAN clients need NAT for return traffic).
+  for (const subnet of getLocalSubnets()) {
+    await run(bin, ['-t', 'nat', '-A', 'POSTROUTING', '-s', subnet, '!', '-o', 'lo', '-j', 'MASQUERADE']);
+  }
+
   // QUIC/HTTP3 bypasses REDIRECT; block both local and forwarded UDP 443.
   await run(bin, ['-I', 'OUTPUT', '1', '-p', 'udp', '--dport', '443', '-j', 'DROP']);
   await run(bin, ['-I', 'FORWARD', '1', '-p', 'udp', '--dport', '443', '-j', 'DROP']);
 
+  // Gateway sysctl settings (matching working v1/v2).
   await exec('sysctl', ['-w', 'net.ipv4.ip_forward=1']).catch(() => {});
+  await exec('sysctl', ['-w', 'net.ipv4.conf.all.rp_filter=0']).catch(() => {});
+  await exec('sysctl', ['-w', 'net.ipv4.conf.default.rp_filter=0']).catch(() => {});
 }
 
 export async function cleanupTransparentProxy(): Promise<void> {
@@ -109,6 +139,11 @@ export async function cleanupTransparentProxy(): Promise<void> {
   }
   for (const chain of ['XRAY_MGR_OUT', 'XRAY_MGR_PRE', 'XRAY_MGR_RULE']) {
     await run(bin, ['-t', 'nat', '-X', chain]);
+  }
+
+  // Remove MASQUERADE rules we added for local subnets.
+  for (const subnet of getLocalSubnets()) {
+    await delLoop(bin, ['-t', 'nat', '-D', 'POSTROUTING', '-s', subnet, '!', '-o', 'lo', '-j', 'MASQUERADE']);
   }
 
   await delLoop(bin, ['-D', 'OUTPUT', '-p', 'udp', '--dport', '443', '-j', 'DROP']);
