@@ -1,10 +1,8 @@
-__pycache__/
-*.pyc
-.venv/
-config/
-data/
-backup/
-state/
-logs/
+node_modules/
+server/dist/
+web/dist/
+deploy/
+deploy.tar.gz
 *.log
-*.bak
+.env
+.DS_Store
