@@ -43,8 +43,8 @@ The `v4` branch includes a GitHub Actions workflow: `.github/workflows/build-v4.
 
 It builds these artifacts on every push to the `v4` branch and on manual workflow runs:
 
-- `xray-manager-v4-windows-x64.zip` — includes pinned Xray `v26.3.27` as `bin/xray.exe`
-- `xray-manager-v4-linux-x64.zip` — includes pinned Xray `v26.3.27` as `bin/xray`
+- `xray-manager-v4-windows-x64.zip` — includes pinned Xray `v26.3.27` as `bin/xray.exe`, plus `geoip.dat` / `geosite.dat`
+- `xray-manager-v4-linux-x64.zip` — includes pinned Xray `v26.3.27` as `bin/xray`, plus `geoip.dat` / `geosite.dat`
 
 For normal users:
 
@@ -56,7 +56,7 @@ For normal users:
 
 If a `v4*` tag is pushed, the same ZIP files are uploaded to GitHub Releases.
 
-> Note: the Windows portable ZIP still requires Node.js 20+ installed on the machine. Xray itself is already bundled in `bin/xray.exe`, so startup does not need to download Xray from GitHub.
+> Note: the Windows portable ZIP still requires Node.js 20+ installed on the machine. Xray and geo databases are already bundled in `bin/` and `data/`, so startup does not need to download Xray/geo files from GitHub.
 
 ## Windows quick start from source
 

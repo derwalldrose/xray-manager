@@ -11,6 +11,8 @@ permissions:
 
 env:
   XRAY_VERSION: v26.3.27
+  GEOIP_URL: https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
+  GEOSITE_URL: https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
 
 jobs:
   build:
@@ -58,6 +60,17 @@ jobs:
           unzip -o /tmp/xray-core/xray.zip -d /tmp/xray-core
           test -f "/tmp/xray-core/${{ matrix.xray_binary }}"
 
+      - name: Download geo databases
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/xray-geo
+          curl -fL --retry 3 --retry-delay 2 "$GEOIP_URL" -o /tmp/xray-geo/geoip.dat
+          curl -fL --retry 3 --retry-delay 2 "$GEOSITE_URL" -o /tmp/xray-geo/geosite.dat
+          test -s /tmp/xray-geo/geoip.dat
+          test -s /tmp/xray-geo/geosite.dat
+          ls -lh /tmp/xray-geo/geoip.dat /tmp/xray-geo/geosite.dat
+
       - name: Assemble portable directory
         shell: bash
         run: |
@@ -69,8 +82,10 @@ jobs:
           cp -r web/dist "dist/$PKG/web-dist"
           cp README.md "dist/$PKG/README.md"
           cp "/tmp/xray-core/${{ matrix.xray_binary }}" "dist/$PKG/bin/${{ matrix.xray_binary }}"
-          if [ -f /tmp/xray-core/geoip.dat ]; then cp /tmp/xray-core/geoip.dat "dist/$PKG/bin/geoip.dat"; fi
-          if [ -f /tmp/xray-core/geosite.dat ]; then cp /tmp/xray-core/geosite.dat "dist/$PKG/bin/geosite.dat"; fi
+          cp /tmp/xray-geo/geoip.dat "dist/$PKG/bin/geoip.dat"
+          cp /tmp/xray-geo/geosite.dat "dist/$PKG/bin/geosite.dat"
+          cp /tmp/xray-geo/geoip.dat "dist/$PKG/data/geoip.dat"
+          cp /tmp/xray-geo/geosite.dat "dist/$PKG/data/geosite.dat"
           chmod +x "dist/$PKG/bin/${{ matrix.xray_binary }}" 2>/dev/null || true
           for f in ${{ matrix.launcher_files }}; do
             if [ -f "$f" ]; then cp "$f" "dist/$PKG/"; fi
@@ -95,6 +110,10 @@ jobs:
         run: |
           set -euo pipefail
           test -s "dist/${{ matrix.package }}/bin/${{ matrix.xray_binary }}"
+          test -s "dist/${{ matrix.package }}/bin/geoip.dat"
+          test -s "dist/${{ matrix.package }}/bin/geosite.dat"
+          test -s "dist/${{ matrix.package }}/data/geoip.dat"
+          test -s "dist/${{ matrix.package }}/data/geosite.dat"
           if [ "${{ matrix.os }}" = "linux" ]; then
             "dist/${{ matrix.package }}/bin/${{ matrix.xray_binary }}" version
           else
