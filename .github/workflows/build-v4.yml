@@ -1,0 +1,139 @@
+name: Build v4 portable packages
+
+on:
+  push:
+    branches: [v4]
+    tags: ['v4*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  XRAY_VERSION: v26.3.27
+  GEOIP_URL: https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
+  GEOSITE_URL: https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
+
+jobs:
+  build:
+    name: Build portable packages
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows
+            package: xray-manager-v4-windows-x64
+            xray_asset: Xray-windows-64.zip
+            xray_binary: xray.exe
+            launcher_files: scripts/run-windows.bat scripts/run-windows.ps1
+          - os: linux
+            package: xray-manager-v4-linux-x64
+            xray_asset: Xray-linux-64.zip
+            xray_binary: xray
+            launcher_files: scripts/run-linux.sh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.dangerouslyAllowAllBuilds=true
+
+      - name: Build web and server
+        run: pnpm run build
+
+      - name: Download pinned Xray core
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${{ matrix.xray_asset }}"
+          mkdir -p /tmp/xray-core
+          curl -fL --retry 3 --retry-delay 2 "$url" -o /tmp/xray-core/xray.zip
+          unzip -o /tmp/xray-core/xray.zip -d /tmp/xray-core
+          test -f "/tmp/xray-core/${{ matrix.xray_binary }}"
+
+      - name: Download geo databases
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/xray-geo
+          curl -fL --retry 3 --retry-delay 2 "$GEOIP_URL" -o /tmp/xray-geo/geoip.dat
+          curl -fL --retry 3 --retry-delay 2 "$GEOSITE_URL" -o /tmp/xray-geo/geosite.dat
+          test -s /tmp/xray-geo/geoip.dat
+          test -s /tmp/xray-geo/geosite.dat
+          ls -lh /tmp/xray-geo/geoip.dat /tmp/xray-geo/geosite.dat
+
+      - name: Assemble portable directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="${{ matrix.package }}"
+          rm -rf "dist/$PKG"
+          mkdir -p "dist/$PKG"/{bin,config,data,logs,backup}
+          cp server/dist/index.js "dist/$PKG/index.js"
+          cp -r web/dist "dist/$PKG/web-dist"
+          cp README.md "dist/$PKG/README.md"
+          cp "/tmp/xray-core/${{ matrix.xray_binary }}" "dist/$PKG/bin/${{ matrix.xray_binary }}"
+          cp /tmp/xray-geo/geoip.dat "dist/$PKG/bin/geoip.dat"
+          cp /tmp/xray-geo/geosite.dat "dist/$PKG/bin/geosite.dat"
+          cp /tmp/xray-geo/geoip.dat "dist/$PKG/data/geoip.dat"
+          cp /tmp/xray-geo/geosite.dat "dist/$PKG/data/geosite.dat"
+          chmod +x "dist/$PKG/bin/${{ matrix.xray_binary }}" 2>/dev/null || true
+          for f in ${{ matrix.launcher_files }}; do
+            if [ -f "$f" ]; then cp "$f" "dist/$PKG/"; fi
+          done
+          cat > "dist/$PKG/config/xray-multi-socks.json" <<'JSON'
+          {
+            "log": { "loglevel": "warning" },
+            "inbounds": [
+              { "tag": "socks-in", "protocol": "socks", "listen": "127.0.0.1", "port": 10810, "settings": { "udp": true } },
+              { "tag": "http-in", "protocol": "http", "listen": "127.0.0.1", "port": 10818, "settings": {} }
+            ],
+            "outbounds": [
+              { "tag": "direct", "protocol": "freedom" },
+              { "tag": "block", "protocol": "blackhole" }
+            ]
+          }
+          JSON
+          echo '123456' > "dist/$PKG/data/token"
+
+      - name: Verify bundled Xray
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "dist/${{ matrix.package }}/bin/${{ matrix.xray_binary }}"
+          test -s "dist/${{ matrix.package }}/bin/geoip.dat"
+          test -s "dist/${{ matrix.package }}/bin/geosite.dat"
+          test -s "dist/${{ matrix.package }}/data/geoip.dat"
+          test -s "dist/${{ matrix.package }}/data/geosite.dat"
+          if [ "${{ matrix.os }}" = "linux" ]; then
+            "dist/${{ matrix.package }}/bin/${{ matrix.xray_binary }}" version
+          else
+            ls -lh "dist/${{ matrix.package }}/bin/${{ matrix.xray_binary }}"
+          fi
+
+      - name: Zip package
+        shell: bash
+        run: |
+          cd dist
+          zip -r "${{ matrix.package }}.zip" "${{ matrix.package }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}
+          path: dist/${{ matrix.package }}.zip
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/v4')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.package }}.zip
