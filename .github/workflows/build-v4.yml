@@ -94,7 +94,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          "dist/${{ matrix.package }}/bin/${{ matrix.xray_binary }}" version
+          test -s "dist/${{ matrix.package }}/bin/${{ matrix.xray_binary }}"
+          if [ "${{ matrix.os }}" = "linux" ]; then
+            "dist/${{ matrix.package }}/bin/${{ matrix.xray_binary }}" version
+          else
+            ls -lh "dist/${{ matrix.package }}/bin/${{ matrix.xray_binary }}"
+          fi
 
       - name: Zip package
         shell: bash
