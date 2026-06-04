@@ -19,6 +19,7 @@ export default function ConnectPage() {
   const { data: iptables } = useQuery({ queryKey: ['iptables-rules'], queryFn: () => api.get('/transparent/iptables'), refetchInterval: 10000 })
   const { data: routing } = useQuery({ queryKey: ['routing'], queryFn: () => api.get('/routing'), refetchInterval: 10000 })
   const { data: fullConfig } = useQuery({ queryKey: ['full-config-summary'], queryFn: () => api.get('/config'), refetchInterval: 10000 })
+  const { data: systemProxy } = useQuery({ queryKey: ['system-proxy'], queryFn: () => api.get('/system-proxy/status'), refetchInterval: 5000 })
   const connect = useConnect()
   const disconnect = useDisconnect()
   const testNodes = useTestNodes()
@@ -29,7 +30,9 @@ export default function ConnectPage() {
   const [transparentOnConnect, setTransparentOnConnect] = useState(false)
   const [testOutput, setTestOutput] = useState('')
   const [bypassText, setBypassText] = useState('')
+  const [proxyBypass, setProxyBypass] = useState(defaultProxyBypass)
 
+  const isWindows = systemProxy?.supported === true
   const nodes = nodesData?.nodes || []
   const connected = connData?.connected || []
   const config = fullConfig?.config
@@ -43,6 +46,10 @@ export default function ConnectPage() {
     }
   }, [bypassData])
 
+  useEffect(() => {
+    if (systemProxy?.ProxyOverride !== undefined) setProxyBypass(systemProxy.ProxyOverride || defaultProxyBypass)
+  }, [systemProxy?.ProxyOverride])
+
   const saveBypass = useMutation({
     mutationFn: () => {
       const cidrs = bypassText.split(/\n|,/).map(s => s.trim()).filter(Boolean)
@@ -55,6 +62,22 @@ export default function ConnectPage() {
       queryClient.invalidateQueries({ queryKey: ['iptables-rules'] })
     },
     onError: (e: any) => showToast(e.message || '保存绕过 IP 段失败', 'error'),
+  })
+
+  const enableSystemProxy = useMutation({
+    mutationFn: () => api.post('/system-proxy/enable', { port: 10818, bypass: proxyBypass || defaultProxyBypass }),
+    onSuccess: () => { showToast('系统代理已开启', 'success'); queryClient.invalidateQueries({ queryKey: ['system-proxy'] }) },
+    onError: (e: any) => showToast(e.message || '开启系统代理失败', 'error'),
+  })
+  const disableSystemProxy = useMutation({
+    mutationFn: () => api.post('/system-proxy/disable'),
+    onSuccess: () => { showToast('系统代理已关闭', 'success'); queryClient.invalidateQueries({ queryKey: ['system-proxy'] }) },
+    onError: (e: any) => showToast(e.message || '关闭系统代理失败', 'error'),
+  })
+  const applySystemProxyBypass = useMutation({
+    mutationFn: () => api.post('/system-proxy/enable', { server: systemProxy?.ProxyServer || '127.0.0.1:10818', bypass: proxyBypass || defaultProxyBypass }),
+    onSuccess: () => { showToast('系统代理绕过列表已应用', 'success'); queryClient.invalidateQueries({ queryKey: ['system-proxy'] }) },
+    onError: (e: any) => showToast(e.message || '应用绕过列表失败', 'error'),
   })
 
   const saveInboundTarget = useMutation({
@@ -111,7 +134,7 @@ export default function ConnectPage() {
   const handleConnect = async () => {
     if (selected.size === 0) { showToast('请至少选择一个节点', 'error'); return }
     try {
-      await connect.mutateAsync({ nodeIds: Array.from(selected), strategy, transparent: transparentOnConnect })
+      await connect.mutateAsync({ nodeIds: Array.from(selected), strategy, transparent: isWindows ? false : transparentOnConnect })
       showToast('连接成功', 'success')
       queryClient.invalidateQueries({ queryKey: ['tp-status'] })
       queryClient.invalidateQueries({ queryKey: ['routing'] })
@@ -156,22 +179,42 @@ export default function ConnectPage() {
         </div>
         <div className="flex gap-2 flex-wrap">
           <StatusPill label="Xray" active={!!status?.running} activeText="运行中" inactiveText="已停止" />
-          <StatusPill label="透明代理" active={tpActive} activeText="运行中" inactiveText="关闭" />
-          <StatusPill label="iptables" active={!!tpStatus?.hasIptables} activeText="已应用" inactiveText="未应用" />
-          <StatusPill label="DNS 劫持" active={dnsHijacked} activeText="开启" inactiveText="关闭" warn={dnsHijacked} />
+          {isWindows ? (
+            <StatusPill label="系统代理" active={systemProxy?.enabled === true} activeText="已开启" inactiveText="未开启" />
+          ) : (
+            <>
+              <StatusPill label="透明代理" active={tpActive} activeText="运行中" inactiveText="关闭" />
+              <StatusPill label="iptables" active={!!tpStatus?.hasIptables} activeText="已应用" inactiveText="未应用" />
+              <StatusPill label="DNS 劫持" active={dnsHijacked} activeText="开启" inactiveText="关闭" warn={dnsHijacked} />
+            </>
+          )}
         </div>
       </div>
 
-      <RuntimeSummary connected={connected} nodes={nodes} config={config} routing={routing} strategy={strategy} />
+      {!isWindows && <RuntimeSummary connected={connected} nodes={nodes} config={config} routing={routing} strategy={strategy} />}
 
-      <InboundOrchestrationCard
-        config={config}
-        routing={routing}
-        saving={saveInboundTarget.isPending}
-        onChange={(inboundTag, target) => saveInboundTarget.mutate({ inboundTag, target })}
-      />
+      {isWindows ? (
+        <WindowsSystemProxyCard
+          status={systemProxy}
+          bypass={proxyBypass}
+          setBypass={setProxyBypass}
+          onEnable={() => enableSystemProxy.mutate()}
+          onDisable={() => disableSystemProxy.mutate()}
+          onApplyBypass={() => applySystemProxyBypass.mutate()}
+          busy={enableSystemProxy.isPending || disableSystemProxy.isPending || applySystemProxyBypass.isPending}
+        />
+      ) : (
+        <>
+          <InboundOrchestrationCard
+            config={config}
+            routing={routing}
+            saving={saveInboundTarget.isPending}
+            onChange={(inboundTag, target) => saveInboundTarget.mutate({ inboundTag, target })}
+          />
 
-      <OutboundGroupsCard config={config} routing={routing} />
+          <OutboundGroupsCard config={config} routing={routing} />
+        </>
+      )}
 
       <NodeSelectionCard
         nodes={nodes}
@@ -185,7 +228,7 @@ export default function ConnectPage() {
       />
 
       {!isActive && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className={isWindows ? 'grid grid-cols-1 gap-4' : 'grid grid-cols-1 md:grid-cols-2 gap-4'}>
           <div className="p-4 rounded-lg border" style={{ background: 'var(--bg2)', borderColor: 'var(--border)' }}>
             <label className="text-sm block mb-2" style={{ color: '#8b949e' }}>连接策略</label>
             <select value={strategy} onChange={(e) => setStrategy(e.target.value)} className="w-full px-3 py-2 rounded border text-sm" style={{ background: 'var(--bg)', borderColor: 'var(--border)', color: 'var(--text)' }}>
@@ -194,13 +237,15 @@ export default function ConnectPage() {
               <option value="random">随机 random</option>
             </select>
           </div>
-          <div className="p-4 rounded-lg border" style={{ background: 'var(--bg2)', borderColor: 'var(--border)' }}>
-            <label className="flex items-center gap-3 cursor-pointer">
-              <input type="checkbox" checked={transparentOnConnect} onChange={(e) => setTransparentOnConnect(e.target.checked)} className="w-4 h-4 accent-blue-500" />
-              <span className="text-sm">连接时同时启用透明代理</span>
-            </label>
-            <p className="text-xs mt-2" style={{ color: '#8b949e' }}>这会应用 iptables REDIRECT；配置里有 transparent 入口不代表透明代理已开启。</p>
-          </div>
+          {!isWindows && (
+            <div className="p-4 rounded-lg border" style={{ background: 'var(--bg2)', borderColor: 'var(--border)' }}>
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input type="checkbox" checked={transparentOnConnect} onChange={(e) => setTransparentOnConnect(e.target.checked)} className="w-4 h-4 accent-blue-500" />
+                <span className="text-sm">连接时同时启用透明代理</span>
+              </label>
+              <p className="text-xs mt-2" style={{ color: '#8b949e' }}>这会应用 iptables REDIRECT；配置里有 transparent 入口不代表透明代理已开启。</p>
+            </div>
+          )}
         </div>
       )}
 
@@ -214,26 +259,30 @@ export default function ConnectPage() {
             {disconnect.isPending ? '断开中...' : '断开连接'}
           </button>
         )}
-        {tpActive ? (
+        {!isWindows && (tpActive ? (
           <button onClick={() => disableTp.mutate()} disabled={disableTp.isPending} className="px-6 py-2 rounded-lg text-white font-medium disabled:opacity-40" style={{ background: '#d29922' }}>关闭透明代理</button>
         ) : (
           <button onClick={() => enableTp.mutate()} disabled={enableTp.isPending || !status?.running} className="px-6 py-2 rounded-lg text-white font-medium disabled:opacity-40" style={{ background: '#58a6ff' }}>启用透明代理</button>
+        ))}
+        {!isWindows && (
+          <button onClick={() => toggleDns.mutate()} disabled={toggleDns.isPending} className="px-6 py-2 rounded-lg text-white font-medium disabled:opacity-40" style={{ background: dnsHijacked ? '#f85149' : '#8b949e' }}>
+            {dnsHijacked ? '关闭 DNS 劫持' : '开启 DNS 劫持'}
+          </button>
         )}
-        <button onClick={() => toggleDns.mutate()} disabled={toggleDns.isPending} className="px-6 py-2 rounded-lg text-white font-medium disabled:opacity-40" style={{ background: dnsHijacked ? '#f85149' : '#8b949e' }}>
-          {dnsHijacked ? '关闭 DNS 劫持' : '开启 DNS 劫持'}
-        </button>
       </div>
 
-      <TransparentDetails
-        tpActive={tpActive}
-        iptables={iptables}
-        bypassText={bypassText}
-        onBypassChange={setBypassText}
-        onSaveBypass={() => saveBypass.mutate()}
-        savingBypass={saveBypass.isPending}
-      />
+      {!isWindows && (
+        <TransparentDetails
+          tpActive={tpActive}
+          iptables={iptables}
+          bypassText={bypassText}
+          onBypassChange={setBypassText}
+          onSaveBypass={() => saveBypass.mutate()}
+          savingBypass={saveBypass.isPending}
+        />
+      )}
 
-      {isActive && <div className="p-3 rounded-lg border text-sm" style={{ background: 'rgba(210,153,34,0.1)', borderColor: '#d29922', color: '#d29922' }}>连接运行中，节点选择已锁定。入口绑定和透明代理开关仍可按需调整。</div>}
+      {isActive && <div className="p-3 rounded-lg border text-sm" style={{ background: 'rgba(210,153,34,0.1)', borderColor: '#d29922', color: '#d29922' }}>{isWindows ? '连接运行中，节点选择已锁定。系统代理可按需开启/关闭。' : '连接运行中，节点选择已锁定。入口绑定和透明代理开关仍可按需调整。'}</div>}
 
       {testOutput && <pre className="p-4 rounded-lg border font-mono text-xs whitespace-pre-wrap overflow-auto max-h-60" style={{ background: 'var(--bg)', borderColor: 'var(--border)', color: '#8b949e' }}>{testOutput}</pre>}
     </div>
@@ -408,6 +457,41 @@ function TransparentDetails({
   )
 }
 
+function WindowsSystemProxyCard({ status, bypass, setBypass, onEnable, onDisable, onApplyBypass, busy }: { status: any; bypass: string; setBypass: (v: string) => void; onEnable: () => void; onDisable: () => void; onApplyBypass: () => void; busy: boolean }) {
+  const enabled = status?.enabled === true
+  return (
+    <Panel title="Windows 系统代理" subtitle="Windows 原生模式不使用透明代理/iptables；连接节点后，把系统代理设置到本机 HTTP 入站 127.0.0.1:10818。">
+      <div className="flex items-center justify-between gap-3 flex-wrap rounded-lg border p-3" style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}>
+        <div>
+          <div className="text-sm font-medium" style={{ color: 'var(--text)' }}>{enabled ? '系统代理已开启' : '系统代理未开启'}</div>
+          <div className="text-xs mt-1 font-mono" style={{ color: '#8b949e' }}>{status?.ProxyServer || '127.0.0.1:10818'}</div>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          {enabled ? (
+            <button onClick={onDisable} disabled={busy} className="px-4 py-2 rounded-lg text-sm text-white disabled:opacity-40" style={{ background: '#f85149' }}>关闭系统代理</button>
+          ) : (
+            <button onClick={onEnable} disabled={busy} className="px-4 py-2 rounded-lg text-sm text-white disabled:opacity-40" style={{ background: '#3fb950' }}>设置系统代理</button>
+          )}
+        </div>
+      </div>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <div className="text-sm font-medium" style={{ color: 'var(--text)' }}>绕过列表</div>
+            <div className="text-xs mt-1" style={{ color: '#8b949e' }}>ProxyOverride，分号分隔；保存后会重新应用系统代理。</div>
+          </div>
+          <button onClick={onApplyBypass} disabled={busy} className="px-3 py-1.5 rounded text-sm text-white disabled:opacity-40" style={{ background: 'var(--accent)' }}>应用绕过列表</button>
+        </div>
+        <textarea value={bypass} onChange={(e) => setBypass(e.target.value)} rows={4}
+          className="w-full px-3 py-2 rounded border font-mono text-xs"
+          style={{ background: 'var(--bg)', borderColor: 'var(--border)', color: 'var(--text)' }}
+          placeholder={defaultProxyBypass}
+        />
+      </div>
+    </Panel>
+  )
+}
+
 function StatusPill({ label, active, activeText, inactiveText, warn }: { label: string; active: boolean; activeText: string; inactiveText: string; warn?: boolean }) {
   const color = active ? (warn ? '#d29922' : '#3fb950') : '#8b949e'
   return <span className="px-3 py-1 rounded text-xs" style={{ background: active ? `${color}22` : 'rgba(139,148,158,0.2)', color }}>{label}: {active ? activeText : inactiveText}</span>
@@ -449,3 +533,5 @@ function inferMode(ib: any, mapping: any): { label: string; color: string; bg: s
 function getTransparentPort(config: any) {
   return (config?.inbounds || []).find((i: any) => i.tag === 'transparent')?.port
 }
+
+const defaultProxyBypass = '<local>;localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*'
