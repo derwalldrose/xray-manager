@@ -87,7 +87,7 @@ function buildInbounds(settings: Settings, live: XrayConfig | null): XrayInbound
   // Also normalize listen addresses: socks-in and http-in must be 0.0.0.0 for LAN gateway access.
   for (const inbound of inbounds) {
     if (inbound.tag === 'transparent-in') inbound.tag = 'transparent';
-    if (inbound.tag === 'socks-in' || inbound.tag === 'http-in') {
+    if (inbound.tag === 'socks-in' || inbound.tag === 'http-in' || inbound.tag === 'transparent') {
       if (!inbound.listen || inbound.listen === '127.0.0.1') inbound.listen = '0.0.0.0';
     }
   }
