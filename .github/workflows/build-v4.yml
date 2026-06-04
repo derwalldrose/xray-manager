@@ -1,0 +1,91 @@
+name: Build v4 portable packages
+
+on:
+  push:
+    branches: [v4]
+    tags: ['v4*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build portable packages
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows
+            package: xray-manager-v4-windows-x64
+            launcher_files: scripts/run-windows.bat scripts/run-windows.ps1
+          - os: linux
+            package: xray-manager-v4-linux-x64
+            launcher_files: scripts/run-linux.sh
+          - os: macos
+            package: xray-manager-v4-macos-x64
+            launcher_files: scripts/run-macos.sh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.dangerouslyAllowAllBuilds=true
+
+      - name: Build web and server
+        run: pnpm run build
+
+      - name: Assemble portable directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="${{ matrix.package }}"
+          rm -rf "dist/$PKG"
+          mkdir -p "dist/$PKG"/{bin,config,data,logs,backup}
+          cp server/dist/index.js "dist/$PKG/index.js"
+          cp -r web/dist "dist/$PKG/web-dist"
+          cp README.md "dist/$PKG/README.md"
+          for f in ${{ matrix.launcher_files }}; do
+            if [ -f "$f" ]; then cp "$f" "dist/$PKG/"; fi
+          done
+          cat > "dist/$PKG/config/xray-multi-socks.json" <<'JSON'
+          {
+            "log": { "loglevel": "warning" },
+            "inbounds": [
+              { "tag": "socks-in", "protocol": "socks", "listen": "127.0.0.1", "port": 10810, "settings": { "udp": true } },
+              { "tag": "http-in", "protocol": "http", "listen": "127.0.0.1", "port": 10818, "settings": {} }
+            ],
+            "outbounds": [
+              { "tag": "direct", "protocol": "freedom" },
+              { "tag": "block", "protocol": "blackhole" }
+            ]
+          }
+          JSON
+          echo '123456' > "dist/$PKG/data/token"
+
+      - name: Zip package
+        shell: bash
+        run: |
+          cd dist
+          zip -r "${{ matrix.package }}.zip" "${{ matrix.package }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}
+          path: dist/${{ matrix.package }}.zip
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/v4')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.package }}.zip
