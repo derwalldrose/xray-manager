@@ -4,7 +4,7 @@ import { appendFile, mkdir, readFile, rm, writeFile } from 'fs/promises';
 import type { ServiceStatus } from '@xray-manager/shared';
 import { systemctl, exec } from '../utils/shell.js';
 import { CONFIG_FILE, IS_WINDOWS, LOG_DIR, SERVICE_NAME, XRAY_BIN, XRAY_LOG_FILE, XRAY_PID_FILE, BASE_DIR } from '../constants.js';
-import { ensureXrayBinary, getInstalledVersion } from './xray-download-service.js';
+import { getInstalledVersion } from './xray-download-service.js';
 
 const SUPERVISOR_PROGRAM = 'xray-all:xray';
 
@@ -117,7 +117,6 @@ export async function getStatus(): Promise<ServiceStatus> {
 
 export async function getVersion(): Promise<string | undefined> {
   try {
-    await ensureXrayBinary();
     return await getInstalledVersion();
   } catch {
     return undefined;
@@ -137,7 +136,9 @@ export async function restartXray(): Promise<void> {
 }
 
 async function startManagedXray(): Promise<void> {
-  await ensureXrayBinary();
+  if (!existsSync(XRAY_BIN)) {
+    throw new Error(`Xray binary not found: ${XRAY_BIN}. This package should include Xray in bin/. Please download the bundled release ZIP again.`);
+  }
   const pid = await readPid();
   if (pid && await isPidRunning(pid)) return;
   if (!existsSync(CONFIG_FILE)) throw new Error(`Xray config file not found: ${CONFIG_FILE}`);

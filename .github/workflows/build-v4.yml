@@ -9,6 +9,9 @@ on:
 permissions:
   contents: write
 
+env:
+  XRAY_VERSION: v26.3.27
+
 jobs:
   build:
     name: Build portable packages
@@ -19,13 +22,14 @@ jobs:
         include:
           - os: windows
             package: xray-manager-v4-windows-x64
+            xray_asset: Xray-windows-64.zip
+            xray_binary: xray.exe
             launcher_files: scripts/run-windows.bat scripts/run-windows.ps1
           - os: linux
             package: xray-manager-v4-linux-x64
+            xray_asset: Xray-linux-64.zip
+            xray_binary: xray
             launcher_files: scripts/run-linux.sh
-          - os: macos
-            package: xray-manager-v4-macos-x64
-            launcher_files: scripts/run-macos.sh
     steps:
       - uses: actions/checkout@v4
 
@@ -44,6 +48,16 @@ jobs:
       - name: Build web and server
         run: pnpm run build
 
+      - name: Download pinned Xray core
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${{ matrix.xray_asset }}"
+          mkdir -p /tmp/xray-core
+          curl -fL --retry 3 --retry-delay 2 "$url" -o /tmp/xray-core/xray.zip
+          unzip -o /tmp/xray-core/xray.zip -d /tmp/xray-core
+          test -f "/tmp/xray-core/${{ matrix.xray_binary }}"
+
       - name: Assemble portable directory
         shell: bash
         run: |
@@ -54,6 +68,10 @@ jobs:
           cp server/dist/index.js "dist/$PKG/index.js"
           cp -r web/dist "dist/$PKG/web-dist"
           cp README.md "dist/$PKG/README.md"
+          cp "/tmp/xray-core/${{ matrix.xray_binary }}" "dist/$PKG/bin/${{ matrix.xray_binary }}"
+          if [ -f /tmp/xray-core/geoip.dat ]; then cp /tmp/xray-core/geoip.dat "dist/$PKG/bin/geoip.dat"; fi
+          if [ -f /tmp/xray-core/geosite.dat ]; then cp /tmp/xray-core/geosite.dat "dist/$PKG/bin/geosite.dat"; fi
+          chmod +x "dist/$PKG/bin/${{ matrix.xray_binary }}" 2>/dev/null || true
           for f in ${{ matrix.launcher_files }}; do
             if [ -f "$f" ]; then cp "$f" "dist/$PKG/"; fi
           done
@@ -71,6 +89,12 @@ jobs:
           }
           JSON
           echo '123456' > "dist/$PKG/data/token"
+
+      - name: Verify bundled Xray
+        shell: bash
+        run: |
+          set -euo pipefail
+          "dist/${{ matrix.package }}/bin/${{ matrix.xray_binary }}" version
 
       - name: Zip package
         shell: bash

@@ -6,7 +6,7 @@ Cross-platform Xray Manager based on v3, with native Windows support.
 
 - Linux: keep v3 systemd/supervisor support and transparent proxy features.
 - Windows: run as a native Node.js web panel that directly manages `xray.exe`.
-- First start automatically downloads the matching Xray-core release for the current OS/CPU.
+- First start uses the bundled pinned Xray-core binary shipped in the portable ZIP.
 - Windows global proxy uses Windows system proxy APIs instead of Linux iptables.
 
 ## Runtime directories
@@ -15,7 +15,6 @@ Default base directory:
 
 - Windows: `C:\xray-manager-v4`
 - Linux: `/root/xray-manager-v4`
-- macOS: `/usr/local/xray-manager-v4`
 
 Override with:
 
@@ -44,9 +43,8 @@ The `v4` branch includes a GitHub Actions workflow: `.github/workflows/build-v4.
 
 It builds these artifacts on every push to the `v4` branch and on manual workflow runs:
 
-- `xray-manager-v4-windows-x64.zip`
-- `xray-manager-v4-linux-x64.zip`
-- `xray-manager-v4-macos-x64.zip`
+- `xray-manager-v4-windows-x64.zip` — includes pinned Xray `v26.3.27` as `bin/xray.exe`
+- `xray-manager-v4-linux-x64.zip` — includes pinned Xray `v26.3.27` as `bin/xray`
 
 For normal users:
 
@@ -58,7 +56,7 @@ For normal users:
 
 If a `v4*` tag is pushed, the same ZIP files are uploaded to GitHub Releases.
 
-> Note: the portable ZIP still requires Node.js 20+ installed on the machine. Xray itself is downloaded automatically by xray-manager on first start.
+> Note: the Windows portable ZIP still requires Node.js 20+ installed on the machine. Xray itself is already bundled in `bin/xray.exe`, so startup does not need to download Xray from GitHub.
 
 ## Windows quick start from source
 

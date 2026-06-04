@@ -30,7 +30,6 @@ import systemProxy from './routes/system-proxy.js';
 import { getSettings } from './services/settings-service.js';
 import { loadConnections } from './services/connection-service.js';
 import { getNodes } from './services/node-service.js';
-import { ensureXrayBinary } from './services/xray-download-service.js';
 
 async function main() {
   // Ensure directories exist
@@ -44,15 +43,6 @@ async function main() {
   await getSettings();
   await loadConnections();
   await getNodes();
-
-  // Ensure the platform-matching Xray binary exists. This auto-downloads
-  // Xray-core from GitHub on fresh Windows/Linux/macOS installs.
-  try {
-    const xray = await ensureXrayBinary();
-    console.log(`[xray] ${xray.message}: ${xray.path}`);
-  } catch (err) {
-    console.warn('[xray] auto-install failed:', err instanceof Error ? err.message : err);
-  }
   
   // Create Hono app
   const app = new Hono();
