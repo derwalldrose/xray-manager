@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { readFile, writeFile } from 'fs/promises';
+import { copyFile, readFile, writeFile } from 'fs/promises';
 import { CONFIG_FILE, XRAY_BIN } from '../constants.js';
 import { exec } from '../utils/shell.js';
 import { restartXray } from '../services/xray-service.js';
@@ -39,14 +39,14 @@ config.post('/', async (c) => {
     
     // Backup
     const bak = CONFIG_FILE + '.bak.' + Date.now();
-    await exec('cp', [CONFIG_FILE, bak]).catch(() => {});
+    await copyFile(CONFIG_FILE, bak).catch(() => {});
     
     await writeFile(CONFIG_FILE, content.endsWith('\n') ? content : content + '\n');
     
     // Test
     const test = await exec(XRAY_BIN, ['run', '-test', '-config', CONFIG_FILE]).catch(e => ({ code: 1, stderr: e.message }));
     if (test.code !== 0) {
-      await exec('cp', [bak, CONFIG_FILE]).catch(() => {});
+      await copyFile(bak, CONFIG_FILE).catch(() => {});
       return c.json({ ok: false, error: 'Config test failed: ' + (test.stderr || ''), rolled: true }, 400);
     }
     

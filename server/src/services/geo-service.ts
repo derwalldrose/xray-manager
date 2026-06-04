@@ -1,9 +1,6 @@
-
-import { readdir, stat } from 'fs/promises';
+import { stat, rename, writeFile } from 'fs/promises';
 import { join } from 'path';
-import { existsSync } from 'fs';
 import { DATA_DIR, CONFIG_DIR } from '../constants.js';
-import { exec } from '../utils/shell.js';
 import { readJson, writeJson } from '../utils/file.js';
 
 const GEO_URLS_FILE = join(DATA_DIR, 'geo-urls.json');
@@ -52,6 +49,21 @@ export async function saveGeoUrls(urls: { geoip?: string; geosite?: string }): P
   return updated;
 }
 
+async function downloadFile(url: string, target: string): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60000);
+  try {
+    const res = await fetch(url, { signal: controller.signal, headers: { 'User-Agent': 'xray-manager-v4' } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length === 0) throw new Error('empty response');
+    await writeFile(target + '.tmp', buf);
+    await rename(target + '.tmp', target);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function updateGeoFiles(): Promise<{ ok: boolean; results: { name: string; ok: boolean; error?: string }[] }> {
   const urls = await getGeoUrls();
   const results: { name: string; ok: boolean; error?: string }[] = [];
@@ -59,9 +71,7 @@ export async function updateGeoFiles(): Promise<{ ok: boolean; results: { name: 
   for (const [name, url] of Object.entries(urls)) {
     const target = join(DATA_DIR, name === 'geosite' ? 'geosite.dat' : 'geoip.dat');
     try {
-      const r = await exec('curl', ['-fsSL', '-o', target + '.tmp', url], { timeout: 60000 });
-      if (r.code !== 0) throw new Error(r.stderr || 'download failed');
-      await exec('mv', [target + '.tmp', target]);
+      await downloadFile(url, target);
       results.push({ name, ok: true });
     } catch (e: any) {
       results.push({ name, ok: false, error: e.message });

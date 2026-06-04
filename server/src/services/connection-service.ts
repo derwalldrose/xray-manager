@@ -7,6 +7,8 @@ import { writeJson as writeConfig } from '../utils/file.js';
 import { restartXray } from './xray-service.js';
 import { exec } from '../utils/shell.js';
 import { enableTransparent, disableTransparent, getState as getTransparentState } from './transparent-service.js';
+import { copyFile, rm } from 'fs/promises';
+import { existsSync } from 'fs';
 
 /**
  * Load connections from connections.json
@@ -79,7 +81,7 @@ export async function connectNodes(
   
   // Backup config before generating new one
   try {
-    await exec('cp', [CONFIG_FILE, CONFIG_FILE + '.connect-backup']);
+    if (existsSync(CONFIG_FILE)) await copyFile(CONFIG_FILE, CONFIG_FILE + '.connect-backup');
   } catch {
     // Config might not exist yet
   }
@@ -94,12 +96,13 @@ export async function connectNodes(
   const testConfigPath = CONFIG_FILE + '.test';
   try {
     await writeConfig(testConfigPath, config);
-    await exec(XRAY_BIN, ['run', '-test', '-config', testConfigPath]);
+    const test = await exec(XRAY_BIN, ['run', '-test', '-config', testConfigPath]);
+    if (test.code !== 0) throw new Error(test.stderr || test.stdout || `xray exited with code ${test.code}`);
     // Clean up test file
-    await exec('rm', ['-f', testConfigPath]);
+    await rm(testConfigPath, { force: true });
   } catch (err: any) {
     // Clean up test file
-    try { await exec('rm', ['-f', testConfigPath]); } catch {}
+    try { await rm(testConfigPath, { force: true }); } catch {}
     // Rollback: restore saved state
     state.connected = state.connected.filter(c => !nodeIds.includes(c.nodeId));
     if (state.connected.length === 0) {
@@ -173,8 +176,10 @@ export async function disconnectAll(): Promise<ConnectionState> {
   let restored = false;
   try {
     const backupPath = CONFIG_FILE + '.connect-backup';
-    await exec('cp', [backupPath, CONFIG_FILE]);
-    restored = true;
+    if (existsSync(backupPath)) {
+      await copyFile(backupPath, CONFIG_FILE);
+      restored = true;
+    }
   } catch {
     // No backup, regenerate a safe baseline from the live config/settings.
   }

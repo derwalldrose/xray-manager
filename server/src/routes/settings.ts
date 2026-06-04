@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { readFile, writeFile } from 'fs/promises';
+import { copyFile, readFile, writeFile } from 'fs/promises';
 import {
   getSettings,
   updateSettings,
@@ -55,11 +55,11 @@ function applyPortsToConfig(cfg: any, ports: any) {
 
 async function saveConfigWithTest(cfg: any) {
   const bak = CONFIG_FILE + '.bak.' + Date.now();
-  await exec('cp', [CONFIG_FILE, bak]).catch(() => {});
+  await copyFile(CONFIG_FILE, bak).catch(() => {});
   await writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n');
   const test = await exec(XRAY_BIN, ['run', '-test', '-config', CONFIG_FILE]).catch((e: any) => ({ code: 1, stderr: e.message, stdout: '' }));
   if (test.code !== 0) {
-    await exec('cp', [bak, CONFIG_FILE]).catch(() => {});
+    await copyFile(bak, CONFIG_FILE).catch(() => {});
     throw new Error('Config test failed: ' + (test.stderr || test.stdout || 'unknown error'));
   }
   await restartXray();
