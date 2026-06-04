@@ -84,8 +84,12 @@ function buildInbounds(settings: Settings, live: XrayConfig | null): XrayInbound
   if (!inbounds.some(i => i.tag === 'transparent')) inbounds.push(generateTransparentInbound(settings.ports.transparent || 12345));
 
   // Normalize older v3 tag so the UI/routing consistently uses "transparent".
+  // Also normalize listen addresses: socks-in and http-in must be 0.0.0.0 for LAN gateway access.
   for (const inbound of inbounds) {
     if (inbound.tag === 'transparent-in') inbound.tag = 'transparent';
+    if (inbound.tag === 'socks-in' || inbound.tag === 'http-in') {
+      if (!inbound.listen || inbound.listen === '127.0.0.1') inbound.listen = '0.0.0.0';
+    }
   }
 
   return uniqByTag(inbounds);
