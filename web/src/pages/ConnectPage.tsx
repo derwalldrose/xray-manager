@@ -7,8 +7,6 @@ import { classNames } from '../lib/utils'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 
-type BindingMode = 'global' | 'rule' | 'direct' | 'block' | 'dns' | 'custom'
-
 export default function ConnectPage() {
   const queryClient = useQueryClient()
   const { data: nodesData, isLoading: nodesLoading } = useNodes()
@@ -35,8 +33,16 @@ export default function ConnectPage() {
   const isWindows = systemProxy?.supported === true
   const nodes = nodesData?.nodes || []
   const connected = connData?.connected || []
+  const connectedIds = new Set(connected.map((c: any) => c.nodeId))
   const config = fullConfig?.config
   const isActive = status?.running && connected.length > 0
+
+  // Sync selected with connected nodes when connection data changes
+  useEffect(() => {
+    if (connected.length > 0) {
+      setSelected(new Set(connected.map((c: any) => c.nodeId)))
+    }
+  }, [connected])
   const tpActive = tpStatus?.active || false
   const dnsHijacked = tpStatus?.dnsHijacked || false
 
@@ -78,32 +84,6 @@ export default function ConnectPage() {
     mutationFn: () => api.post('/system-proxy/enable', { server: systemProxy?.ProxyServer || '127.0.0.1:10818', bypass: proxyBypass || defaultProxyBypass }),
     onSuccess: () => { showToast('系统代理绕过列表已应用', 'success'); queryClient.invalidateQueries({ queryKey: ['system-proxy'] }) },
     onError: (e: any) => showToast(e.message || '应用绕过列表失败', 'error'),
-  })
-
-  const saveInboundTarget = useMutation({
-    mutationFn: ({ inboundTag, target }: { inboundTag: string; target: string }) => {
-      const currentRules = routing?.rules || []
-      const currentBalancers = routing?.balancers || []
-      const targetRule = target.startsWith('balancer:')
-        ? { type: 'field', inboundTag: [inboundTag], balancerTag: target.replace('balancer:', '') }
-        : { type: 'field', inboundTag: [inboundTag], outboundTag: target }
-      let replaced = false
-      const nextRules = currentRules.map((rule: any) => {
-        if (Array.isArray(rule.inboundTag) && rule.inboundTag.length === 1 && rule.inboundTag[0] === inboundTag) {
-          replaced = true
-          return targetRule
-        }
-        return rule
-      })
-      if (!replaced) nextRules.unshift(targetRule)
-      return api.post('/routing', { rules: nextRules, balancers: currentBalancers, domainStrategy: routing?.domainStrategy || 'IPIfNonMatch' })
-    },
-    onSuccess: () => {
-      showToast('入口绑定已保存，Xray 已重启', 'success')
-      queryClient.invalidateQueries({ queryKey: ['routing'] })
-      queryClient.invalidateQueries({ queryKey: ['full-config-summary'] })
-    },
-    onError: (e: any) => showToast(e.message || '保存失败', 'error'),
   })
 
   const enableTp = useMutation({
@@ -203,23 +183,13 @@ export default function ConnectPage() {
           onApplyBypass={() => applySystemProxyBypass.mutate()}
           busy={enableSystemProxy.isPending || disableSystemProxy.isPending || applySystemProxyBypass.isPending}
         />
-      ) : (
-        <>
-          <InboundOrchestrationCard
-            config={config}
-            routing={routing}
-            saving={saveInboundTarget.isPending}
-            onChange={(inboundTag, target) => saveInboundTarget.mutate({ inboundTag, target })}
-          />
-
-          <OutboundGroupsCard config={config} routing={routing} />
-        </>
-      )}
+      ) : null}
 
       <NodeSelectionCard
         nodes={nodes}
         loading={nodesLoading}
         selected={selected}
+        connectedIds={connectedIds}
         locked={!!isActive}
         onToggle={toggleNode}
         onSelectAll={() => setSelected(new Set(nodes.map((n: any) => n.id)))}
@@ -304,100 +274,41 @@ function RuntimeSummary({ connected, nodes, config, routing, strategy }: { conne
   )
 }
 
-function InboundOrchestrationCard({ config, routing, onChange, saving }: { config: any; routing: any; onChange: (inboundTag: string, target: string) => void; saving: boolean }) {
-  const inbounds = config?.inbounds || []
-  const outbounds = (config?.outbounds || []).map((o: any) => o.tag).filter(Boolean)
-  const balancers = routing?.balancers || config?.routing?.balancers || []
-  const rules = routing?.rules || config?.routing?.rules || []
-
-  if (!config) return <Panel title="入口流量绑定"><div className="text-sm" style={{ color: '#8b949e' }}>加载当前配置中...</div></Panel>
-
+function NodeSelectionCard({ nodes, loading, selected, connectedIds, locked, onToggle, onSelectAll, onClear, onTest }: any) {
+  const hasConnected = connectedIds?.size > 0
   return (
-    <Panel title="入口流量绑定" subtitle="动态代理的核心：每个入口可以绑定到单节点、出站组、direct/block/dns-out。复杂规则在配置页的路由规则里继续编辑。">
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-        {inbounds.map((ib: any) => {
-          const mapping = getInboundTarget(ib.tag, rules)
-          const mode = inferMode(ib, mapping)
-          return (
-            <div key={ib.tag} className="rounded-lg border p-3 space-y-3" style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}>
-              <div className="flex items-start justify-between gap-3 flex-wrap">
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-mono text-sm font-semibold" style={{ color: 'var(--text)' }}>{ib.tag}</span>
-                    <span className="px-2 py-0.5 rounded text-xs" style={{ background: mode.bg, color: mode.color }}>{mode.label}</span>
-                  </div>
-                  <div className="text-xs mt-1" style={{ color: '#8b949e' }}>{ib.protocol} · {ib.listen || '0.0.0.0'}:{ib.port}</div>
-                </div>
-                <div className="text-xs" style={{ color: mapping.ruleIndex ? '#58a6ff' : '#8b949e' }}>{mapping.ruleIndex ? `routing #${mapping.ruleIndex}` : '默认路由'}</div>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 items-center">
-                <select value={mapping.value} onChange={(e) => onChange(ib.tag, e.target.value)} disabled={saving} className="px-3 py-2 rounded border text-sm disabled:opacity-50" style={{ background: 'var(--bg2)', borderColor: 'var(--border)', color: 'var(--text)' }}>
-                  {mapping.value === '' && <option value="">未指定 / 默认路由</option>}
-                  {balancers.map((b: any) => <option key={`balancer:${b.tag}`} value={`balancer:${b.tag}`}>出站组: {b.tag}</option>)}
-                  {outbounds.map((tag: string) => <option key={tag} value={tag}>出站: {tag}</option>)}
-                </select>
-                <span className="text-xs font-mono" style={{ color: '#8b949e' }}>{mapping.display}</span>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    </Panel>
-  )
-}
-
-function OutboundGroupsCard({ config, routing }: { config: any; routing: any }) {
-  const balancers = routing?.balancers || config?.routing?.balancers || []
-  const outbounds = config?.outbounds || []
-  return (
-    <Panel title="出站组" subtitle="组用于一个入口绑定多个节点；当前版本显示 live config 中的 balancer，后续可做成独立组管理。">
-      {balancers.length === 0 ? (
-        <div className="text-sm" style={{ color: '#8b949e' }}>当前没有出站组。</div>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          {balancers.map((b: any) => (
-            <div key={b.tag} className="rounded-lg border p-3" style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}>
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <span className="font-mono text-sm font-semibold" style={{ color: 'var(--text)' }}>{b.tag}</span>
-                <span className="text-xs" style={{ color: '#8b949e' }}>{b.strategy?.type || 'roundRobin'}</span>
-              </div>
-              <div className="flex gap-2 flex-wrap mt-3">
-                {(b.selector || []).map((tag: string) => {
-                  const ob = outbounds.find((o: any) => o.tag === tag)
-                  return <span key={tag} className="px-2 py-1 rounded text-xs font-mono" style={{ background: 'rgba(56,139,253,0.15)', color: '#58a6ff' }}>{tag}{ob?.protocol ? ` · ${ob.protocol}` : ''}</span>
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </Panel>
-  )
-}
-
-function NodeSelectionCard({ nodes, loading, selected, locked, onToggle, onSelectAll, onClear, onTest }: any) {
-  return (
-    <Panel title="节点池" subtitle="导入/编辑节点不会立即改变运行配置；选中后点击连接才会应用到 Xray。">
+    <Panel title="节点池" subtitle={hasConnected ? `${connectedIds.size} 个节点正在使用` : '选中后点击连接才会应用到 Xray。'}>
       <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
-        <span className="text-sm" style={{ color: '#8b949e' }}>已选 {selected.size} / {nodes.length}</span>
+        <span className="text-sm" style={{ color: '#8b949e' }}>{hasConnected ? `已连接 ${connectedIds.size} / ${nodes.length}` : `已选 ${selected.size} / ${nodes.length}`}</span>
         <div className="flex gap-2 flex-wrap">
-          <button onClick={onSelectAll} disabled={locked} className="px-3 py-1 rounded text-sm border disabled:opacity-40" style={{ background: 'var(--bg)', borderColor: 'var(--border)', color: 'var(--text)' }}>全选</button>
-          <button onClick={onClear} disabled={locked} className="px-3 py-1 rounded text-sm border disabled:opacity-40" style={{ background: 'var(--bg)', borderColor: 'var(--border)', color: 'var(--text)' }}>清空</button>
+          {!locked && <button onClick={onSelectAll} disabled={locked} className="px-3 py-1 rounded text-sm border disabled:opacity-40" style={{ background: 'var(--bg)', borderColor: 'var(--border)', color: 'var(--text)' }}>全选</button>}
+          {!locked && <button onClick={onClear} disabled={locked} className="px-3 py-1 rounded text-sm border disabled:opacity-40" style={{ background: 'var(--bg)', borderColor: 'var(--border)', color: 'var(--text)' }}>清空</button>}
           <button onClick={onTest} disabled={selected.size === 0} className="px-3 py-1 rounded text-sm text-white disabled:opacity-40" style={{ background: 'var(--accent)' }}>测试选中</button>
         </div>
       </div>
       {loading ? <div className="p-6 text-center" style={{ color: '#8b949e' }}>加载中...</div> : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
-          {nodes.map((node: any) => (
-            <button key={node.id} onClick={() => onToggle(node.id)} disabled={locked} className={classNames('text-left rounded-lg border p-3 transition-colors disabled:cursor-not-allowed', selected.has(node.id) ? 'border-blue-500' : 'hover:border-blue-500/60')} style={{ background: selected.has(node.id) ? 'rgba(56,139,253,0.1)' : 'var(--bg)', borderColor: selected.has(node.id) ? '#58a6ff' : 'var(--border)' }}>
-              <div className="flex items-center gap-2 flex-wrap">
-                <input type="checkbox" checked={selected.has(node.id)} readOnly className="w-4 h-4 accent-blue-500" />
-                <span className="font-mono text-sm font-medium" style={{ color: 'var(--text)' }}>{node.tag}</span>
-                <span className="text-xs" style={{ color: '#8b949e' }}>{node.protocol}</span>
-              </div>
-              <div className="text-xs mt-1 truncate" style={{ color: '#8b949e' }}>{node.address}:{node.port}</div>
-            </button>
-          ))}
+          {nodes.map((node: any) => {
+            const isConnected = connectedIds?.has(node.id)
+            const isSelected = selected.has(node.id)
+            const bg = isConnected ? 'rgba(63,185,80,0.1)' : isSelected ? 'rgba(56,139,253,0.1)' : 'var(--bg)'
+            const borderColor = isConnected ? '#3fb950' : isSelected ? '#58a6ff' : 'var(--border)'
+            return (
+              <button key={node.id} onClick={() => onToggle(node.id)} disabled={locked} className={classNames('text-left rounded-lg border p-3 transition-colors disabled:cursor-not-allowed', isConnected ? 'border-green-500' : isSelected ? 'border-blue-500' : 'hover:border-blue-500/60')} style={{ background: bg, borderColor }}>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {isConnected ? (
+                    <span className="w-2.5 h-2.5 rounded-full bg-green-500 shrink-0" title="正在使用" />
+                  ) : (
+                    <input type="checkbox" checked={isSelected} readOnly className="w-4 h-4 accent-blue-500" />
+                  )}
+                  <span className="font-mono text-sm font-medium" style={{ color: 'var(--text)' }}>{node.tag}</span>
+                  <span className="text-xs" style={{ color: '#8b949e' }}>{node.protocol}</span>
+                  {isConnected && <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'rgba(63,185,80,0.15)', color: '#3fb950' }}>使用中</span>}
+                </div>
+                <div className="text-xs mt-1 truncate" style={{ color: '#8b949e' }}>{node.address}:{node.port}</div>
+              </button>
+            )
+          })}
           {!loading && nodes.length === 0 && <div className="p-6 text-center rounded-lg border" style={{ color: '#8b949e', borderColor: 'var(--border)' }}>暂无节点，请先到节点页导入。</div>}
         </div>
       )}
@@ -508,26 +419,6 @@ function Panel({ title, subtitle, right, children }: { title: string; subtitle?:
 function RuleBlock({ title, text }: { title: string; text?: string }) {
   const filtered = (text || '').split('\n').filter(line => line.includes('XRAY_MGR') || line.includes('--dport 443') || line.startsWith('*') || line.startsWith(':') || line === 'COMMIT').join('\n')
   return <div className="rounded-lg border overflow-hidden" style={{ borderColor: 'var(--border)' }}><div className="px-3 py-2 text-xs font-semibold" style={{ background: 'var(--bg)', color: 'var(--text)' }}>{title}</div><pre className="p-3 text-xs whitespace-pre-wrap overflow-auto max-h-64 font-mono" style={{ background: 'var(--bg)', color: '#8b949e' }}>{filtered || '无 XRAY_MGR / QUIC 相关规则'}</pre></div>
-}
-
-function getInboundTarget(inboundTag: string, rules: any[]) {
-  for (let i = 0; i < rules.length; i++) {
-    const rule = rules[i]
-    if (Array.isArray(rule.inboundTag) && rule.inboundTag.includes(inboundTag)) {
-      if (rule.balancerTag) return { value: `balancer:${rule.balancerTag}`, display: `组:${rule.balancerTag}`, ruleIndex: i + 1 }
-      if (rule.outboundTag) return { value: rule.outboundTag, display: rule.outboundTag, ruleIndex: i + 1 }
-    }
-  }
-  return { value: '', display: '默认', ruleIndex: 0 }
-}
-
-function inferMode(ib: any, mapping: any): { label: string; color: string; bg: string; mode: BindingMode } {
-  if (ib.tag === 'dns' || ib.protocol === 'dns') return { label: 'DNS', color: '#d29922', bg: 'rgba(210,153,34,0.15)', mode: 'dns' }
-  if (mapping.value === 'direct') return { label: '直连', color: '#3fb950', bg: 'rgba(63,185,80,0.15)', mode: 'direct' }
-  if (mapping.value === 'block') return { label: '阻断', color: '#f85149', bg: 'rgba(248,81,73,0.15)', mode: 'block' }
-  if (mapping.value.startsWith('balancer:')) return { label: '出站组', color: '#58a6ff', bg: 'rgba(56,139,253,0.15)', mode: 'global' }
-  if (mapping.value) return { label: '单出站', color: '#58a6ff', bg: 'rgba(56,139,253,0.15)', mode: 'global' }
-  return { label: '默认', color: '#8b949e', bg: 'rgba(139,148,158,0.15)', mode: 'custom' }
 }
 
 function getTransparentPort(config: any) {
