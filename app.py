@@ -553,6 +553,12 @@ def _build_connect_config(selected_tags, strategy, transparent, ports):
     rules = []
     rules.append({"type": "field", "inboundTag": ["dns"], "outboundTag": "direct"})
 
+    # GeoIP bypass (must be BEFORE inbound-tag rules so CN traffic goes direct first)
+    rules.append({"type": "field", "ip": ["geoip:cn"], "outboundTag": "direct"})
+    rules.append({"type": "field", "domain": ["geosite:cn"], "outboundTag": "direct"})
+    rules.append({"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"})
+    rules.append({"type": "field", "network": "udp", "outboundTag": "direct"})
+
     if is_multi:
         rules.append({"type": "field", "inboundTag": ["socks-in"], "balancerTag": "proxy-balancer"})
         rules.append({"type": "field", "inboundTag": ["http-in"], "balancerTag": "proxy-balancer"})
@@ -564,12 +570,6 @@ def _build_connect_config(selected_tags, strategy, transparent, ports):
         rules.append({"type": "field", "inboundTag": ["http-in"], "outboundTag": tag})
         if transparent:
             rules.append({"type": "field", "inboundTag": ["transparent"], "outboundTag": tag})
-
-    # GeoIP bypass
-    rules.append({"type": "field", "ip": ["geoip:cn"], "outboundTag": "direct"})
-    rules.append({"type": "field", "domain": ["geosite:cn"], "outboundTag": "direct"})
-    rules.append({"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"})
-    rules.append({"type": "field", "network": "udp", "outboundTag": "direct"})
 
     routing["rules"] = rules
 
@@ -956,43 +956,56 @@ def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
         ob.setdefault("streamSettings", {}).setdefault("sockopt", {})["mark"] = 128
 
     # -- Routing rules --
-    rules = cfg.get("routing", {}).get("rules", [])
+    # Extract and remove geo/dns/transparent rules from wherever they are,
+    # then rebuild in correct order: geo → dns → transparent → other
+    old_rules = cfg.get("routing", {}).get("rules", [])
 
-    # Build geoip bypass rules (insert at top, highest priority)
+    # Classify existing rules
+    geo_keys = ("geoip:cn", "geosite:cn", "geoip:private")
     geo_rules = []
-    has_geoip_cn = any("geoip:cn" in json.dumps(r) for r in rules)
-    has_geosite_cn = any("geosite:cn" in json.dumps(r) for r in rules)
-    has_geoip_private = any("geoip:private" in json.dumps(r) for r in rules)
-    has_udp_direct = any(r.get("network") == "udp" and r.get("outboundTag") == "direct" for r in rules)
+    dns_rule = None
+    tp_rule = None
+    other_rules = []
+    for r in old_rules:
+        dump = json.dumps(r)
+        is_geo = any(k in dump for k in geo_keys)
+        is_udp_direct = r.get("network") == "udp" and r.get("outboundTag") == "direct"
+        is_dns = r.get("inboundTag") == ["dns"]
+        is_tp = r.get("inboundTag") == ["transparent"]
+        if is_geo or is_udp_direct:
+            geo_rules.append(r)
+        elif is_dns:
+            dns_rule = r
+        elif is_tp:
+            tp_rule = r
+        else:
+            other_rules.append(r)
 
-    if not has_geoip_cn:
+    # Ensure geo rules exist
+    if not any("geoip:cn" in json.dumps(r) for r in geo_rules):
         geo_rules.append({"type": "field", "ip": ["geoip:cn"], "outboundTag": "direct"})
-    if not has_geosite_cn:
+    if not any("geosite:cn" in json.dumps(r) for r in geo_rules):
         geo_rules.append({"type": "field", "domain": ["geosite:cn"], "outboundTag": "direct"})
-    if not has_geoip_private:
+    if not any("geoip:private" in json.dumps(r) for r in geo_rules):
         geo_rules.append({"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"})
-    if not has_udp_direct:
+    if not any(r.get("network") == "udp" and r.get("outboundTag") == "direct" for r in geo_rules):
         geo_rules.append({"type": "field", "network": "udp", "outboundTag": "direct"})
 
-    # DNS routing rules
-    dns_rules = []
-    has_dns_rule = any(r.get("inboundTag") == ["dns"] for r in rules)
-    if not has_dns_rule:
-        dns_rules.append({"type": "field", "inboundTag": ["dns"], "outboundTag": "direct"})
+    # Ensure dns rule exists
+    if not dns_rule:
+        dns_rule = {"type": "field", "inboundTag": ["dns"], "outboundTag": "direct"}
 
-    # Transparent proxy routing rule
-    default_tag = None
-    for ob in outbounds:
-        if ob.get("protocol") not in ("freedom", "blackhole", "dns"):
-            default_tag = ob.get("tag")
-            break
-    if not default_tag:
-        return None, "no proxy outbound found"
+    # Ensure transparent rule exists
+    if not tp_rule:
+        default_tag = None
+        for ob in outbounds:
+            if ob.get("protocol") not in ("freedom", "blackhole", "dns"):
+                default_tag = ob.get("tag")
+                break
+        if not default_tag:
+            return None, "no proxy outbound found"
 
-    has_tp_rule = any(r.get("inboundTag") == ["transparent"] for r in rules)
-    if not has_tp_rule:
         if balancer_cfg and balancer_cfg.get("enabled") and balancer_cfg.get("tags"):
-            # Use balancer instead of fixed outbound
             bal_tag = "proxy-balancer"
             strategy_map = {
                 "roundRobin": {"type": "roundRobin"},
@@ -1005,17 +1018,16 @@ def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
                 "selector": balancer_cfg["tags"],
                 "strategy": strategy,
             }
-            # Remove existing balancer with same tag, then add
             balancers = cfg.get("routing", {}).get("balancers", [])
             balancers = [b for b in balancers if b.get("tag") != bal_tag]
             balancers.append(balancer)
             cfg.setdefault("routing", {})["balancers"] = balancers
-            rules.insert(0, {"type": "field", "inboundTag": ["transparent"], "balancerTag": bal_tag})
+            tp_rule = {"type": "field", "inboundTag": ["transparent"], "balancerTag": bal_tag}
         else:
-            rules.insert(0, {"type": "field", "inboundTag": ["transparent"], "outboundTag": default_tag})
+            tp_rule = {"type": "field", "inboundTag": ["transparent"], "outboundTag": default_tag}
 
-    # Insert geo + dns rules at the beginning
-    cfg["routing"]["rules"] = geo_rules + dns_rules + rules
+    # Final order: geo (CN direct) → dns → transparent → everything else
+    cfg["routing"]["rules"] = geo_rules + [dns_rule, tp_rule] + other_rules
 
     # -- DNS config --
     cfg.setdefault("dns", {})

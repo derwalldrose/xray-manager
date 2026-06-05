@@ -437,16 +437,42 @@
       {
         "type": "field",
         "inboundTag": [
-          "http"
+          "dns"
         ],
-        "balancerTag": "proxy-balancer"
+        "outboundTag": "direct"
+      },
+      {
+        "ip": [
+          "geoip:cn"
+        ],
+        "outboundTag": "direct",
+        "type": "field"
+      },
+      {
+        "domain": [
+          "geosite:cn"
+        ],
+        "outboundTag": "direct",
+        "type": "field"
+      },
+      {
+        "ip": [
+          "geoip:private"
+        ],
+        "outboundTag": "direct",
+        "type": "field"
+      },
+      {
+        "network": "udp",
+        "outboundTag": "direct",
+        "type": "field"
       },
       {
         "type": "field",
         "inboundTag": [
-          "dns"
+          "http"
         ],
-        "outboundTag": "direct"
+        "balancerTag": "proxy-balancer"
       },
       {
         "type": "field",
@@ -475,32 +501,6 @@
           "socks-us"
         ],
         "outboundTag": "proxy-us"
-      },
-      {
-        "ip": [
-          "geoip:cn"
-        ],
-        "outboundTag": "direct",
-        "type": "field"
-      },
-      {
-        "domain": [
-          "geosite:cn"
-        ],
-        "outboundTag": "direct",
-        "type": "field"
-      },
-      {
-        "ip": [
-          "geoip:private"
-        ],
-        "outboundTag": "direct",
-        "type": "field"
-      },
-      {
-        "network": "udp",
-        "outboundTag": "direct",
-        "type": "field"
       }
     ]
   },
