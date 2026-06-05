@@ -3134,6 +3134,7 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
         <button class="btn" onclick="loadLogs(200)">200行</button>
         <button class="btn" onclick="loadLogs(500)">500行</button>
         <button class="btn primary" onclick="loadLogs(200)">刷新</button>
+        <input id="log-filter" placeholder="过滤关键词 (如: direct, telegram, error)" style="flex:1;min-width:200px;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px" oninput="filterLogs()">
       </div>
       <div class="log-box" id="log-box">加载中...</div>
     </div>
@@ -4388,11 +4389,22 @@ async function changeToken(){
   document.getElementById('token-confirm').value='';
 }
 
+let _rawLogs='';
 async function loadLogs(n){
   const d=await api('/api/logs?lines='+n);
   if(!d)return;
-  document.getElementById('log-box').textContent=d.logs;
+  _rawLogs=d.logs;
+  filterLogs();
   const box=document.getElementById('log-box');
+  box.scrollTop=box.scrollHeight;
+}
+function filterLogs(){
+  const q=(document.getElementById('log-filter').value||'').trim().toLowerCase();
+  const box=document.getElementById('log-box');
+  if(!q){box.textContent=_rawLogs;box.scrollTop=box.scrollHeight;return;}
+  const lines=_rawLogs.split('\n');
+  const matched=lines.filter(l=>l.toLowerCase().includes(q));
+  box.textContent=matched.join('\n')||'(无匹配)';
   box.scrollTop=box.scrollHeight;
 }
 
