@@ -1,38 +1,18 @@
 services:
   xray-manager:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        XRAY_VERSION: "v26.3.27"
-        TARGETARCH: amd64
     container_name: xray-manager
+    image: xray-manager:latest
     restart: unless-stopped
-
-    # host 网络：容器直接使用宿主机网络栈
     network_mode: host
-
-    # bridge 模式（不用透明代理时可切换）：
-    # network_mode: bridge
-    # ports:
-    #   - "54321:54321"
-    #   - "10808:10808"
-    #   - "10809:10809"
-
     volumes:
       - ./config:/root/xray-manager/config
       - ./data:/root/xray-manager/data
       - ./backup:/root/xray-manager/backup
       - ./state:/root/xray-manager/state
       - ./logs:/root/xray-manager/logs
-
+      - /etc/resolv.conf:/etc/resolv.conf
     environment:
       - PYTHONUNBUFFERED=1
-
     cap_add:
       - NET_ADMIN
       - NET_RAW
-
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
