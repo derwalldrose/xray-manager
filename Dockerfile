@@ -86,8 +86,12 @@ WORKDIR ${BASE_DIR}
 
 EXPOSE 54321 10808 10809
 
+# HEALTHCHECK uses sh -c so $PANEL_PORT expands at HEALTHCHECK time (inside the
+# container, where the -e PANEL_PORT env exists). Writing $$PANEL_PORT makes
+# Docker expand it at `docker run` time (CLI env, usually empty) ->
+# "URL rejected: Port number was not a decimal number".
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:$$PANEL_PORT/ || exit 1
+    CMD ["sh", "-c", "curl -f http://localhost:${PANEL_PORT}/ || exit 1"]
 
 # Bootstrap: ensure data subdirs exist (a fresh single-volume mount starts
 # empty and supervisord requires log dirs to exist before it will start).
