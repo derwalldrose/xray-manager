@@ -41,8 +41,11 @@ from txt_endpoints import materialize_config
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
+# Code/binaries live in CODE_DIR (baked into image, never mounted).
+# All runtime data lives under BASE_DIR (one host volume).
+CODE_DIR = "/opt/derwalld"
 BASE_DIR = "/root/xray-manager"
-DEFAULT_XRAY_BIN = f"{BASE_DIR}/bin/xray"
+DEFAULT_XRAY_BIN = f"{CODE_DIR}/bin/der"
 DEFAULT_XRAY_CFG = f"{BASE_DIR}/config/xray-multi-socks.json"
 DEFAULT_SVC_NAME = "xray-multi-socks.service"
 DEFAULT_PORT = 54321
@@ -109,7 +112,7 @@ XRAY_BIN = DEFAULT_XRAY_BIN
 
 def _init_dirs():
     """Create all required subdirectories."""
-    for d in [f"{BASE_DIR}/bin", f"{BASE_DIR}/data", f"{BASE_DIR}/config",
+    for d in [f"{BASE_DIR}/data", f"{BASE_DIR}/config",
               f"{BASE_DIR}/backup", f"{BASE_DIR}/state", f"{BASE_DIR}/logs"]:
         Path(d).mkdir(parents=True, exist_ok=True)
 
@@ -1880,7 +1883,7 @@ def api_geo_update():
                 continue
             os.replace(tmp_path, gf["path"])
             # Symlink to bin/
-            link_path = f"{BASE_DIR}/bin/{gf['name']}"
+            link_path = f"{CODE_DIR}/bin/{gf['name']}"
             if os.path.islink(link_path) or os.path.exists(link_path):
                 os.remove(link_path)
             os.symlink(gf["path"], link_path)
