@@ -28,13 +28,15 @@ import subprocess
 import time
 import shlex
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
 import base64 as _b64
 import urllib.request
+import socket
 
 from flask import Flask, jsonify, request, Response
+from txt_endpoints import materialize_config
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -63,11 +65,16 @@ CHAIN_PREFIX = "XRAY_MGR"
 CUSTOM_BYPASS_FILE = f"{BASE_DIR}/state/transparent-bypass.json"
 BALANCER_CONFIG_FILE = f"{BASE_DIR}/state/balancer-config.json"
 CONNECT_STATE_FILE = f"{BASE_DIR}/state/connect-mode.json"
+DNS_STATE_FILE = f"{BASE_DIR}/state/dns-config.json"
 TOKEN_FILE = f"{BASE_DIR}/state/token"
 GEOIP_PATH = f"{BASE_DIR}/data/geoip.dat"
 GEOSITE_PATH = f"{BASE_DIR}/data/geosite.dat"
 GEO_CDN_PREFIX = "https://hub.543083.xyz/"
 GEO_URLS_FILE = f"{BASE_DIR}/state/geo-urls.json"
+ACCESS_LOG_FILE = f"{BASE_DIR}/logs/access.log"
+ERROR_LOG_FILE = f"{BASE_DIR}/logs/error.log"
+XRAY_LOG_FILE = f"{BASE_DIR}/logs/xray.log"
+IP_META_CACHE_FILE = f"{BASE_DIR}/state/ip-meta-cache.json"
 
 DEFAULT_GEO_URLS = {
     "geoip": f"{GEO_CDN_PREFIX}https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
@@ -103,13 +110,14 @@ XRAY_BIN = DEFAULT_XRAY_BIN
 def _init_dirs():
     """Create all required subdirectories."""
     for d in [f"{BASE_DIR}/bin", f"{BASE_DIR}/data", f"{BASE_DIR}/config",
-              f"{BASE_DIR}/backup", f"{BASE_DIR}/state"]:
+              f"{BASE_DIR}/backup", f"{BASE_DIR}/state", f"{BASE_DIR}/logs"]:
         Path(d).mkdir(parents=True, exist_ok=True)
 
 XRAY_CFG = DEFAULT_XRAY_CFG
 SVC_NAME = DEFAULT_SVC_NAME
 AUTH_TOKEN = DEFAULT_TOKEN  # may be overridden by --token or token file
 TEST_URLS_FILE = DEFAULT_TEST_URLS_FILE
+PANEL_STARTED_AT = time.time()
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -122,6 +130,16 @@ def _run(cmd, timeout=15):
         return r.stdout, r.stderr, r.returncode
     except subprocess.TimeoutExpired:
         return "", "timeout", -1
+
+
+def _ensure_access_log_config(cfg):
+    """Ensure Xray logs at info level to xray.log (session-ID based stats)."""
+    log = cfg.setdefault("log", {})
+    # Remove separate access/error log paths — all output goes to xray.log
+    log.pop("access", None)
+    log.pop("error", None)
+    log["loglevel"] = "info"
+    return cfg
 
 
 def _load_test_urls():
@@ -240,6 +258,11 @@ def _curl_speedtest(host, port, url, timeout=20):
 
 def _build_temp_multi_config(outbounds, base_port=30000):
     """Build one temp Xray config with multiple inbounds, one per outbound. Returns (config_dict, port_map)."""
+    resolved_cfg, _ = materialize_config(
+        {"outbounds": outbounds},
+        f"{BASE_DIR}/state/txt-endpoint-cache.json",
+    )
+    outbounds = resolved_cfg["outbounds"]
     inbounds = []
     rules = []
     port_map = {}  # tag -> port
@@ -265,7 +288,8 @@ def _build_temp_multi_config(outbounds, base_port=30000):
         port += 1
 
     cfg = {
-        "log": {"loglevel": "warning"},
+        "log": {"access": ACCESS_LOG_FILE, "error": ERROR_LOG_FILE, "loglevel": "warning"},
+        # NOTE: temp test configs use separate access/error logs, not production xray.log
         "inbounds": inbounds,
         "outbounds": all_outbounds,
         "routing": {"domainStrategy": "AsIs", "rules": rules},
@@ -374,6 +398,87 @@ def _connect_state_write(state):
         json.dump(state, f, indent=2, ensure_ascii=False)
 
 
+# Default DNS config (used when no user override persisted)
+# NOTE: DoH servers (dns.jianghuxiao.pp.ua, dns.alidns.com) caused socket leaks
+# in dns-out outbound (Xray 26.3.27). Using plain UDP DNS until fixed.
+# dns inbound forwards directly to upstream via dokodemo-door address, NOT via
+# dns-out outbound. Routing rules send dns/transparent-udp53 -> direct.
+DNS_INBOUND_SETTINGS = {"address": "223.5.5.5", "port": 53, "network": "udp"}
+
+
+def _dns_inbound_settings():
+    return dict(DNS_INBOUND_SETTINGS)
+
+
+DEFAULT_DNS_CONFIG = {
+    "servers": [
+        "udp:223.5.5.5:53",
+        "udp:119.29.29.29:53",
+    ],
+    "tag": "dns",
+    "hosts": {
+        "domain:googleapis.cn": "googleapis.com",
+        "geosite:category-ads-all": "127.0.0.1",
+    },
+}
+
+
+def _dns_state_load():
+    """Load user-persisted DNS config override, or None if never saved."""
+    try:
+        with open(DNS_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _dns_state_save(dns_cfg):
+    """Persist user's DNS config to state file."""
+    Path(DNS_STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
+    with open(DNS_STATE_FILE, "w") as f:
+        json.dump(dns_cfg, f, indent=2, ensure_ascii=False)
+
+
+def _dns_outbound():
+    return {
+        "tag": "dns-out", "protocol": "dns",
+        "streamSettings": {"sockopt": {"mark": 128}},
+    }
+
+
+def _ensure_dns_outbound(outbounds):
+    replaced = False
+    result = []
+    for outbound in outbounds:
+        if outbound.get("tag") == "dns-out":
+            if not replaced:
+                result.append(_dns_outbound())
+                replaced = True
+            continue
+        result.append(outbound)
+    if not replaced:
+        result.append(_dns_outbound())
+    return result
+
+
+def _dns_routing_rules(transparent=False):
+    # Route DNS queries from the dns inbound to "direct" (freedom) outbound
+    # instead of "dns-out". The dns-out outbound (protocol: dns) has a socket
+    # leak in Xray 26.3.27 where each query creates an IPv6 UDP socket that
+    # never gets closed, exhausting the ephemeral port range. The dns inbound
+    # (dokodemo-door) forwards directly to upstream DNS via its settings.address.
+    #
+    # NOTE: The old "transparent + udp/53 → direct" rule is REMOVED.
+    # LAN DNS now goes via DNAT to 127.0.0.1:53 (dns inbound), NOT via REDIRECT
+    # to 12345 (transparent). So there's no transparent UDP 53 traffic to route.
+    rules = [{"type": "field", "inboundTag": ["dns"], "outboundTag": "direct"}]
+    return rules
+
+
+def _quic_block_rule():
+    return {"type": "field", "network": "udp", "port": 443, "outboundTag": "block"}
+
+
 def _reconcile_connect_state():
     """Reconcile actual system state with connect-mode.json.
     Returns the corrected state dict with actual_* fields.
@@ -387,9 +492,15 @@ def _reconcile_connect_state():
 
     # Case 1: active + xray running → ensure DNS + iptables match
     if active_expected and xray_running:
+        state.pop("xray_missing_since", None)
+        state.pop("recovering", None)
+        state.pop("was_active_but_stopped", None)
+        # Re-apply on every reconciliation so an older managed resolv.conf is
+        # normalized to the current nameserver list. The apply helper backs up
+        # only when the file is not already managed, preserving the real original.
         if not dns_active:
             print("[reconcile] DNS hijack missing, applying...")
-            _dns_hijack_apply()
+        _dns_hijack_apply()
         if tp_expected and not tp_has_rules:
             tp_port = state.get("transparent_port", 12345)
             print(f"[reconcile] iptables missing, applying (port {tp_port})...")
@@ -397,17 +508,34 @@ def _reconcile_connect_state():
         if not tp_expected and tp_has_rules:
             print("[reconcile] Stale iptables, cleaning...")
             _iptables_cleanup()
-
-    # Case 2: active but xray NOT running → mark inactive, clean all
-    elif active_expected and not xray_running:
-        print("[reconcile] Active but xray stopped → cleaning up")
-        state["active"] = False
-        state["was_active_but_stopped"] = True
-        if dns_active:
-            _dns_hijack_restore()
-        if tp_has_rules:
-            _iptables_cleanup()
         _connect_state_write(state)
+
+    # Case 2: active but xray NOT running → keep intent during short restarts.
+    # Docker/supervisor restarts can make Xray disappear for a few seconds while
+    # DNS is still hijacked to 127.0.0.1. Do NOT mark connect-mode inactive or
+    # clean iptables immediately, otherwise the user must manually reconnect.
+    elif active_expected and not xray_running:
+        now = time.time()
+        # A panel/container restart starts Xray and the panel concurrently. Ignore
+        # a persisted timestamp from an older process; always grant this process
+        # a fresh recovery window before deciding the core is truly gone.
+        persisted_missing_since = float(state.get("xray_missing_since") or now)
+        missing_since = max(persisted_missing_since, PANEL_STARTED_AT)
+        state["xray_missing_since"] = missing_since
+        state["recovering"] = True
+        state["was_active_but_stopped"] = True
+        if now - missing_since < 60:
+            print("[reconcile] Active but xray is restarting → preserving connect-mode state")
+            _connect_state_write(state)
+        else:
+            print("[reconcile] Active but xray stopped for >60s → cleaning up")
+            state["active"] = False
+            state["recovering"] = False
+            if dns_active:
+                _dns_hijack_restore()
+            if tp_has_rules:
+                _iptables_cleanup()
+            _connect_state_write(state)
 
     # Case 3: inactive → ensure iptables/DNS are clean (but keep config as-is)
     elif not active_expected:
@@ -418,8 +546,10 @@ def _reconcile_connect_state():
             print("[reconcile] Stale iptables, cleaning...")
             _iptables_cleanup()
 
-    # Always ensure dokodemo/dns inbound exist in config
-    _ensure_dns_inbound_in_config()
+    # Active modes need managed inbounds/rules. An inactive panel startup must not
+    # rewrite the user's persisted nodes or routing configuration.
+    if active_expected:
+        _ensure_dns_inbound_in_config()
 
     state["xray_running"] = xray_running
     state["dns_actual"] = _dns_hijack_is_active()
@@ -483,11 +613,11 @@ def _build_connect_config(selected_tags, strategy, transparent, ports):
         "settings": {},
     })
 
-    # DNS inbound (always)
+    # DNS inbound always forwards directly to mainland UDP DNS.
     cfg["inbounds"].append({
         "tag": "dns", "listen": "0.0.0.0", "port": 53,
         "protocol": "dokodemo-door",
-        "settings": {"address": "119.29.29.29", "port": 53, "network": "tcp,udp"},
+        "settings": _dns_inbound_settings(),
     })
 
     # Transparent inbound (optional)
@@ -516,7 +646,6 @@ def _build_connect_config(selected_tags, strategy, transparent, ports):
     # Ensure direct/block/dns-out exist
     has_direct = any(ob.get("tag") == "direct" for ob in outbounds)
     has_block = any(ob.get("tag") == "block" for ob in outbounds)
-    has_dns_out = any(ob.get("tag") == "dns-out" for ob in outbounds)
     if not has_direct:
         outbounds.append({
             "tag": "direct", "protocol": "freedom",
@@ -525,12 +654,7 @@ def _build_connect_config(selected_tags, strategy, transparent, ports):
         })
     if not has_block:
         outbounds.append({"tag": "block", "protocol": "blackhole", "streamSettings": {"sockopt": {"mark": 128}}})
-    if not has_dns_out:
-        outbounds.append({
-            "tag": "dns-out", "protocol": "dns",
-            "settings": {"port": 53, "address": "119.29.29.29", "network": "udp"},
-            "streamSettings": {"sockopt": {"mark": 128}},
-        })
+    outbounds = _ensure_dns_outbound(outbounds)
     cfg["outbounds"] = outbounds
 
     # --- Routing ---
@@ -549,16 +673,20 @@ def _build_connect_config(selected_tags, strategy, transparent, ports):
     else:
         routing["balancers"] = []
 
-    # Rules
+    # Rules (first-match order)
     rules = []
-    rules.append({"type": "field", "inboundTag": ["dns"], "outboundTag": "direct"})
 
-    # GeoIP bypass (must be BEFORE inbound-tag rules so CN traffic goes direct first)
+    # 1. DNS hijack → Xray DNS module. dns.servers can be DoH URLs or plain DNS IPs.
+    rules.extend(_dns_routing_rules(transparent))
+
+    # 2. Block QUIC before catch-all UDP direct, then bypass CN/private traffic.
+    rules.append(_quic_block_rule())
     rules.append({"type": "field", "ip": ["geoip:cn"], "outboundTag": "direct"})
     rules.append({"type": "field", "domain": ["geosite:cn"], "outboundTag": "direct"})
     rules.append({"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"})
-    rules.append({"type": "field", "network": "udp", "outboundTag": "direct"})
 
+    # 3. User traffic → proxy (must come BEFORE catch-all UDP direct,
+    #    otherwise transparent UDP always bypasses proxy)
     if is_multi:
         rules.append({"type": "field", "inboundTag": ["socks-in"], "balancerTag": "proxy-balancer"})
         rules.append({"type": "field", "inboundTag": ["http-in"], "balancerTag": "proxy-balancer"})
@@ -571,20 +699,16 @@ def _build_connect_config(selected_tags, strategy, transparent, ports):
         if transparent:
             rules.append({"type": "field", "inboundTag": ["transparent"], "outboundTag": tag})
 
+    # 4. Fallback: remaining UDP → direct (after proxy rules so transparent UDP isn't swallowed)
+    rules.append({"type": "field", "network": "udp", "outboundTag": "direct"})
+
     routing["rules"] = rules
 
-    # --- DNS ---
-    cfg["dns"] = {
-        "servers": ["119.29.29.29", "223.5.5.5",
-                     "https://dns.alidns.com/dns-query",
-                     "https://cloudflare-dns.com/dns-query"],
-        "tag": "dns",
-        "hosts": {
-            "domain:googleapis.cn": "googleapis.com",
-            "geosite:category-ads-all": "127.0.0.1",
-        },
-    }
+    # --- DNS (use user-saved override, otherwise default) ---
+    saved_dns = _dns_state_load()
+    cfg["dns"] = dict(saved_dns) if saved_dns else dict(DEFAULT_DNS_CONFIG)
 
+    _ensure_access_log_config(cfg)
     return cfg, None
 
 
@@ -772,11 +896,20 @@ def _dns_hijack_backup():
 
 
 def _dns_hijack_apply():
-    """Hijack system DNS to point to Xray's dns inbound (127.0.0.1:53)."""
-    _dns_hijack_backup()
+    """Hijack system DNS to point to Xray's dns inbound (127.0.0.1:53).
+
+    Only backs up the current resolv.conf if it is NOT already hijacked.
+    This prevents the original backup from being overwritten with hijacked
+    content when apply() is called multiple times (reconnect, reconcile,
+    startup restoration, etc.) — which would make restore() a no-op and
+    leave the host with a broken 127.0.0.1:53 after Xray stops.
+    """
+    if not _dns_hijack_is_active():
+        _dns_hijack_backup()
     with open("/etc/resolv.conf", "w") as f:
         f.write("# Xray DNS hijack (xray-manager transparent proxy)\n")
         f.write("nameserver 127.0.0.1\n")
+        f.write("nameserver 223.5.5.5\n")
         f.write("nameserver 119.29.29.29\n")
     return True
 
@@ -825,28 +958,43 @@ def _ensure_dns_inbound_in_config():
         })
         changed = True
 
-    # Ensure dns dokodemo-door inbound
-    if not any(ib.get("tag") == "dns" for ib in inbounds):
+    # Ensure dns dokodemo-door inbound forwards directly to mainland UDP DNS.
+    dns_settings = _dns_inbound_settings()
+    existing_dns = next((ib for ib in inbounds if ib.get("tag") == "dns"), None)
+    if existing_dns:
+        desired = {
+            "tag": "dns", "listen": "0.0.0.0", "port": 53,
+            "protocol": "dokodemo-door", "settings": dns_settings,
+        }
+        if existing_dns != desired:
+            existing_dns.clear()
+            existing_dns.update(desired)
+            changed = True
+    else:
         inbounds.append({
             "tag": "dns", "listen": "0.0.0.0", "port": 53,
             "protocol": "dokodemo-door",
-            "settings": {"address": "119.29.29.29", "port": 53, "network": "tcp,udp"},
+            "settings": dns_settings,
         })
         changed = True
 
-    # Ensure dns-out outbound
-    if not any(ob.get("tag") == "dns-out" for ob in outbounds):
-        outbounds.append({
-            "tag": "dns-out", "protocol": "dns",
-            "settings": {"port": 53, "address": "119.29.29.29", "network": "udp"},
-            "streamSettings": {"sockopt": {"mark": 128}},
-        })
+    new_outbounds = _ensure_dns_outbound(outbounds)
+    if new_outbounds != outbounds:
+        outbounds = new_outbounds
         changed = True
 
-    # Ensure dns routing rule
-    if not any(r.get("inboundTag") == ["dns"] for r in rules):
-        rules.append({"type": "field", "inboundTag": ["dns"], "outboundTag": "direct"})
-        changed = True
+    # Ensure dns routing rules
+    desired_dns_rules = _dns_routing_rules(any(ib.get("tag") == "transparent" for ib in inbounds))
+    quic_rule = _quic_block_rule()
+    changed_rules = False
+    rules = [r for r in rules if r.get("inboundTag") != ["dns"]]
+    rules = [r for r in rules if not (r.get("inboundTag") == ["transparent"] and r.get("port") == 53 and r.get("network") == "udp")]
+    rules = [r for r in rules if not (r.get("network") == "udp" and r.get("port") == 443)]
+    for desired_rule in reversed(desired_dns_rules + [quic_rule]):
+        if not any(r == desired_rule for r in rules):
+            rules.insert(0, desired_rule)
+            changed_rules = True
+    changed = changed or changed_rules
 
     if changed:
         cfg["inbounds"] = inbounds
@@ -869,7 +1017,8 @@ def _iptables_setup_redirect(port, bypass_cidrs=None):
         setup.append(f"iptables -t nat -A {ch}_RULE -d {cidr} -j RETURN")
     setup.append(f"iptables -t nat -A {ch}_RULE -m mark --mark 0x80/0x80 -j RETURN")
     setup.append(f"iptables -t nat -A {ch}_RULE -p tcp -j REDIRECT --to-ports {port}")
-    setup.append(f"iptables -t nat -A {ch}_RULE -p udp --dport 53 -j REDIRECT --to-ports {port}")
+    # UDP 53 goes directly to Xray's DNS inbound, which forwards to mainland UDP DNS.
+    setup.append(f"iptables -t nat -A {ch}_RULE -p udp --dport 53 -j DNAT --to-destination 127.0.0.1:53")
     setup.append(f"iptables -t nat -I PREROUTING -p tcp -j {ch}_PRE")
     setup.append(f"iptables -t nat -I PREROUTING -p udp --dport 53 -j {ch}_PRE")
     setup.append(f"iptables -t nat -I OUTPUT -p tcp -j {ch}_OUT")
@@ -921,26 +1070,25 @@ def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
         }
         cfg.setdefault("inbounds", []).append(dokodemo)
 
-    # -- Inbound: DNS (port 53) --
+    # -- Inbound: DNS (port 53), forwarded directly to mainland UDP DNS --
     has_dns_ib = any(ib.get("tag") == "dns" for ib in cfg.get("inbounds", []))
+    dns_settings = _dns_inbound_settings()
     if not has_dns_ib:
-        dns_ib = {
+        cfg.setdefault("inbounds", []).append({
             "tag": "dns", "listen": "0.0.0.0", "port": 53,
             "protocol": "dokodemo-door",
-            "settings": {"address": "119.29.29.29", "port": 53, "network": "tcp,udp"},
-        }
-        cfg["inbounds"].append(dns_ib)
+            "settings": dns_settings,
+        })
+    else:
+        for ib in cfg.get("inbounds", []):
+            if ib.get("tag") == "dns":
+                if ib.get("settings") != dns_settings:
+                    ib["settings"] = dns_settings
+                break
 
     # -- Outbound: dns-out --
     outbounds = cfg.get("outbounds", [])
-    has_dns_ob = any(ob.get("tag") == "dns-out" for ob in outbounds)
-    if not has_dns_ob:
-        dns_ob = {
-            "tag": "dns-out", "protocol": "dns",
-            "settings": {"port": 53, "address": "119.29.29.29", "network": "udp"},
-            "streamSettings": {"sockopt": {"mark": 128}},
-        }
-        outbounds.append(dns_ob)
+    outbounds = _ensure_dns_outbound(outbounds)
 
     # -- sockopt.mark: 128 on all proxy outbounds + direct --
     for ob in outbounds:
@@ -963,7 +1111,6 @@ def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
     # Classify existing rules
     geo_keys = ("geoip:cn", "geosite:cn", "geoip:private")
     geo_rules = []
-    dns_rule = None
     tp_rule = None
     other_rules = []
     for r in old_rules:
@@ -971,29 +1118,28 @@ def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
         is_geo = any(k in dump for k in geo_keys)
         is_udp_direct = r.get("network") == "udp" and r.get("outboundTag") == "direct"
         is_dns = r.get("inboundTag") == ["dns"]
+        is_tp_dns = r.get("inboundTag") == ["transparent"] and r.get("port") == 53 and r.get("network") == "udp"
+        is_quic_block = r.get("network") == "udp" and r.get("port") == 443
         is_tp = r.get("inboundTag") == ["transparent"]
+        if is_dns or is_tp_dns or is_quic_block:
+            continue
         if is_geo or is_udp_direct:
             geo_rules.append(r)
-        elif is_dns:
-            dns_rule = r
         elif is_tp:
             tp_rule = r
         else:
             other_rules.append(r)
 
-    # Ensure geo rules exist
+    # Ensure geo rules exist (NO catch-all UDP direct here — moved after tp_rule)
     if not any("geoip:cn" in json.dumps(r) for r in geo_rules):
         geo_rules.append({"type": "field", "ip": ["geoip:cn"], "outboundTag": "direct"})
     if not any("geosite:cn" in json.dumps(r) for r in geo_rules):
         geo_rules.append({"type": "field", "domain": ["geosite:cn"], "outboundTag": "direct"})
     if not any("geoip:private" in json.dumps(r) for r in geo_rules):
         geo_rules.append({"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"})
-    if not any(r.get("network") == "udp" and r.get("outboundTag") == "direct" for r in geo_rules):
-        geo_rules.append({"type": "field", "network": "udp", "outboundTag": "direct"})
 
-    # Ensure dns rule exists
-    if not dns_rule:
-        dns_rule = {"type": "field", "inboundTag": ["dns"], "outboundTag": "direct"}
+    # Ensure dns rules exist
+    dns_rules = _dns_routing_rules(True)
 
     # Ensure transparent rule exists
     if not tp_rule:
@@ -1026,17 +1172,15 @@ def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
         else:
             tp_rule = {"type": "field", "inboundTag": ["transparent"], "outboundTag": default_tag}
 
-    # Final order: geo (CN direct) → dns → transparent → everything else
-    cfg["routing"]["rules"] = geo_rules + [dns_rule, tp_rule] + other_rules
+    # Final order: dns → QUIC block → geo direct → transparent → other → UDP fallback
+    udp_fallback = {"type": "field", "network": "udp", "outboundTag": "direct"}
+    cfg["routing"]["rules"] = dns_rules + [_quic_block_rule()] + geo_rules + [tp_rule] + other_rules + [udp_fallback]
 
     # -- DNS config --
     cfg.setdefault("dns", {})
     default_servers = [
-        "119.29.29.29",
-        "223.5.5.5",
-        "https://dns.alidns.com/dns-query",
-        "https://doh.pub/dns-query",
-        "https://cloudflare-dns.com/dns-query",
+        "udp:223.5.5.5:53",
+        "udp:119.29.29.29:53",
     ]
     default_hosts = {
         "domain:googleapis.cn": "googleapis.com",
@@ -1090,11 +1234,8 @@ def _tp_remove_dokodemo_from_config():
     # Remove dns config added by transparent proxy
     dns = cfg.get("dns", {})
     default_servers = [
-        "119.29.29.29",
-        "223.5.5.5",
-        "https://dns.alidns.com/dns-query",
-        "https://doh.pub/dns-query",
-        "https://cloudflare-dns.com/dns-query",
+        "udp:223.5.5.5:53",
+        "udp:119.29.29.29:53",
     ]
     default_hosts = {
         "domain:googleapis.cn": "googleapis.com",
@@ -1163,7 +1304,7 @@ def _service_status():
             info["memory"] = "N/A"
     else:
         # Try checking if xray process is running
-        out, _, rc = _run("pgrep -x xray")
+        out, _, rc = _run("pgrep -x der")
         info["active"] = "active" if rc == 0 else "inactive"
         info["running"] = rc == 0
         info["started_at"] = ""
@@ -1203,12 +1344,39 @@ def _parse_config():
         return None, str(e)
 
 
+def _runtime_config_path():
+    return str(Path(XRAY_CFG).with_name("xray-runtime.json"))
+
+
+def _materialize_runtime_config(cfg=None):
+    if cfg is None:
+        cfg, err = _parse_config()
+        if err:
+            return None, [], err
+    if cfg is None:
+        return None, [], "empty Xray config"
+    runtime, resolved = materialize_config(
+        cfg,
+        f"{BASE_DIR}/state/txt-endpoint-cache.json",
+    )
+    target = Path(_runtime_config_path())
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_suffix(target.suffix + ".tmp")
+    temp.write_text(json.dumps(runtime, ensure_ascii=False, indent=2) + "\n")
+    os.replace(temp, target)
+    return str(target), resolved, None
+
+
 def _test_config():
-    """Run xray -test on current config."""
-    out, err, rc = _run(f"{XRAY_BIN} run -test -config {XRAY_CFG}")
+    """Resolve TXT endpoints and run xray -test on the runtime config."""
+    runtime_path, resolved, materialize_error = _materialize_runtime_config()
+    if materialize_error:
+        return {"ok": False, "output": materialize_error, "exit_code": -1, "txt_endpoints": []}
+    out, err, rc = _run(f"{shlex.quote(XRAY_BIN)} run -test -config {shlex.quote(runtime_path)}")
     combined = (out + err).strip()
     ok = "Configuration OK" in combined
-    return {"ok": ok, "output": combined, "exit_code": rc}
+    return {"ok": ok, "output": combined, "exit_code": rc, "txt_endpoints": resolved,
+            "runtime_config": runtime_path}
 
 
 def _xray_version():
@@ -1231,6 +1399,7 @@ def _backup_config():
 
 
 def _save_config_object(cfg):
+    _ensure_access_log_config(cfg)
     backup = _backup_config()
     with open(XRAY_CFG, "w") as f:
         f.write(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
@@ -1247,18 +1416,23 @@ def _save_config_object(cfg):
 
 
 def _restart_xray():
-    """Restart Xray service, return restart result."""
+    """Materialize TXT endpoints, restart Xray service, and return restart result."""
+    runtime_path, resolved, materialize_error = _materialize_runtime_config()
+    if materialize_error:
+        return {"active": "error", "success": False, "error": materialize_error}
     if _has_systemd():
         _run(f"systemctl --no-block restart {SVC_NAME}")
         time.sleep(1.5)
         out, _, rc = _run(f"systemctl is-active {SVC_NAME}")
-        return {"active": out.strip(), "success": out.strip() == "active"}
+        return {"active": out.strip(), "success": out.strip() == "active",
+                "runtime_config": runtime_path, "txt_endpoints": resolved}
     elif _has_supervisord():
         _run("supervisorctl restart xray-all:xray")
         time.sleep(1.5)
         out, _, _ = _run("supervisorctl status xray-all:xray")
         active = "active" if "RUNNING" in out else "inactive"
-        return {"active": active, "success": "RUNNING" in out}
+        return {"active": active, "success": "RUNNING" in out,
+                "runtime_config": runtime_path, "txt_endpoints": resolved}
     else:
         return {"active": "unknown", "success": False}
 
@@ -1607,11 +1781,21 @@ def api_dns_post():
     if err:
         return jsonify({"error": err}), 500
     cfg["dns"] = dns
+    _dns_state_save(dns)
     backup, test = _save_config_object(cfg)
     if not test["ok"]:
         return jsonify({"error": "config test failed, rolled back", "detail": test["output"]}), 400
     restart = _restart_xray() if test["ok"] else {}
-    return jsonify({"ok": True, "backup": backup, "test": test, "restart": restart})
+    # Rebuild iptables bypass if transparent proxy is active (picks up new DNS IPs)
+    iptables_rebuilt = False
+    out, _, rc = _run("iptables -t nat -L " + CHAIN_PREFIX + "_RULE -n 2>/dev/null")
+    if rc == 0 and CHAIN_PREFIX in out:
+        tp_state = _tp_state_read()
+        tp_port = tp_state.get("port", DEFAULT_TRANSPARENT_PORT)
+        _iptables_cleanup()
+        _iptables_setup_redirect(tp_port)
+        iptables_rebuilt = True
+    return jsonify({"ok": True, "backup": backup, "test": test, "restart": restart, "iptables_rebuilt": iptables_rebuilt})
 
 
 @app.route("/api/dns/hosts")
@@ -1657,11 +1841,22 @@ def api_dns_hosts_post():
         return jsonify({"error": err}), 500
     cfg.setdefault("dns", {})
     cfg["dns"]["hosts"] = hosts
+    _dns_state_save(cfg["dns"])
     backup, test = _save_config_object(cfg)
     if not test["ok"]:
         return jsonify({"error": "config test failed, rolled back", "detail": test["output"]}), 400
     restart = _restart_xray() if test["ok"] else {}
-    return jsonify({"ok": True, "hosts": hosts, "backup": backup, "test": test, "restart": restart})
+    # If transparent proxy iptables rules are active, rebuild them to pick up
+    # new DNS hosts IPs in the bypass list.
+    iptables_rebuilt = False
+    out, _, rc = _run("iptables -t nat -L " + CHAIN_PREFIX + "_RULE -n 2>/dev/null")
+    if rc == 0 and CHAIN_PREFIX in out:
+        tp_state = _tp_state_read()
+        tp_port = tp_state.get("port", DEFAULT_TRANSPARENT_PORT)
+        _iptables_cleanup()
+        _iptables_setup_redirect(tp_port)
+        iptables_rebuilt = True
+    return jsonify({"ok": True, "hosts": hosts, "backup": backup, "test": test, "restart": restart, "iptables_rebuilt": iptables_rebuilt})
 
 
 @app.route("/api/geo/update", methods=["POST"])
@@ -1761,7 +1956,7 @@ def api_config_post():
     except json.JSONDecodeError as e:
         return jsonify({"error": f"invalid JSON: {e}"}), 400
 
-    _backup_config()
+    backup = _backup_config()
 
     # write
     with open(XRAY_CFG, "w") as f:
@@ -1996,6 +2191,10 @@ def api_outbounds_test():
         return jsonify({"error": "test url must start with http:// or https://"}), 400
 
     temp_cfg, port_map = _build_temp_multi_config([outbound], base_port=random.randint(30000, 45000))
+    runtime_outbound = next(
+        (item for item in temp_cfg["outbounds"] if item.get("tag") == outbound.get("tag")),
+        outbound,
+    )
     proc, tmp, error = _start_temp_xray(temp_cfg)
     if error:
         return jsonify({"ok": False, "tag": outbound.get("tag", ""), "error": "xray start failed", "detail": error})
@@ -2009,8 +2208,10 @@ def api_outbounds_test():
         result["tag"] = outbound.get("tag", "")
         result["outbound_addr"] = ""
         try:
-            v = outbound.get("settings", {}).get("vnext", [{}])[0]
-            result["outbound_addr"] = str(v.get("address", "?")) + ":" + str(v.get("port", "?"))
+            v = runtime_outbound.get("settings", {}).get("vnext", [{}])[0]
+            s = runtime_outbound.get("settings", {}).get("servers", [{}])[0]
+            src = v or s
+            result["outbound_addr"] = str(src.get("address", "?")) + ":" + str(src.get("port", "?"))
         except Exception:
             pass
         return jsonify(result)
@@ -2040,6 +2241,7 @@ def api_outbounds_batch_test():
 
     base_port = random.randint(30000, 40000)
     temp_cfg, port_map = _build_temp_multi_config(all_obs, base_port=base_port)
+    runtime_by_tag = {ob.get("tag", ""): ob for ob in temp_cfg["outbounds"]}
     proc, tmp, error = _start_temp_xray(temp_cfg)
     if error:
         return jsonify({"ok": False, "error": "xray start failed", "detail": error})
@@ -2055,8 +2257,11 @@ def api_outbounds_batch_test():
             r = {"tag": tag}
             addr = ""
             try:
-                v = ob.get("settings", {}).get("vnext", [{}])[0]
-                addr = str(v.get("address", "?")) + ":" + str(v.get("port", "?"))
+                runtime_ob = runtime_by_tag.get(tag, ob)
+                v = runtime_ob.get("settings", {}).get("vnext", [{}])[0]
+                s = runtime_ob.get("settings", {}).get("servers", [{}])[0]
+                src = v or s
+                addr = str(src.get("address", "?")) + ":" + str(src.get("port", "?"))
             except Exception:
                 pass
             r["outbound_addr"] = addr
@@ -2382,6 +2587,7 @@ def api_connect_test_selected():
 
     base_port = random.randint(30000, 40000)
     temp_cfg, port_map = _build_temp_multi_config(all_obs, base_port=base_port)
+    runtime_by_tag = {ob.get("tag", ""): ob for ob in temp_cfg["outbounds"]}
     proc, tmp, error = _start_temp_xray(temp_cfg)
     if error:
         return jsonify({"ok": False, "error": "xray 启动失败", "detail": error})
@@ -2397,8 +2603,9 @@ def api_connect_test_selected():
             r = {"tag": tag}
             addr = ""
             try:
-                v = ob.get("settings", {}).get("vnext", [{}])[0]
-                s = ob.get("settings", {}).get("servers", [{}])[0]
+                runtime_ob = runtime_by_tag.get(tag, ob)
+                v = runtime_ob.get("settings", {}).get("vnext", [{}])[0]
+                s = runtime_ob.get("settings", {}).get("servers", [{}])[0]
                 src = v or s
                 if src:
                     addr = str(src.get("address", "?")) + ":" + str(src.get("port", "?"))
@@ -2510,6 +2717,448 @@ def api_stats():
     return jsonify(result)
 
 
+def _classify_outbound(tag):
+    if tag == "direct":
+        return "direct"
+    if tag == "block":
+        return "blocked"
+    return "proxy"
+
+
+def _parse_endpoint(endpoint):
+    """Parse Xray endpoint like tcp:host:443, //host:443, DNS, or udp:[::1]:53."""
+    endpoint = (endpoint or "").strip()
+    if endpoint == "DNS":
+        return "dns", "DNS", None
+    network = ""
+    rest = endpoint
+    if endpoint.startswith("//"):
+        rest = endpoint[2:]
+    elif ":" in endpoint:
+        first, tail = endpoint.split(":", 1)
+        if first in ("tcp", "udp"):
+            network = first
+            rest = tail
+
+    host = rest
+    port = None
+    if rest.startswith("[") and "]:" in rest:
+        host, port_s = rest.rsplit("]:", 1)
+        host = host + "]"
+        if port_s.isdigit():
+            port = int(port_s)
+    elif ":" in rest:
+        host_s, port_s = rest.rsplit(":", 1)
+        # IPv6 without brackets has multiple colons and no reliable port separator.
+        if port_s.isdigit() and host_s.count(":") <= 1:
+            host = host_s
+            port = int(port_s)
+    return network, host, port
+
+
+def _parse_access_time(ts):
+    for fmt in ("%Y/%m/%d %H:%M:%S.%f", "%Y/%m/%d %H:%M:%S"):
+        try:
+            return datetime.strptime(ts, fmt)
+        except Exception:
+            pass
+    return None
+
+
+def _parse_route_tag(route):
+    # Newer Xray logs use "inbound -> outbound"; older logs may only have outbound.
+    parts = [p.strip() for p in (route or "").split("->") if p.strip()]
+    return parts[-1] if parts else (route or "").strip()
+
+
+def _parse_access_line(line):
+    line = line.rstrip("\n")
+    if " accepted " not in line or "[" not in line or "]" not in line:
+        return None
+    m = re.match(
+        r'^(?P<ts>\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+'
+        r'(?:from\s+)?(?P<src>.+?)\s+accepted\s+(?P<dest>\S+)\s+'
+        r'\[(?P<route>[^\]]+)\]',
+        line,
+    )
+    if not m:
+        return None
+    src_network, client, _src_port = _parse_endpoint(m.group("src"))
+    network, target, port = _parse_endpoint(m.group("dest"))
+    route = m.group("route")
+    outbound = _parse_route_tag(route)
+    ts = m.group("ts")
+    # Keep seconds in API output so sorting/filtering remains readable.
+    display_ts = ts.split(".", 1)[0]
+    return {
+        "time": display_ts,
+        "client": client,
+        "source_network": src_network,
+        "network": network,
+        "target": target,
+        "port": port,
+        "route": route,
+        "outbound": outbound,
+        "route_type": _classify_outbound(outbound),
+        "raw": line,
+    }
+
+
+def _is_ip(value):
+    try:
+        ipaddress.ip_address(str(value).strip("[]"))
+        return True
+    except Exception:
+        return False
+
+
+def _read_last_lines(path, max_lines=50000):
+    try:
+        with open(path) as f:
+            return f.readlines()[-max_lines:]
+    except Exception:
+        return []
+
+
+def _parse_dns_answer_line(line):
+    """Parse Xray info log: got answer: domain. TypeA -> [ip ip]."""
+    if " got answer: " not in line or " -> [" not in line:
+        return None
+    m = re.search(r'got answer:\s+(?P<domain>\S+)\s+Type(?:A|AAAA)\s+->\s+\[(?P<ips>[^\]]*)\]', line)
+    if not m:
+        return None
+    domain = m.group("domain").rstrip(".")
+    ips = [x.strip().strip(",") for x in m.group("ips").split() if x.strip()]
+    ips = [ip.strip("[]") for ip in ips if _is_ip(ip)]
+    if not domain or not ips:
+        return None
+    return domain, ips
+
+
+def _parse_connection_opened_line(line):
+    """Parse freedom info log: connection opened to tcp:domain:443 ... remote endpoint ip:443."""
+    if "connection opened to" not in line or "remote endpoint" not in line:
+        return None
+    m = re.search(r'connection opened to\s+(?:tcp|udp):(?P<domain>\S+?):(?P<dport>\d+),.*?remote endpoint\s+(?P<ip>\[[^\]]+\]|[0-9a-fA-F:.]+):(?P<rport>\d+)', line)
+    if not m:
+        return None
+    domain = m.group("domain").strip("[]").rstrip(".")
+    ip = m.group("ip").strip("[]")
+    if not domain or _is_ip(domain) or not _is_ip(ip):
+        return None
+    return domain, [ip]
+
+
+def _parse_sniffed_domain_line(line):
+    if "sniffed domain:" not in line:
+        return None
+    m = re.search(r'^(?P<ts>\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+\[Info\]\s+\[(?P<id>\d+)\].*?sniffed domain:\s+(?P<domain>\S+)', line)
+    if not m:
+        return None
+    domain = m.group("domain").rstrip(".")
+    if not domain or _is_ip(domain):
+        return None
+    return {"time": m.group("ts").split(".", 1)[0], "id": m.group("id"), "domain": domain}
+
+
+# ---------------------------------------------------------------------------
+# Session-ID based log parsing (xray.log at info level)
+# ---------------------------------------------------------------------------
+
+def _parse_session_line(line):
+    """Parse one xray.log line into a structured event with session_id."""
+    line = line.rstrip("\n")
+
+    # Extract session ID [NNNN] — format: "2026/06/07 01:40:36.445864 [Info] [NNNN]"
+    sid_m = re.search(r'(\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+\[Info\]\s+\[(\d+)\]', line)
+    if not sid_m:
+        return None
+
+    ts = sid_m.group(1)
+    session_id = sid_m.group(2)
+    display_ts = ts.split(".", 1)[0]
+
+    # 1. sniffed domain
+    m = re.search(r'app/dispatcher: sniffed domain:\s+(\S+)', line)
+    if m:
+        domain = m.group(1).rstrip(".")
+        if domain and not _is_ip(domain):
+            return {"_type": "sniffed", "_sid": session_id, "_ts": display_ts, "domain": domain}
+
+    # 2. taking detour
+    m = re.search(r'app/dispatcher: taking detour\s+\[([^\]]+)\]\s+for\s+\[(\S+)\]', line)
+    if m:
+        route_tag = m.group(1)
+        target_proto = m.group(2)
+        return {"_type": "detour", "_sid": session_id, "_ts": display_ts,
+                "route_tag": route_tag, "target_proto": target_proto}
+
+    # 3. connection opened
+    m = re.search(r'proxy/freedom: connection opened to\s+(\S+?),.*?remote endpoint\s+(\S+):(\d+)', line)
+    if m:
+        return {"_type": "opened", "_sid": session_id, "_ts": display_ts,
+                "target_proto": m.group(1), "remote_ip": m.group(2).strip("[]"), "remote_port": m.group(3)}
+
+    # 4. shadowsocks tunneling
+    m = re.search(r'proxy/shadowsocks: tunneling request to\s+(\S+?)\s+via\s+(\S+)', line)
+    if m:
+        return {"_type": "tunneled", "_sid": session_id, "_ts": display_ts,
+                "target_proto": m.group(1), "via": m.group(2)}
+
+    # 5. connection failed
+    if "failed to" in line and ("process outbound" in line or "open connection" in line):
+        return {"_type": "failed", "_sid": session_id, "_ts": display_ts}
+
+    return None
+
+
+def _build_sessions(max_lines=50000):
+    """Read xray.log, group by session ID, build per-connection records."""
+    grouped = {}
+    for line in _read_last_lines(XRAY_LOG_FILE, max_lines=max_lines):
+        ev = _parse_session_line(line)
+        if ev and ev.get("_sid"):
+            grouped.setdefault(ev["_sid"], []).append(ev)
+
+    sessions = []
+    for sid, events in grouped.items():
+        domain = ""
+        route_tag = ""
+        target_ip = ""
+        target_port = ""
+        client = ""
+        failed = False
+        ts = ""
+
+        for ev in events:
+            if not ts:
+                ts = ev.get("_ts", "")
+            if ev["_type"] == "sniffed" and not domain:
+                domain = ev["domain"]
+            elif ev["_type"] == "detour":
+                if not route_tag:
+                    route_tag = ev["route_tag"]
+                # Extract domain from detour target if no sniffed domain
+                if not domain:
+                    proto_target = ev.get("target_proto", "")
+                    _, detour_domain, _ = _parse_endpoint(proto_target)
+                    if detour_domain and not _is_ip(detour_domain):
+                        domain = detour_domain
+            elif ev["_type"] == "opened":
+                target_ip = ev.get("remote_ip", "")
+                target_port = ev.get("remote_port", "")
+            elif ev["_type"] == "failed":
+                failed = True
+
+        if not target_ip and not domain:
+            continue
+
+        route_type = _classify_outbound(route_tag)
+        # Prefer domain as target, IP as connection detail
+        target = domain or target_ip
+        domains = [domain] if domain else []
+        display = domain if domain and target_ip and domain != target_ip else target
+        sessions.append({
+            "time": ts,
+            "client": client,
+            "target": target,
+            "display_target": _target_display(display, domains) if domain else target_ip,
+            "domains": domains,
+            "ip_meta": None,
+            "port": target_port,
+            "route_type": route_type,
+            "outbound": route_tag,
+            "route": route_tag,
+            "network": "",
+            "source_network": "",
+            "raw": "",
+            "failed": failed,
+        })
+
+    return sessions
+
+
+def _load_ip_meta_cache():
+    try:
+        with open(IP_META_CACHE_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_ip_meta_cache(cache):
+    try:
+        Path(IP_META_CACHE_FILE).parent.mkdir(parents=True, exist_ok=True)
+        with open(IP_META_CACHE_FILE, "w") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _query_team_cymru(ips, timeout=4):
+    """Batch query Team Cymru whois. Returns ip -> ASN metadata. Best-effort."""
+    ips = [ip for ip in ips if _is_ip(ip) and not ipaddress.ip_address(ip.strip("[]")).is_private]
+    if not ips:
+        return {}
+    query = "begin\nverbose\n" + "\n".join(ips) + "\nend\n"
+    result = {}
+    try:
+        with socket.create_connection(("whois.cymru.com", 43), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(query.encode())
+            chunks = []
+            while True:
+                try:
+                    b = sock.recv(4096)
+                except socket.timeout:
+                    break
+                if not b:
+                    break
+                chunks.append(b)
+        text = b"".join(chunks).decode("utf-8", "replace")
+    except Exception:
+        return result
+    for line in text.splitlines():
+        if not line.strip() or line.lower().startswith("as"):
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 7:
+            continue
+        asn, ip, bgp_prefix, cc, registry, allocated = parts[:6]
+        as_name = " | ".join(parts[6:]).strip()
+        if not _is_ip(ip):
+            continue
+        result[ip] = {
+            "asn": asn,
+            "prefix": bgp_prefix,
+            "country": cc,
+            "registry": registry,
+            "allocated": allocated,
+            "as_name": as_name,
+            "updated_at": int(time.time()),
+            "source": "team-cymru",
+        }
+    return result
+
+
+def _enrich_ip_meta(ips):
+    cache = _load_ip_meta_cache()
+    now = int(time.time())
+    ttl = 7 * 24 * 3600
+    missing = []
+    for ip in sorted(set(ips)):
+        if not _is_ip(ip):
+            continue
+        meta = cache.get(ip)
+        if not meta or now - int(meta.get("updated_at", 0) or 0) > ttl:
+            missing.append(ip)
+    if missing:
+        queried = _query_team_cymru(missing[:100])
+        if queried:
+            cache.update(queried)
+            _save_ip_meta_cache(cache)
+    return {ip: cache.get(ip) for ip in ips if cache.get(ip)}
+
+
+def _target_display(target, domains):
+    if domains and domains[0] != target:
+        return f"{domains[0]} / {target}"
+    return target
+
+
+@app.route("/api/access-stats")
+def api_access_stats():
+    minutes = request.args.get("minutes", 5, type=int) or 5
+    q = (request.args.get("q") or "").strip().lower()
+    route_type = request.args.get("type", "all") or "all"
+    limit = request.args.get("limit", 100, type=int) or 100
+    enrich = request.args.get("enrich", "1") != "0"
+    minutes = max(1, min(minutes, 24 * 60))
+    limit = max(1, min(limit, 1000))
+    cutoff = datetime.now() - timedelta(minutes=minutes)
+
+    try:
+        all_sessions = _build_sessions()
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e),
+                        "hint": f"xray.log not found or parse error: {XRAY_LOG_FILE}"})
+
+    # Time window filter
+    records = []
+    for rec in all_sessions:
+        ts = _parse_access_time(rec["time"])
+        if not ts or ts < cutoff:
+            continue
+        if route_type != "all" and rec["route_type"] != route_type:
+            continue
+        records.append(rec)
+
+    # Search filter
+    if q:
+        filtered = []
+        for rec in records:
+            domains = rec.get("domains") or []
+            hay = " ".join(str(rec.get(k) or "") for k in ("client", "target", "display_target", "outbound", "route_type"))
+            hay += " " + " ".join(domains)
+            if q in hay.lower():
+                filtered.append(rec)
+        records = filtered
+
+    # IP metadata enrichment
+    if enrich:
+        target_ips = sorted({r["target"].strip("[]") for r in records if _is_ip(r.get("target", ""))})
+        ip_meta = _enrich_ip_meta(target_ips)
+        for rec in records:
+            meta = ip_meta.get((rec.get("target") or "").strip("[]"))
+            if meta:
+                rec["ip_meta"] = meta
+
+    # Aggregation
+    by_target = {}
+    by_outbound = {}
+    by_client = {}
+    for rec in records:
+        target = rec["target"] or "(unknown)"
+        domains = rec.get("domains") or []
+        item = by_target.setdefault(target, {
+            "target": target,
+            "display_target": _target_display(target, domains),
+            "domains": domains,
+            "ip_meta": rec.get("ip_meta"),
+            "count": 0, "proxy": 0, "direct": 0, "blocked": 0,
+            "outbounds": {},
+            "last_seen": rec["time"],
+        })
+        if domains and not item.get("domains"):
+            item["domains"] = domains
+            item["display_target"] = _target_display(target, domains)
+        if rec.get("ip_meta") and not item.get("ip_meta"):
+            item["ip_meta"] = rec.get("ip_meta")
+        item["count"] += 1
+        item[rec["route_type"]] += 1
+        item["outbounds"][rec["outbound"]] = item["outbounds"].get(rec["outbound"], 0) + 1
+        if rec["time"] > item["last_seen"]:
+            item["last_seen"] = rec["time"]
+        by_outbound[rec["outbound"]] = by_outbound.get(rec["outbound"], 0) + 1
+        by_client[rec["client"]] = by_client.get(rec["client"], 0) + 1
+
+    return jsonify({
+        "ok": True,
+        "log_file": XRAY_LOG_FILE,
+        "window_minutes": minutes,
+        "total": len(records),
+        "proxy": sum(1 for r in records if r["route_type"] == "proxy"),
+        "direct": sum(1 for r in records if r["route_type"] == "direct"),
+        "blocked": sum(1 for r in records if r["route_type"] == "blocked"),
+        "enriched_targets": sum(1 for x in by_target.values() if x.get("domains") or x.get("ip_meta")),
+        "by_target": sorted(by_target.values(), key=lambda x: x["count"], reverse=True)[:200],
+        "by_outbound": [{"outbound": k, "count": v} for k, v in sorted(by_outbound.items(), key=lambda x: x[1], reverse=True)],
+        "by_client": [{"client": k, "count": v} for k, v in sorted(by_client.items(), key=lambda x: x[1], reverse=True)[:100]],
+        "records": list(reversed(records[-limit:])),
+    })
+
+
 @app.route("/api/logs")
 def api_logs():
     lines = request.args.get("lines", 80, type=int)
@@ -2531,6 +3180,38 @@ def api_logs():
             pass
 
     return jsonify({"logs": out if out.strip() else "(no logs found)"})
+
+
+@app.route("/api/logs/clear", methods=["POST"])
+def api_logs_clear():
+    cleared = []
+    errors = []
+    log_files = [
+        XRAY_LOG_FILE,
+        ERROR_LOG_FILE,
+        ACCESS_LOG_FILE,
+        f"{BASE_DIR}/logs/xray.log",
+        f"{BASE_DIR}/logs/xray.err",
+        f"{BASE_DIR}/logs/panel.log",
+        f"{BASE_DIR}/logs/panel.err",
+    ]
+    for path in dict.fromkeys(log_files):
+        try:
+            p = Path(path)
+            if p.exists() and p.is_file():
+                p.write_text("")
+                cleared.append(str(p))
+        except Exception as e:
+            errors.append({"path": path, "error": str(e)})
+    try:
+        if Path(IP_META_CACHE_FILE).exists():
+            Path(IP_META_CACHE_FILE).write_text("{}\n")
+            cleared.append(IP_META_CACHE_FILE)
+    except Exception as e:
+        errors.append({"path": IP_META_CACHE_FILE, "error": str(e)})
+
+    restart = _restart_xray()
+    return jsonify({"ok": not errors and restart.get("success", False), "cleared": cleared, "errors": errors, "restart": restart})
 
 
 @app.route("/api/backups")
@@ -3119,6 +3800,9 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
     <div class="card" style="margin-top:16px">
       <h2>DNS Hosts</h2>
       <p style="color:var(--text2);font-size:12px;margin-bottom:12px">自定义域名解析，类似 /etc/hosts。每行一条：<code>域名 IP</code>。支持 <code>#</code> 注释。可选前缀：<code>domain:</code>、<code>geosite:</code>、<code>full:</code></p>
+      <div style="padding:8px 12px;background:var(--bg);border:1px solid var(--info);border-radius:4px;margin-bottom:12px;font-size:11px;color:var(--text2)">
+        💡 Hosts 中的 IP 会<strong>自动加入 iptables bypass</strong>，避免透明代理拦截 DoH/DNS 服务器连接。保存后如透明代理正在运行，iptables 规则会自动重建。
+      </div>
       <textarea id="dns-hosts-editor" style="width:100%;min-height:180px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:8px;font-family:monospace;font-size:12px;resize:vertical" placeholder="googleapis.cn 203.208.41.96&#10;domain:google.com 8.8.8.8&#10;full:ads.example.com 127.0.0.1&#10;# 这是注释"></textarea>
       <div class="btn-group" style="margin-top:8px"><button class="btn primary" onclick="saveDnsHosts()">保存 Hosts</button></div>
     </div>
@@ -3127,6 +3811,29 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
   <!-- Transparent Proxy -->
   <!-- Logs -->
   <div class="tab-content" id="tab-logs">
+    <div class="card">
+      <h2>访问统计</h2>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">基于 xray.log session ID 解析，统计最近窗口内的访问域名、直连/代理/拦截和出口节点。需确保 Xray loglevel 为 info。</p>
+      <div class="btn-group" style="margin-bottom:12px">
+        <button class="btn" onclick="loadAccessStats(5)">最近5分钟</button>
+        <button class="btn" onclick="loadAccessStats(10)">最近10分钟</button>
+        <button class="btn" onclick="loadAccessStats(30)">最近30分钟</button>
+        <button class="btn" onclick="loadAccessStats(60)">最近1小时</button>
+        <select id="access-type" onchange="loadAccessStats()" style="padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">
+          <option value="all">全部</option>
+          <option value="proxy">代理</option>
+          <option value="direct">直连</option>
+          <option value="blocked">拦截</option>
+        </select>
+        <input id="access-search" placeholder="搜索域名/IP/节点/客户端" style="flex:1;min-width:220px;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px" oninput="loadAccessStatsDebounced()">
+        <button class="btn danger" onclick="clearLogs()">清理统计和日志</button>
+      </div>
+      <div id="access-summary" style="margin-bottom:12px;color:var(--text2)">加载中...</div>
+      <h3 style="margin:12px 0 8px">目标排行</h3>
+      <table><thead><tr><th>目标域名/IP</th><th>归属</th><th>总数</th><th>代理</th><th>直连</th><th>拦截</th><th>出口分布</th><th>最后访问</th></tr></thead><tbody id="access-targets"></tbody></table>
+      <h3 style="margin:16px 0 8px">最近记录</h3>
+      <table><thead><tr><th>时间</th><th>客户端</th><th>目标</th><th>归属</th><th>端口</th><th>类型</th><th>出口</th></tr></thead><tbody id="access-records"></tbody></table>
+    </div>
     <div class="card">
       <h2>服务日志</h2>
       <div class="btn-group" style="margin-bottom:12px">
@@ -3364,7 +4071,7 @@ function switchTab(name){
   if(name==='routing')loadRouting();
   if(name==='config'){loadConfig();loadGeoInfo();}
   if(name==='dns'){loadDns();loadDnsHosts();}
-  if(name==='logs')loadLogs(200);
+  if(name==='logs'){loadAccessStats(5);loadLogs(200);}
   if(name==='transparent')loadTransparent();
   if(name==='system')loadSysctl();
   if(name==='backups')loadBackups();
@@ -4291,7 +4998,8 @@ async function saveDns(){
   const cip=document.getElementById('dns-client-ip').value.trim();
   if(cip) dns.clientIp=cip;
   const d=await api('/api/dns',{method:'POST',body:JSON.stringify({dns})});
-  if(d&&d.ok) toast('DNS 已保存'+(d.restart&&d.restart.success?'，Xray 已重启':''));
+  if(d&&d.ok) toast('DNS 已保存'+(d.restart&&d.restart.success?'，Xray 已重启':'')+(d.iptables_rebuilt?'，iptables 已重建':''));
+  else if(d&&d.error) toast(d.error,false);
 }
 
 async function loadDnsHosts(){
@@ -4303,7 +5011,7 @@ async function loadDnsHosts(){
 async function saveDnsHosts(){
   const text=document.getElementById('dns-hosts-editor').value;
   const d=await api('/api/dns/hosts',{method:'POST',body:JSON.stringify({text})});
-  if(d&&d.ok) toast('Hosts 已保存'+(d.restart&&d.restart.success?'，Xray 已重启':''));
+  if(d&&d.ok) toast('Hosts 已保存'+(d.restart&&d.restart.success?'，Xray 已重启':'')+(d.iptables_rebuilt?'，iptables 已重建':''));
   else if(d&&d.error) toast(d.error,false);
 }
 
@@ -4387,6 +5095,60 @@ async function changeToken(){
   document.getElementById('token-old').value='';
   document.getElementById('token-new').value='';
   document.getElementById('token-confirm').value='';
+}
+
+
+let accessMinutes=5;
+let accessTimer=null;
+function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function routeTypeLabel(t){return ({proxy:'代理',direct:'直连',blocked:'拦截'}[t]||t||'');}
+function asInfo(meta){
+  if(!meta)return '<span style="color:var(--text2)">-</span>';
+  const asn=meta.asn?('AS'+meta.asn):'';
+  const name=meta.as_name||'';
+  const cc=meta.country||'';
+  return '<div style="font-size:12px">'+escapeHtml([asn,cc].filter(Boolean).join(' '))+'</div><div style="font-size:11px;color:var(--text2);max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="'+escapeHtml(name)+'">'+escapeHtml(name)+'</div>';
+}
+function targetCell(x){
+  const domains=x.domains||[];
+  if(domains.length){
+    return '<div><code>'+escapeHtml(domains[0])+'</code></div><div style="font-size:11px;color:var(--text2)">'+escapeHtml(x.target||'')+'</div>';
+  }
+  return '<code>'+escapeHtml(x.target||'')+'</code>';
+}
+async function loadAccessStats(minutes){
+  if(minutes)accessMinutes=minutes;
+  const type=document.getElementById('access-type')?.value||'all';
+  const q=document.getElementById('access-search')?.value||'';
+  const d=await api('/api/access-stats?minutes='+accessMinutes+'&type='+encodeURIComponent(type)+'&q='+encodeURIComponent(q));
+  if(!d)return;
+  const summary=document.getElementById('access-summary');
+  if(!d.ok){
+    summary.innerHTML='<span style="color:var(--red)">访问日志不可用：'+escapeHtml(d.error||d.hint||'unknown')+'</span>';
+    document.getElementById('access-targets').innerHTML='';
+    document.getElementById('access-records').innerHTML='';
+    return;
+  }
+  summary.innerHTML='最近 <b>'+d.window_minutes+'</b> 分钟：总计 <b>'+d.total+'</b>，代理 <b style="color:var(--green)">'+d.proxy+'</b>，直连 <b>'+d.direct+'</b>，拦截 <b style="color:var(--red)">'+d.blocked+'</b>，补全 <b>'+((d.enriched_targets)||0)+'</b> 个目标 <span style="color:var(--text2);font-size:11px">('+escapeHtml(d.log_file)+')</span>';
+  document.getElementById('access-targets').innerHTML=(d.by_target||[]).map(x=>{
+    const obs=Object.entries(x.outbounds||{}).map(([k,v])=>k+':'+v).join(', ');
+    return '<tr><td>'+targetCell(x)+'</td><td>'+asInfo(x.ip_meta)+'</td><td>'+x.count+'</td><td>'+x.proxy+'</td><td>'+x.direct+'</td><td>'+x.blocked+'</td><td>'+escapeHtml(obs)+'</td><td>'+escapeHtml(x.last_seen)+'</td></tr>';
+  }).join('')||'<tr><td colspan="8" style="color:var(--text2)">暂无记录</td></tr>';
+  document.getElementById('access-records').innerHTML=(d.records||[]).map(r=>'<tr><td>'+escapeHtml(r.time)+'</td><td>'+escapeHtml(r.client)+'</td><td>'+targetCell(r)+'</td><td>'+asInfo(r.ip_meta)+'</td><td>'+escapeHtml(r.port||'')+'</td><td>'+escapeHtml(routeTypeLabel(r.route_type))+'</td><td>'+escapeHtml(r.outbound)+'</td></tr>').join('')||'<tr><td colspan="7" style="color:var(--text2)">暂无记录</td></tr>';
+}
+function loadAccessStatsDebounced(){clearTimeout(accessTimer);accessTimer=setTimeout(()=>loadAccessStats(),300);}
+
+async function clearLogs(){
+  if(!confirm('确认清理访问统计、Xray/面板日志和 IP 归属缓存？此操作不可恢复。'))return;
+  const d=await api('/api/logs/clear',{method:'POST'});
+  if(!d)return;
+  if(d.ok){
+    toast('已清理统计和日志');
+    await loadAccessStats();
+    await loadLogs(200);
+  }else{
+    toast('清理部分失败: '+JSON.stringify(d.errors||[]));
+  }
 }
 
 let _rawLogs='';
