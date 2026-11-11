@@ -1,0 +1,3044 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>__PANEL_TITLE__</title>
+<script>
+// Apply the theme before first paint (no flash). "auto" follows the OS.
+(function(){var t=localStorage.getItem('derwalld_theme')||'auto';var d=t==='dark'||(t==='auto'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.dataset.theme=d?'dark':'light';document.documentElement.dataset.themePref=t;})();
+</script>
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#f4f5f7;--surface:#ffffff;--surface-2:#f8f9fb;--surface-3:#eef0f4;--hover:#f3f5f8;
+  --border:#e6e8ed;--border-strong:#d3d7df;
+  --text:#101828;--text-2:#475467;--text-3:#8a94a6;
+  --accent:#2f6bff;--accent-hover:#1f5af0;--accent-soft:rgba(47,107,255,.10);--accent-ring:rgba(47,107,255,.28);
+  --green:#12a150;--green-soft:rgba(18,161,80,.12);
+  --yellow:#c77700;--yellow-soft:rgba(230,150,20,.14);
+  --red:#e5484d;--red-soft:rgba(229,72,77,.11);
+  --purple:#7c5cff;--purple-soft:rgba(124,92,255,.12);
+  --shadow-sm:0 1px 2px rgba(16,24,40,.05);
+  --shadow:0 1px 2px rgba(16,24,40,.04),0 4px 16px rgba(16,24,40,.05);
+  --shadow-lg:0 12px 40px rgba(16,24,40,.18);
+  --radius:12px;--radius-sm:8px;--radius-xs:6px;
+  --sidebar-w:232px;
+  --mono:'JetBrains Mono','SF Mono',SFMono-Regular,ui-monospace,Menlo,Consolas,monospace;
+  --chart-grid:#e9ecf1;--chart-text:#8a94a6;--chart-rx:#12a150;--chart-tx:#f08c00;
+  /* legacy aliases used by generated markup */
+  --bg2:var(--surface);--bg3:var(--surface-3);--border2:var(--border-strong);--text2:var(--text-3);--text3:var(--text-2);--orange:#f08c00;
+}
+[data-theme=dark]{
+  --bg:#0c0e13;--surface:#14171e;--surface-2:#191d26;--surface-3:#1f2430;--hover:#1c212b;
+  --border:#252b37;--border-strong:#343b4a;
+  --text:#e7eaf0;--text-2:#a6afbf;--text-3:#6f798c;
+  --accent:#5b8cff;--accent-hover:#7aa2ff;--accent-soft:rgba(91,140,255,.16);--accent-ring:rgba(91,140,255,.35);
+  --green:#3ccf7a;--green-soft:rgba(60,207,122,.14);
+  --yellow:#f0b34a;--yellow-soft:rgba(240,179,74,.15);
+  --red:#ff6b6f;--red-soft:rgba(255,107,111,.14);
+  --purple:#a08bff;--purple-soft:rgba(160,139,255,.16);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.3);
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);
+  --shadow-lg:0 16px 48px rgba(0,0,0,.5);
+  --chart-grid:#252b37;--chart-text:#6f798c;--chart-rx:#3ccf7a;--chart-tx:#f0a33a;
+}
+html,body{height:100%}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei','Noto Sans CJK SC',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;transition:background .2s,color .2s}
+a{color:var(--accent);text-decoration:none}
+code{font-family:var(--mono);font-size:12px;background:var(--surface-3);padding:1px 6px;border-radius:4px}
+input,select,textarea,button{font:inherit;color:inherit}
+::selection{background:var(--accent-soft)}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:6px;border:2px solid transparent;background-clip:padding-box}::-webkit-scrollbar-track{background:transparent}
+
+/* ---------- form controls ---------- */
+.input,input:not([type=checkbox]):not([type=radio]):not([type=range]),select,textarea{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-sm);height:34px;padding:0 11px;font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s,background .15s;min-width:0}
+textarea{height:auto;padding:9px 11px;line-height:1.55;resize:vertical}
+select{padding-right:30px;appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a94a6' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
+input:not([type=checkbox]):not([type=radio]):hover,select:hover,textarea:hover{border-color:var(--border-strong)}
+input:not([type=checkbox]):not([type=radio]):focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-ring)}
+input::placeholder,textarea::placeholder{color:var(--text-3)}
+input[readonly],textarea[readonly]{background:var(--surface-2);color:var(--text-2)}
+input:disabled,select:disabled,textarea:disabled{opacity:.6;cursor:not-allowed}
+input[type=checkbox],input[type=radio]{accent-color:var(--accent);width:16px;height:16px;vertical-align:middle;cursor:pointer}
+.mono,textarea.mono{font-family:var(--mono);font-size:12px}
+.switch{position:relative;display:inline-flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
+.switch input{position:absolute;opacity:0;width:0;height:0}
+.switch .track{width:38px;height:22px;border-radius:11px;background:var(--border-strong);transition:background .2s;position:relative;flex-shrink:0}
+.switch .track::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .2s}
+.switch input:checked+.track{background:var(--accent)}
+.switch input:checked+.track::after{transform:translateX(16px)}
+.switch input:disabled+.track{opacity:.5}
+.switch input:focus-visible+.track{box-shadow:0 0 0 3px var(--accent-ring)}
+
+/* ---------- buttons ---------- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:34px;padding:0 14px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:13px;font-weight:500;line-height:1;white-space:nowrap;transition:background .15s,border-color .15s,color .15s,box-shadow .15s;box-shadow:var(--shadow-sm);position:relative}
+.btn:hover{background:var(--hover);border-color:var(--border-strong)}
+.btn:focus-visible{outline:none;box-shadow:0 0 0 3px var(--accent-ring)}
+.btn:disabled{cursor:not-allowed;opacity:.5}
+.btn svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;flex-shrink:0}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+.btn.success{background:var(--green);border-color:var(--green);color:#fff}
+.btn.danger{color:var(--red)}
+.btn.danger:hover{background:var(--red-soft);border-color:var(--red)}
+.btn.danger.solid{background:var(--red);border-color:var(--red);color:#fff}
+.btn.ghost{background:transparent;border-color:transparent;box-shadow:none;color:var(--text-2)}
+.btn.ghost:hover{background:var(--hover);color:var(--text)}
+.btn.sm{height:28px;padding:0 10px;font-size:12px;border-radius:var(--radius-xs)}
+.btn.icon{width:34px;padding:0}
+.btn.icon.sm{width:28px}
+.btn.lg{height:42px;padding:0 22px;font-size:14px;border-radius:10px}
+.btn.loading{color:transparent!important;pointer-events:none}
+.btn.loading::after{content:"";position:absolute;width:14px;height:14px;border:2px solid currentColor;border-color:var(--text-3) transparent var(--text-3) transparent;border-radius:50%;animation:spin .7s linear infinite}
+.btn.primary.loading::after,.btn.success.loading::after{border-color:#fff transparent #fff transparent}
+@keyframes spin{to{transform:rotate(360deg)}}
+.btn-group{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.seg{display:inline-flex;background:var(--surface-3);border-radius:var(--radius-sm);padding:3px;gap:2px;overflow-x:auto;max-width:100%;flex-shrink:0;scrollbar-width:none}
+.seg::-webkit-scrollbar{display:none}
+.seg button{height:28px;padding:0 12px;border:0;border-radius:6px;background:transparent;color:var(--text-2);cursor:pointer;font-size:13px;white-space:nowrap;transition:background .15s,color .15s}
+.seg button:hover{color:var(--text)}
+.seg button.on{background:var(--surface);color:var(--text);font-weight:600;box-shadow:var(--shadow-sm)}
+.seg button span{color:var(--text-3);font-weight:400;margin-left:2px}
+
+/* ---------- app shell ---------- */
+.app{display:grid;grid-template-columns:var(--sidebar-w) minmax(0,1fr);min-height:100vh;background:linear-gradient(to right,var(--surface) calc(var(--sidebar-w) - 1px),var(--border) calc(var(--sidebar-w) - 1px),var(--border) var(--sidebar-w),transparent var(--sidebar-w))}
+.sidebar{position:sticky;top:0;height:100vh;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:16px 12px;gap:4px;overflow-y:auto}
+.brand{display:flex;align-items:center;gap:10px;padding:4px 8px 16px;font-weight:700;font-size:16px;letter-spacing:.2px}
+.brand .logo{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),#7c5cff);display:grid;place-items:center;flex-shrink:0;box-shadow:0 4px 12px var(--accent-ring)}
+.brand .logo svg{width:17px;height:17px;stroke:#fff;fill:none;stroke-width:2.2}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav-group{font-size:11px;font-weight:600;color:var(--text-3);padding:14px 10px 6px;letter-spacing:.6px;text-transform:uppercase}
+.nav .tab{display:flex;align-items:center;gap:10px;height:36px;padding:0 10px;border-radius:var(--radius-sm);color:var(--text-2);font-size:14px;cursor:pointer;user-select:none;transition:background .15s,color .15s}
+.nav .tab svg{width:17px;height:17px;flex-shrink:0;stroke:currentColor;fill:none;stroke-width:1.8}
+.nav .tab:hover{background:var(--hover);color:var(--text)}
+.nav .tab.active{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.nav .tab .badge-dot{margin-left:auto;width:7px;height:7px;border-radius:50%;background:var(--yellow);display:none}
+.nav .tab.has-dirty .badge-dot{display:block}
+.side-foot{margin-top:auto;padding-top:12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px}
+.side-foot .row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 4px}
+.side-foot .ver{font-family:var(--mono);font-size:11px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.theme-seg{display:flex;background:var(--surface-3);border-radius:var(--radius-sm);padding:3px;gap:2px}
+.theme-seg button{flex:1;height:26px;border:0;border-radius:6px;background:transparent;color:var(--text-2);cursor:pointer;display:grid;place-items:center}
+.theme-seg button svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2}
+.theme-seg button.on{background:var(--surface);color:var(--text);box-shadow:var(--shadow-sm)}
+
+.main{min-width:0;display:flex;flex-direction:column}
+.topbar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:16px;padding:14px 28px;background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:saturate(1.4) blur(10px);-webkit-backdrop-filter:saturate(1.4) blur(10px);border-bottom:1px solid transparent;transition:border-color .2s}
+.topbar.scrolled{border-bottom-color:var(--border)}
+.page-head{min-width:0;flex:1}
+.page-head h1{font-size:20px;font-weight:700;letter-spacing:.2px;line-height:1.3}
+.page-head p{font-size:13px;color:var(--text-3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.top-right{display:flex;align-items:center;gap:10px}
+.mobile-brand{display:none}
+.speed{font-family:var(--mono);font-size:12px;color:var(--text-2);display:flex;gap:10px;padding:0 4px}
+.speed b{font-weight:500}
+.speed .rx{color:var(--green)}.speed .tx{color:var(--chart-tx)}
+.pill{display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 14px 0 12px;border-radius:17px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:13px;font-weight:500;box-shadow:var(--shadow-sm);max-width:340px;transition:border-color .15s,background .15s}
+.pill:hover{border-color:var(--border-strong)}
+.pill .txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pill .sub{color:var(--text-3);font-weight:400}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--text-3);flex-shrink:0;display:inline-block}
+.dot.on{background:var(--green);box-shadow:0 0 0 3px var(--green-soft);animation:pulse 2.4s infinite}
+.dot.warn{background:var(--yellow);box-shadow:0 0 0 3px var(--yellow-soft)}
+.dot.off{background:var(--red);box-shadow:0 0 0 3px var(--red-soft)}
+.dot.idle{background:var(--text-3);box-shadow:0 0 0 3px var(--surface-3)}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 3px var(--green-soft)}50%{box-shadow:0 0 0 6px transparent}}
+.content{padding:8px 28px 120px;max-width:1360px;width:100%}
+.tab-content{display:none;animation:fadeUp .22s ease}
+.tab-content.active{display:block}
+@keyframes fadeUp{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+/* ---------- cards ---------- */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px 22px;margin-bottom:16px;box-shadow:var(--shadow);min-width:0}
+.card.flush{padding:0;overflow:hidden}
+.card-head{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.card.flush>.card-head{padding:16px 20px 0;margin-bottom:12px}
+.card-head h2,.card>h2{font-size:15px;font-weight:650;display:flex;align-items:center;gap:8px;line-height:1.4}
+.card-head .desc{font-size:12.5px;color:var(--text-3);flex-basis:100%;margin-top:-6px}
+.card-head .spacer{flex:1}
+.card>p.desc{font-size:12.5px;color:var(--text-3);margin:-6px 0 14px}
+.count{font-size:12px;font-weight:500;color:var(--text-3);background:var(--surface-3);padding:1px 8px;border-radius:10px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.cols-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.cols-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.stack{display:flex;flex-direction:column;gap:12px}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.toolbar .grow{flex:1;min-width:min(220px,100%)}
+.search{position:relative;flex:1;min-width:min(220px,100%)}
+.search svg{position:absolute;left:10px;top:50%;width:15px;height:15px;transform:translateY(-50%);stroke:var(--text-3);fill:none;stroke-width:2;pointer-events:none}
+.search input{width:100%;padding-left:32px!important}
+.stat{background:var(--surface-2);border:1px solid var(--border);padding:14px 16px;border-radius:var(--radius-sm);min-width:0}
+.stat .label{color:var(--text-3);font-size:12px;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.stat .value{font-size:20px;font-weight:650;font-family:var(--mono);color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:-.3px}
+.stat .value.sm{font-size:13px;font-weight:500;letter-spacing:0}
+.stat .foot{font-size:12px;color:var(--text-3);margin-top:4px}
+.kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:8px 18px;font-size:13px}
+.kv dt{color:var(--text-3)}
+.kv dd{font-family:var(--mono);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.divider{height:1px;background:var(--border);margin:16px 0}
+.muted{color:var(--text-3)}
+.hint{font-size:12px;color:var(--text-3)}
+.hidden{display:none!important}
+.callout{display:flex;gap:10px;padding:10px 14px;border-radius:var(--radius-sm);background:var(--surface-2);border:1px solid var(--border);font-size:12.5px;color:var(--text-2);line-height:1.6}
+.callout.warn{background:var(--yellow-soft);border-color:transparent;color:var(--text)}
+.callout.info{background:var(--accent-soft);border-color:transparent;color:var(--text)}
+.callout svg{width:16px;height:16px;flex-shrink:0;stroke:currentColor;fill:none;stroke-width:2;margin-top:1px}
+details.fold>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500;color:var(--text-2);user-select:none}
+details.fold>summary::-webkit-details-marker{display:none}
+details.fold>summary::before{content:"";width:6px;height:6px;border-right:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:rotate(-45deg);transition:transform .15s;margin:0 2px}
+details.fold[open]>summary::before{transform:rotate(45deg)}
+details.fold>summary:hover{color:var(--text)}
+details.fold>.fold-body{margin-top:12px}
+
+/* ---------- tables ---------- */
+.table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-sm)}
+.card.flush .table-wrap{border:0;border-top:1px solid var(--border);border-radius:0}
+table{width:100%;border-collapse:separate;border-spacing:0}
+th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle}
+th{background:var(--surface-2);color:var(--text-3);font-weight:600;font-size:12px;white-space:nowrap;position:sticky;top:0;z-index:1}
+tbody tr:last-child td{border-bottom:none}
+tbody tr{transition:background .1s}
+tbody tr:hover td{background:var(--hover)}
+td{font-family:var(--mono);font-size:12.5px;color:var(--text)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.nowrap{white-space:nowrap}
+tr.ob-system td{color:var(--text-3)}
+.empty{padding:36px 16px;text-align:center;color:var(--text-3);font-size:13px;font-family:inherit}
+.empty svg{width:36px;height:36px;stroke:var(--border-strong);fill:none;stroke-width:1.5;display:block;margin:0 auto 10px}
+.ob-addr{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ob-actions{display:flex;gap:6px;flex-wrap:nowrap;align-items:center;white-space:nowrap}
+.loadable{transition:opacity .15s}.loadable.is-loading{opacity:.45;pointer-events:none}
+
+/* ---------- tags / badges ---------- */
+.tag{display:inline-flex;align-items:center;gap:4px;padding:0 8px;height:22px;border-radius:6px;font-size:12px;font-weight:500;font-family:inherit;white-space:nowrap;background:var(--surface-3);color:var(--text-2)}
+.tag.us,.tag.blue{background:var(--accent-soft);color:var(--accent)}
+.tag.kr,.tag.green{background:var(--green-soft);color:var(--green)}
+.tag.jp,.tag.yellow,.tag.hk{background:var(--yellow-soft);color:var(--yellow)}
+.tag.red{background:var(--red-soft);color:var(--red)}
+.tag.purple{background:var(--purple-soft);color:var(--purple)}
+.tag.default{background:var(--surface-3);color:var(--text-2)}
+.tag.outline{background:transparent;border:1px solid var(--border);color:var(--text-2)}
+.match-vals{display:flex;flex-wrap:wrap;gap:4px}
+.match-vals code{line-height:20px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 12px;border-radius:14px;border:1px solid var(--border);background:var(--surface);color:var(--text-2);cursor:pointer;font-size:12.5px;transition:all .15s;font-family:inherit}
+.chip:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.chip .x{color:var(--text-3);cursor:pointer;font-size:11px}
+.chip .x:hover{color:var(--red)}
+.check{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:3px 10px;border-radius:12px;background:var(--surface-3);color:var(--text-2)}
+.check::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--text-3)}
+.check.ok{background:var(--green-soft);color:var(--green)}.check.ok::before{background:var(--green)}
+.check.warn{background:var(--yellow-soft);color:var(--yellow)}.check.warn::before{background:var(--yellow)}
+.check.bad{background:var(--red-soft);color:var(--red)}.check.bad::before{background:var(--red)}
+.status-pill{display:inline-block;padding:0 10px;line-height:22px;border-radius:11px;font-size:12px;font-weight:500}
+.status-pill.active{background:var(--green-soft);color:var(--green)}
+.status-pill.inactive{background:var(--red-soft);color:var(--red)}
+.lat{display:inline-flex;align-items:center;justify-content:center;min-width:58px;height:24px;padding:0 8px;border-radius:6px;font-family:var(--mono);font-size:12px;font-weight:600;background:transparent;color:var(--text-3)}
+.lat.good{background:var(--green-soft);color:var(--green)}
+.lat.mid{background:var(--yellow-soft);color:var(--yellow)}
+.lat.bad{background:var(--red-soft);color:var(--red)}
+.lat.run{color:var(--accent);background:var(--accent-soft)}
+
+/* ---------- overview ---------- */
+.hero{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:16px;margin-bottom:16px}
+.hero-main{display:flex;flex-direction:column;gap:16px;position:relative;overflow:hidden}
+.hero-main::after{content:"";position:absolute;right:-80px;top:-80px;width:260px;height:260px;border-radius:50%;background:radial-gradient(closest-side,var(--accent-soft),transparent);pointer-events:none}
+.hero-state{display:flex;align-items:center;gap:14px}
+.hero-icon{width:52px;height:52px;border-radius:14px;display:grid;place-items:center;background:var(--surface-3);color:var(--text-3);flex-shrink:0}
+.hero-icon svg{width:26px;height:26px;stroke:currentColor;fill:none;stroke-width:2}
+.hero-icon.on{background:var(--green-soft);color:var(--green)}
+.hero-icon.warn{background:var(--yellow-soft);color:var(--yellow)}
+.hero-title{font-size:22px;font-weight:700;letter-spacing:.2px}
+.hero-sub{font-size:13px;color:var(--text-3);margin-top:2px}
+.hero-nodes{display:flex;flex-wrap:wrap;gap:6px}
+.hero-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:auto}
+.spark-card{display:flex;flex-direction:column;gap:10px}
+.spark-nums{display:flex;gap:28px}
+.spark-nums .n{font-family:var(--mono);font-size:22px;font-weight:650;letter-spacing:-.4px}
+.spark-nums .l{font-size:12px;color:var(--text-3);display:flex;align-items:center;gap:6px}
+.spark-nums .l i{width:8px;height:8px;border-radius:2px;display:inline-block}
+.spark{width:100%;height:96px;display:block}
+.health{display:flex;flex-direction:column}
+.health-item{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);font-size:13px}
+.health-item:last-child{border-bottom:0}
+.health-item .hi-icon{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;flex-shrink:0}
+.health-item .hi-icon svg{width:13px;height:13px;stroke:#fff;fill:none;stroke-width:3}
+.hi-icon.ok{background:var(--green)}.hi-icon.warn{background:var(--yellow)}.hi-icon.bad{background:var(--red)}.hi-icon.idle{background:var(--text-3)}
+.health-item .hi-text{flex:1;min-width:0}
+.health-item .hi-sub{font-size:12px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.top-list{display:flex;flex-direction:column;gap:2px}
+.top-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;padding:8px 0;font-size:13px;border-bottom:1px solid var(--border)}
+.top-item:last-child{border-bottom:0}
+.top-item .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:12.5px}
+.top-item .vl{font-family:var(--mono);font-size:12px;color:var(--text-2);text-align:right}
+.top-item .bar{grid-column:1 / -1;height:4px;border-radius:2px;background:var(--surface-3);overflow:hidden}
+.top-item .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--purple));border-radius:2px}
+
+/* ---------- nodes ---------- */
+.node-list{display:flex;flex-direction:column}
+.node{display:grid;grid-template-columns:28px minmax(0,1.6fr) minmax(0,1.4fr) 92px 84px 40px;align-items:center;gap:12px;padding:12px 20px;border-top:1px solid var(--border);cursor:pointer;transition:background .12s;position:relative}
+.node:hover{background:var(--hover)}
+.node.selected{background:var(--accent-soft)}
+.node.selected::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}
+.node .nm{display:flex;flex-direction:column;gap:4px;min-width:0}
+.node .nm b{font-family:var(--mono);font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.node .nm .tags{display:flex;gap:4px;flex-wrap:wrap}
+.node .nm .tags .tag{height:19px;font-size:11px;padding:0 6px}
+.node .addr{font-family:var(--mono);font-size:12px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.node .addr .exit{display:block;font-size:11px;color:var(--text-3);margin-top:2px}
+.node .spd{font-family:var(--mono);font-size:12px;color:var(--text-2);text-align:right}
+.node .act{display:flex;justify-content:flex-end}
+.node-head{display:grid;grid-template-columns:28px minmax(0,1.6fr) minmax(0,1.4fr) 92px 84px 40px;gap:12px;padding:8px 20px;font-size:12px;color:var(--text-3);font-weight:600;background:var(--surface-2);border-top:1px solid var(--border)}
+.node-head .r{text-align:right}
+.inuse{background:var(--green-soft)!important;color:var(--green)!important}
+
+/* ---------- menus / popovers ---------- */
+.menu{position:fixed;z-index:400;min-width:180px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow-lg);padding:6px;animation:pop .12s ease}
+@keyframes pop{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:none}}
+.menu button,.menu a{display:flex;align-items:center;gap:10px;width:100%;height:34px;padding:0 10px;border:0;background:transparent;border-radius:6px;cursor:pointer;font-size:13px;color:var(--text);text-align:left}
+.menu button:hover{background:var(--hover)}
+.menu button svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;color:var(--text-3)}
+.menu button.danger{color:var(--red)}.menu button.danger svg{color:var(--red)}
+.menu button:disabled{opacity:.45;cursor:not-allowed}
+.menu .sep{height:1px;background:var(--border);margin:5px 4px}
+.menu .label{font-size:11px;color:var(--text-3);padding:6px 10px 4px;font-weight:600}
+.menu .info{padding:8px 10px 10px;font-size:12px;color:var(--text-2);line-height:1.6}
+
+/* ---------- action / save bar ---------- */
+.actionbar{position:fixed;left:calc(var(--sidebar-w) + 28px);right:28px;bottom:20px;z-index:120;display:flex;align-items:center;gap:12px;padding:10px 12px 10px 18px;background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow-lg);transform:translateY(140%);opacity:0;transition:transform .25s cubic-bezier(.2,.8,.2,1),opacity .2s;max-width:1304px}
+.actionbar.show{transform:none;opacity:1}
+.actionbar .ab-text{flex:1;min-width:0;font-size:13px;display:flex;align-items:center;gap:8px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.actionbar .ab-text b{font-weight:650}
+.actionbar.dirty{border-color:var(--yellow)}
+.actionbar.dirty .ab-text::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--yellow);flex-shrink:0}
+
+/* ---------- modal ---------- */
+.modal-overlay{position:fixed;inset:0;background:rgba(10,14,22,.5);backdrop-filter:blur(2px);z-index:300;display:none;align-items:center;justify-content:center;padding:16px}
+.modal-overlay.show{display:flex;animation:fade .15s}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:22px 24px;width:100%;max-width:880px;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg);animation:pop .18s ease}
+.modal.sm{max-width:440px}
+.modal.md{max-width:620px}
+.modal h3{margin-bottom:6px;font-size:17px;font-weight:700}
+.modal .modal-desc{font-size:13px;color:var(--text-2);margin-bottom:16px;line-height:1.6}
+.modal-footer{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+.modal .tabs-line{display:flex;gap:4px;border-bottom:1px solid var(--border);margin:8px 0 16px}
+.modal .tabs-line .tab{padding:9px 14px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;color:var(--text-2);font-size:13.5px;transition:color .15s}
+.modal .tabs-line .tab:hover{color:var(--text)}
+.modal .tabs-line .tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+.edit-row{display:grid;grid-template-columns:120px 1fr;gap:12px;align-items:center;margin-bottom:12px}
+.edit-row label{color:var(--text-2);font-size:13px;text-align:right}
+.edit-row input,.edit-row select{width:100%}
+.form-section{border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px 16px 4px;margin-bottom:12px;background:var(--surface-2)}
+.form-section>h4{font-size:13px;font-weight:650;margin:-2px 0 12px}
+.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}
+.field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px;min-width:0}
+.field.full{grid-column:1 / -1}
+.field>label{font-size:12px;color:var(--text-2);font-weight:500}
+.field>label em{font-style:normal;color:var(--text-3);margin-left:6px;font-weight:400}
+.field input:not([type=checkbox]),.field select{width:100%}
+.field textarea{font-family:var(--mono);font-size:12px;min-height:76px;width:100%}
+.field .hint{font-size:12px;color:var(--text-3)}
+.field.inline{flex-direction:row;align-items:center;gap:8px}
+
+/* ---------- editors / logs ---------- */
+textarea.config-editor{width:100%;min-height:520px;background:var(--surface-2);font-family:var(--mono);font-size:12.5px;line-height:1.65;tab-size:2;white-space:pre;overflow:auto;border-radius:var(--radius-sm)}
+.log-box{background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;font-family:var(--mono);font-size:12px;line-height:1.7;max-height:520px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:var(--text-2)}
+.backup-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;border-top:1px solid var(--border);font-size:12.5px;font-family:var(--mono)}
+.backup-item:hover{background:var(--hover)}
+
+/* ---------- traffic ---------- */
+.tr-chart{width:100%;height:220px;display:block}
+.tr-chart .g{stroke:var(--chart-grid)}
+.tr-chart .t{fill:var(--chart-text);font-size:11px;font-family:var(--mono)}
+.tr-chart .rx{fill:var(--chart-rx)}.tr-chart .tx{fill:var(--chart-tx)}
+.tr-share{display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--surface-3);min-width:80px}
+.tr-legend{display:flex;gap:14px;font-size:12px;color:var(--text-3);align-items:center}
+.tr-legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+/* ---------- gateway ---------- */
+.gw-setup{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px;margin:8px 0 12px}
+.gw-setup b{font-family:var(--mono);font-weight:600}
+.gw-setup span{color:var(--text-3)}
+.gw-checks{display:flex;flex-wrap:wrap;gap:6px}
+
+/* ---------- toast ---------- */
+.toasts{position:fixed;top:16px;right:16px;z-index:999;display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:none}
+.toast{pointer-events:auto;display:flex;align-items:flex-start;gap:10px;padding:11px 14px;border-radius:10px;font-size:13px;max-width:420px;background:var(--surface);color:var(--text);box-shadow:var(--shadow-lg);border:1px solid var(--border);animation:toastIn .22s cubic-bezier(.2,.8,.2,1);line-height:1.5}
+.toast::before{content:"";width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-top:6px}
+.toast.ok::before{background:var(--green)}
+.toast.err::before{background:var(--red)}
+.toast.err{border-color:color-mix(in srgb,var(--red) 40%,var(--border))}
+.toast.out{opacity:0;transform:translateX(12px);transition:all .2s}
+@keyframes toastIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+
+/* ---------- login ---------- */
+#login-overlay{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:var(--bg);padding:16px}
+#login-overlay::before{content:"";position:absolute;inset:0;background:radial-gradient(600px circle at 30% 20%,var(--accent-soft),transparent 60%),radial-gradient(500px circle at 80% 80%,var(--purple-soft),transparent 60%);pointer-events:none}
+.login-card{position:relative;width:100%;max-width:380px;background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:32px;box-shadow:var(--shadow-lg);text-align:center}
+.login-card .logo{width:48px;height:48px;border-radius:14px;margin:0 auto 14px;background:linear-gradient(135deg,var(--accent),#7c5cff);display:grid;place-items:center;box-shadow:0 8px 24px var(--accent-ring)}
+.login-card .logo svg{width:26px;height:26px;stroke:#fff;fill:none;stroke-width:2.2}
+.login-card h2{font-size:20px;margin-bottom:4px}
+.login-card p{font-size:13px;color:var(--text-3);margin-bottom:22px}
+.login-card input{width:100%;height:42px!important;margin-bottom:12px;font-size:14px!important}
+.login-card .btn{width:100%}
+#login-error{color:var(--red);font-size:12.5px;margin-top:10px;display:none}
+
+/* ---------- mobile ---------- */
+.bottom-nav{display:none}
+@media (max-width:1100px){
+  .hero{grid-template-columns:1fr}
+  .cols-3{grid-template-columns:1fr 1fr}
+}
+@media (max-width:900px){
+  .app{display:block;background:none}
+  .sidebar{display:none}
+  .topbar{padding:10px 14px;gap:10px}
+  .mobile-brand{display:grid;width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),#7c5cff);place-items:center;flex-shrink:0}
+  .mobile-brand svg{width:16px;height:16px;stroke:#fff;fill:none;stroke-width:2.2}
+  .page-head h1{font-size:17px}
+  .page-head p{display:none}
+  .speed{display:none}
+  .pill{max-width:46vw;height:32px;padding:0 12px 0 10px}
+  .pill .sub{display:none}
+  .content{padding:4px 12px 150px}
+  .card{padding:16px;border-radius:12px}
+  .card.flush>.card-head{padding:14px 16px 0}
+  .cols-2,.cols-3{grid-template-columns:1fr}
+  .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .stat .value{font-size:16px}
+  .form-grid{grid-template-columns:1fr}
+  .edit-row{grid-template-columns:1fr;gap:4px}
+  .edit-row label{text-align:left}
+  th,td{padding:9px 10px;font-size:12px}
+  .node,.node-head{grid-template-columns:24px minmax(0,1fr) auto 36px;padding:12px 14px;gap:10px}
+  .node .addr,.node .spd,.node-head .h-addr,.node-head .h-spd{display:none}
+  .actionbar{left:10px;right:10px;bottom:calc(68px + env(safe-area-inset-bottom));padding:8px 8px 8px 14px;gap:8px;flex-wrap:wrap}
+  .actionbar .ab-text{flex-basis:100%;font-size:12.5px}
+  .actionbar .btn-group{width:100%;justify-content:flex-end;flex-wrap:nowrap;overflow-x:auto}
+  .actionbar .btn{height:32px;padding:0 10px}
+  .lbl-sm{display:none}
+  .card-head .search{max-width:none!important;flex-basis:100%;order:10}
+  .toasts{left:12px;right:12px;top:10px;align-items:stretch}
+  .toast{max-width:none}
+  .modal{padding:18px 16px;border-radius:14px;max-height:92vh}
+  textarea.config-editor{min-height:340px;font-size:11.5px}
+  .bottom-nav{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:130;background:color-mix(in srgb,var(--surface) 92%,transparent);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid var(--border);padding:6px 6px calc(6px + env(safe-area-inset-bottom))}
+  .bottom-nav .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:5px 0;border-radius:8px;font-size:11px;color:var(--text-3);cursor:pointer;user-select:none}
+  .bottom-nav .tab svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.8}
+  .bottom-nav .tab.active{color:var(--accent);font-weight:600}
+  .hero-title{font-size:19px}
+  .spark-nums .n{font-size:18px}
+}
+@media (max-width:420px){.grid{grid-template-columns:1fr 1fr}.spark-nums{gap:18px}}
+</style>
+</head>
+<body>
+<div id="login-overlay">
+  <div class="login-card">
+    <div class="logo"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+    <h2>__PANEL_TITLE__</h2>
+    <p>输入访问 Token 登录面板</p>
+    <input type="password" id="login-token" placeholder="Token" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+    <button class="btn primary lg" onclick="doLogin()">登录</button>
+    <p id="login-error"></p>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><span class="logo"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>__PANEL_TITLE__</div>
+    <nav class="nav tabs">
+      <div class="tab active" data-tab="overview" onclick="switchTab('overview')"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>总览</div>
+      <div class="nav-group">代理</div>
+      <div class="tab" data-tab="nodes" onclick="switchTab('nodes')"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg>节点<span class="badge-dot"></span></div>
+      <div class="tab" data-tab="routing" onclick="switchTab('routing')"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M8.5 6H12a3 3 0 0 1 3 3v0M8.5 18H12a3 3 0 0 0 3-3v0M15.5 12H15"/></svg>路由规则<span class="badge-dot"></span></div>
+      <div class="tab" data-tab="dns" onclick="switchTab('dns')"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>DNS<span class="badge-dot"></span></div>
+      <div class="tab" data-tab="inbounds" onclick="switchTab('inbounds')"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>入站</div>
+      <div class="nav-group">观测</div>
+      <div class="tab" data-tab="traffic" onclick="switchTab('traffic')"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>流量分析</div>
+      <div class="tab" data-tab="logs" onclick="switchTab('logs')"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM9 8h6M9 12h6M9 16h4"/></svg>访问日志</div>
+      <div class="nav-group">系统</div>
+      <div class="tab" data-tab="config" onclick="switchTab('config')"><svg viewBox="0 0 24 24"><path d="M8 6 3 12l5 6M16 6l5 6-5 6"/></svg>配置文件</div>
+      <div class="tab" data-tab="system" onclick="switchTab('system')"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>系统设置<span class="badge-dot"></span></div>
+      <div class="tab" data-tab="backups" onclick="switchTab('backups')"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>备份</div>
+    </nav>
+    <div class="side-foot">
+      <div class="theme-seg" id="theme-seg">
+        <button data-t="light" title="浅色" onclick="setTheme('light')"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
+        <button data-t="auto" title="跟随系统" onclick="setTheme('auto')"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></button>
+        <button data-t="dark" title="深色" onclick="setTheme('dark')"><svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+      </div>
+      <div class="row"><span class="ver" id="version">-</span><button class="btn ghost sm" onclick="doLogout()">退出</button></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar" id="topbar">
+      <span class="mobile-brand"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+      <div class="page-head"><h1 id="page-title">总览</h1><p id="page-sub"></p></div>
+      <div class="top-right">
+        <span class="speed" id="header-stats"><span class="rx">↓ -</span><span class="tx">↑ -</span></span>
+        <button class="pill" id="conn-pill" onclick="openConnMenu(this)"><span class="dot idle" id="pill-dot"></span><span class="txt" id="pill-text">加载中</span></button>
+      </div>
+    </header>
+
+    <main class="content">
+
+<!-- ===================== Overview ===================== -->
+<section class="tab-content active" id="tab-overview">
+  <div class="hero">
+    <div class="card hero-main">
+      <div class="hero-state">
+        <div class="hero-icon" id="ov-icon"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+        <div><div class="hero-title" id="ov-title">-</div><div class="hero-sub" id="ov-sub"></div></div>
+      </div>
+      <div class="hero-nodes" id="ov-nodes"></div>
+      <dl class="kv" id="ov-endpoints"></dl>
+      <div class="hero-actions" id="ov-actions"></div>
+    </div>
+    <div class="card spark-card">
+      <div class="card-head" style="margin-bottom:0"><h2>实时速率</h2><span class="spacer"></span><span class="hint">最近 2 分钟 · 整机网卡</span></div>
+      <div class="spark-nums">
+        <div><div class="l"><i style="background:var(--chart-rx)"></i>下载</div><div class="n" id="stat-rx">-</div></div>
+        <div><div class="l"><i style="background:var(--chart-tx)"></i>上传</div><div class="n" id="stat-tx">-</div></div>
+      </div>
+      <svg class="spark" id="ov-spark" preserveAspectRatio="none"></svg>
+      <div class="hint" id="stats-interfaces"></div>
+    </div>
+  </div>
+  <div class="grid" id="ov-kpis" style="margin-bottom:16px"></div>
+  <div class="cols-3">
+    <div class="card">
+      <div class="card-head"><h2>健康检查</h2><span class="spacer"></span><button class="btn ghost sm" onclick="loadOverview()">刷新</button></div>
+      <div class="health" id="ov-health"><div class="empty">检查中…</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>热门目标</h2><span class="hint">最近 1 小时</span><span class="spacer"></span><button class="btn ghost sm" onclick="switchTab('traffic')">全部</button></div>
+      <div class="top-list" id="ov-top"><div class="empty">加载中…</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>核心服务</h2><span class="spacer"></span><span id="status-pill-core"></span></div>
+      <dl class="kv" id="ov-core"></dl>
+      <div class="divider"></div>
+      <div class="hint" style="margin-bottom:6px">监听端口</div>
+      <div class="chips" id="listen-tbody"></div>
+      <div class="btn-group" style="margin-top:16px">
+        <button class="btn sm" onclick="svcAction('restart')"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>重启核心</button>
+        <button class="btn sm" id="btn-svc-start" onclick="svcAction('start')">启动</button>
+        <button class="btn sm danger" id="btn-svc-stop" onclick="svcAction('stop')">停止</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== Nodes ===================== -->
+<section class="tab-content" id="tab-nodes">
+  <div class="card flush">
+    <div class="card-head">
+      <h2>节点 <span class="count" id="node-count">0</span></h2>
+      <span class="spacer"></span>
+      <div class="search" style="max-width:260px"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="node-search" placeholder="搜索名称 / 地址" oninput="renderConnNodes()"></div>
+      <button class="btn" onclick="connTestAll()" id="btn-test-all"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg><span class="lbl-sm">测全部延迟</span></button>
+      <button class="btn icon" title="测试设置" onclick="openModal('modal-test-settings')"><svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></button>
+      <button class="btn" onclick="openModal('modal-import')"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg><span class="lbl-sm">导入链接</span></button>
+      <button class="btn primary" onclick="showAddOutboundModal()"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="lbl-sm">新增节点</span></button>
+    </div>
+    <div class="node-head"><span><input type="checkbox" id="node-check-all" onclick="connToggleAll(this.checked)" title="全选"></span><span>名称</span><span class="h-addr">地址 / 出口 IP</span><span class="r">延迟</span><span class="r h-spd">速度</span><span></span></div>
+    <div class="node-list" id="conn-node-list"><div class="empty">加载中…</div></div>
+    <div style="padding:12px 20px;border-top:1px solid var(--border)">
+      <details class="fold"><summary>系统出口（direct / block / dns）</summary><div class="fold-body"><div class="chips" id="sys-ob-list"></div></div></details>
+    </div>
+  </div>
+  <div class="log-box" id="conn-test-output" style="display:none;margin-bottom:16px;max-height:260px"></div>
+
+  <div class="card">
+    <div class="card-head"><h2>连接设置</h2><span class="desc">修改后需要重新连接才会生效；已连接时底部会出现「应用更改」。</span></div>
+    <div class="cols-3">
+      <div class="field">
+        <label>负载均衡策略<em>选择多个节点时生效</em></label>
+        <select id="conn-strategy" onchange="connSettingsChanged()">
+          <option value="roundRobin">轮询（roundRobin）</option>
+          <option value="leastPing">最低延迟（leastPing）</option>
+          <option value="random">随机（random）</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>本地端口<em>SOCKS / HTTP / 透明</em></label>
+        <div class="row" style="flex-wrap:nowrap;gap:6px">
+          <input id="conn-port-socks" type="number" value="10810" class="mono" style="width:33%" oninput="connSettingsChanged()" title="SOCKS5">
+          <input id="conn-port-http" type="number" value="10818" class="mono" style="width:33%" oninput="connSettingsChanged()" title="HTTP">
+          <input id="conn-port-tp" type="number" value="12345" class="mono" style="width:33%" oninput="connSettingsChanged()" title="透明代理">
+        </div>
+      </div>
+      <div class="field">
+        <label>透明代理<em>局域网设备与本机全部走代理</em></label>
+        <label class="switch" style="height:34px"><input type="checkbox" id="conn-transparent" onchange="connToggleTp();connSettingsChanged()"><span class="track"></span><span style="font-size:13px">启用 iptables 重定向</span></label>
+      </div>
+    </div>
+    <div id="conn-tp-details" class="hidden">
+      <div class="divider"></div>
+      <div class="cols-2">
+        <div>
+          <div style="font-weight:600;font-size:13px">局域网网关</div>
+          <div class="hint">手机、电视等设备手动设置 IP，把网关指向本机即可全局代理。</div>
+          <div id="gw-body" class="hint" style="margin-top:6px">检测中…</div>
+        </div>
+        <div>
+          <div style="font-weight:600;font-size:13px;margin-bottom:4px">绕过的 IP / CIDR</div>
+          <div class="hint" style="margin-bottom:8px">这些目标不进入代理核心。默认已绕过私有/保留地址和 DNS 相关 IP。</div>
+          <details class="fold"><summary>默认与自动（只读）</summary><div class="fold-body cols-2" style="gap:8px">
+            <textarea id="tp-default-cidrs" readonly class="mono" style="min-height:110px;font-size:11px"></textarea>
+            <textarea id="tp-auto-cidrs" readonly class="mono" style="min-height:110px;font-size:11px"></textarea>
+          </div></details>
+          <div class="field" style="margin-top:10px"><label>自定义（每行一个）</label><textarea id="tp-custom-cidrs" class="mono" placeholder="1.1.1.1/32&#10;10.20.0.0/16" style="min-height:90px"></textarea></div>
+          <button class="btn sm" onclick="tpSaveBypass()">保存绕过规则</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== Routing ===================== -->
+<section class="tab-content" id="tab-routing">
+  <div class="card flush">
+    <div class="card-head">
+      <h2>自定义规则 <span class="count" id="rt-count">0</span></h2>
+      <span class="dirty-flag hidden" id="rt-dirty"></span>
+      <span class="spacer"></span>
+      <button class="btn" onclick="openMenu(this,presetMenu())"><svg viewBox="0 0 24 24"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7z"/></svg>常用模板</button>
+      <button class="btn primary" onclick="openRuleModal()"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>添加规则</button>
+      <span class="desc">排在系统规则之前，从上到下优先匹配；“走代理”默认跟随当前连接的节点或负载均衡。</span>
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th style="width:44px">#</th><th>类型</th><th>匹配值</th><th>动作</th><th>备注</th><th style="width:120px"></th></tr></thead>
+      <tbody id="rt-custom-tbody"></tbody>
+    </table></div>
+  </div>
+  <div class="log-box" id="routing-output" style="display:none;margin-bottom:16px"></div>
+  <div class="card">
+    <div class="card-head"><h2>透明代理绕过</h2><span class="desc">这些目标 IP 不进入代理核心，直接由本机转发。在「添加规则」里选择 IP 类型即可加入。</span></div>
+    <div class="chips" id="rt-bypass-list"></div>
+  </div>
+  <div class="card">
+    <details class="fold"><summary>系统规则（只读，由连接模式自动生成）</summary>
+      <div class="fold-body"><div class="table-wrap"><table>
+        <thead><tr><th style="width:44px">#</th><th>条件</th><th>匹配值</th><th>出口</th></tr></thead>
+        <tbody id="routing-tbody"></tbody>
+      </table></div></div>
+    </details>
+  </div>
+</section>
+
+<!-- ===================== DNS ===================== -->
+<section class="tab-content" id="tab-dns">
+  <div class="cols-2">
+    <div class="card">
+      <div class="card-head"><h2>上游服务器</h2><span class="desc">代理核心内部解析使用（路由判断、直连出口解析）。每行一个，可填 IP 或 DoH 地址。</span></div>
+      <div class="field"><label>服务器</label><textarea id="dns-servers" class="mono" style="min-height:150px" oninput="markDirty('dns')"></textarea></div>
+      <div class="field"><label>clientIp<em>可选，用于 EDNS 子网</em></label><input id="dns-client-ip" class="mono" placeholder="如 1.1.1.1" oninput="markDirty('dns')"></div>
+      <div class="hint">常见 DoH：<code>https://dns.alidns.com/dns-query</code> <code>https://doh.pub/dns-query</code> <code>https://cloudflare-dns.com/dns-query</code></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Hosts</h2><span class="desc">自定义解析，每行 <code>域名 IP</code>，支持 <code>#</code> 注释和 <code>domain:</code> <code>geosite:</code> <code>full:</code> 前缀。</span></div>
+      <textarea id="dns-hosts-editor" class="mono" style="width:100%;min-height:220px" oninput="markDirty('hosts')" placeholder="googleapis.cn 203.208.41.96&#10;domain:google.com 8.8.8.8&#10;# 注释"></textarea>
+      <div class="callout info" style="margin-top:12px"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg><span>Hosts 中的 IP 会自动加入透明代理绕过，避免拦截 DoH / DNS 服务器连接；保存后如透明代理在运行，会自动重建 iptables。</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== Inbounds ===================== -->
+<section class="tab-content" id="tab-inbounds">
+  <div class="card flush">
+    <div class="card-head"><h2>入站端口</h2><span class="spacer"></span><button class="btn primary" onclick="showAddInboundModal()"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>新增入站</button><span class="desc">修改会立即保存并重启代理核心。</span></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Tag</th><th>协议</th><th>监听地址</th><th>端口</th><th>出口</th><th style="width:150px"></th></tr></thead>
+      <tbody id="inbounds-tbody"></tbody>
+    </table></div>
+  </div>
+  <div class="card">
+    <details class="fold"><summary>连通测试设置</summary><div class="fold-body">
+      <div class="toolbar" style="margin-bottom:0">
+        <select id="test-url-select" style="min-width:min(260px,100%)"></select>
+        <input id="test-url-custom" class="mono grow" placeholder="自定义测试 URL">
+        <button class="btn" onclick="saveCurrentTestUrl()">加入常用</button>
+      </div>
+    </div></details>
+    <div class="log-box" id="inbound-test-output" style="display:none;margin-top:12px"></div>
+  </div>
+</section>
+
+<!-- ===================== Traffic ===================== -->
+<section class="tab-content" id="tab-traffic">
+  <div class="card">
+    <div class="card-head">
+      <h2>本机流量</h2>
+      <span class="spacer"></span>
+      <div class="seg" id="tr-range">
+        <button data-r="24h" class="on" onclick="setTrafficRange('24h')">24 小时</button>
+        <button data-r="30d" onclick="setTrafficRange('30d')">30 天</button>
+        <button data-r="12m" onclick="setTrafficRange('12m')">12 个月</button>
+      </div>
+      <select id="tr-iface" onchange="renderTraffic()" style="min-width:150px"></select>
+      <span class="desc">按网卡统计整台机器的收发字节（含代理以外的流量），每分钟采样，保留 400 天。</span>
+    </div>
+    <div class="row" style="justify-content:space-between;margin-bottom:6px">
+      <span class="tr-legend"><span><i style="background:var(--chart-rx)"></i>下载 ↓</span><span><i style="background:var(--chart-tx)"></i>上传 ↑</span></span>
+      <span id="tr-sum" class="hint mono"></span>
+    </div>
+    <svg class="tr-chart" id="tr-chart" preserveAspectRatio="none"></svg>
+    <div class="table-wrap" style="margin-top:14px"><table style="white-space:nowrap">
+      <thead><tr><th>网卡</th><th>IP</th><th>今日 ↓ / ↑</th><th>本月 ↓ / ↑</th><th>本月占比</th><th>累计 ↓ / ↑</th><th>记录起始</th></tr></thead>
+      <tbody id="tr-iface-tbody"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
+    </table></div>
+  </div>
+  <div class="card flush">
+    <div class="card-head">
+      <h2>外部 IP 流量</h2>
+      <span class="spacer"></span>
+      <div class="seg" id="pr-range">
+        <button data-h="1" class="on" onclick="setPeerRange(1)">1 小时</button>
+        <button data-h="24" onclick="setPeerRange(24)">24 小时</button>
+        <button data-h="168" onclick="setPeerRange(168)">7 天</button>
+      </div>
+      <button class="btn icon" title="刷新" onclick="loadPeers(true)"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></button>
+      <span class="desc">按对端 IP 统计整台机器的连接与字节（内核连接跟踪），默认显示流量最大的 10 个。</span>
+    </div>
+    <div style="padding:0 20px 12px">
+      <div id="pr-sum" class="row" style="font-size:13px;color:var(--text-2);margin-bottom:10px"></div>
+      <div class="toolbar" style="margin-bottom:8px">
+        <div class="seg" id="pr-kind">
+          <button data-k="core" class="on" onclick="setPeerKind('core')">应用目标 <span></span></button>
+          <button data-k="node" onclick="setPeerKind('node')">代理节点 <span></span></button>
+          <button data-k="direct" onclick="setPeerKind('direct')">直连 <span></span></button>
+          <button data-k="internal" onclick="setPeerKind('internal')">内网 <span></span></button>
+          <button data-k="inbound" onclick="setPeerKind('inbound')">入站 <span></span></button>
+        </div>
+        <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="pr-q" placeholder="搜索 IP / 域名 / 节点" oninput="peerSearch()"></div>
+      </div>
+      <div id="pr-kind-desc" class="hint"></div>
+    </div>
+    <div id="pr-wrap" class="loadable table-wrap"><table style="white-space:nowrap">
+      <thead><tr><th>对端 IP</th><th>域名 / 节点</th><th>归属</th><th>类型</th><th>协议:端口</th><th class="num">↓ 下载</th><th class="num">↑ 上传</th><th class="num">连接</th><th>最后</th></tr></thead>
+      <tbody id="pr-tbody"><tr><td colspan="9" class="empty">加载中…</td></tr></tbody>
+    </table></div>
+    <div class="row" style="padding:12px 20px;border-top:1px solid var(--border);justify-content:space-between">
+      <span id="pr-status" class="hint"></span>
+      <span id="pr-more" class="row" style="display:none"><span id="pr-more-info" class="hint"></span><button class="btn sm" onclick="peerMore()">显示更多</button></span>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== Logs ===================== -->
+<section class="tab-content" id="tab-logs">
+  <div class="card flush">
+    <div class="card-head">
+      <h2>访问记录</h2>
+      <span class="spacer"></span>
+      <div class="seg" id="ac-range">
+        <button data-m="5" class="on" onclick="loadAccessStats(5)">5 分钟</button>
+        <button data-m="10" onclick="loadAccessStats(10)">10 分钟</button>
+        <button data-m="30" onclick="loadAccessStats(30)">30 分钟</button>
+        <button data-m="60" onclick="loadAccessStats(60)">1 小时</button>
+      </div>
+      <button class="btn icon" title="更多" onclick="openMenu(this,[{label:'清理统计和日志',danger:true,icon:'trash',fn:clearLogs}])"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+      <span class="desc">逐条列出经过代理核心的连接（基于核心 info 日志）。按 IP 的流量排行见「流量分析」。</span>
+    </div>
+    <div style="padding:0 20px 12px">
+      <div class="toolbar" style="margin-bottom:8px">
+        <div class="seg" id="ac-type">
+          <button data-t="all" class="on" onclick="setAccessType('all')">全部</button>
+          <button data-t="proxy" onclick="setAccessType('proxy')">代理</button>
+          <button data-t="direct" onclick="setAccessType('direct')">直连</button>
+          <button data-t="blocked" onclick="setAccessType('blocked')">拦截</button>
+        </div>
+        <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="access-search" placeholder="搜索域名 / IP / 节点 / 客户端" oninput="loadAccessStatsDebounced()"></div>
+      </div>
+      <div id="access-summary" class="hint">加载中…</div>
+    </div>
+    <div class="table-wrap loadable" id="access-wrap" style="max-height:620px;overflow:auto"><table>
+      <thead><tr><th>时间</th><th>客户端</th><th>目标</th><th>归属</th><th>端口</th><th>类型</th><th>出口</th></tr></thead>
+      <tbody id="access-records"></tbody>
+    </table></div>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <h2>服务日志</h2>
+      <span class="spacer"></span>
+      <div class="seg" id="log-lines">
+        <button data-n="50" onclick="loadLogs(50)">50 行</button>
+        <button data-n="200" class="on" onclick="loadLogs(200)">200 行</button>
+        <button data-n="500" onclick="loadLogs(500)">500 行</button>
+      </div>
+      <button class="btn icon" title="刷新" onclick="loadLogs()"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></button>
+    </div>
+    <div class="search" style="margin-bottom:10px"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="log-filter" placeholder="过滤关键词，如 direct、error、telegram" oninput="filterLogs()"></div>
+    <div class="log-box" id="log-box">加载中…</div>
+  </div>
+</section>
+
+<!-- ===================== Config ===================== -->
+<section class="tab-content" id="tab-config">
+  <div class="card">
+    <div class="card-head">
+      <h2>config.json</h2>
+      <span class="spacer"></span>
+      <button class="btn" onclick="loadConfig()">重新加载</button>
+      <button class="btn" onclick="testConfig()">校验</button>
+      <button class="btn primary" onclick="saveConfigConfirm()">保存</button>
+      <span class="desc">直接编辑代理核心配置，保存前自动备份并校验，保存后重启核心。</span>
+    </div>
+    <textarea class="config-editor" id="config-editor" spellcheck="false"></textarea>
+  </div>
+</section>
+
+<!-- ===================== System ===================== -->
+<section class="tab-content" id="tab-system">
+  <div class="card flush">
+    <div class="card-head">
+      <h2>内核参数</h2>
+      <span class="spacer"></span>
+      <button class="btn" onclick="loadSysctl()">刷新</button>
+      <button class="btn" onclick="applyRecommended()">全部应用推荐值</button>
+      <span class="desc" id="sysctl-hint"></span>
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>参数</th><th>说明</th><th>当前值</th><th>推荐值</th><th></th></tr></thead>
+      <tbody id="sysctl-tbody"></tbody>
+    </table></div>
+  </div>
+  <div class="cols-2">
+    <div class="card">
+      <div class="card-head"><h2>GeoIP / GeoSite</h2><span class="spacer"></span><button class="btn primary sm" id="geo-update-btn" onclick="updateGeo()">立即更新</button></div>
+      <div class="grid" style="margin-bottom:14px">
+        <div class="stat"><div class="label">geoip.dat</div><div class="value sm" id="geo-ip-size">-</div><div class="foot" id="geo-ip-modified">-</div></div>
+        <div class="stat"><div class="label">geosite.dat</div><div class="value sm" id="geo-site-size">-</div><div class="foot" id="geo-site-modified">-</div></div>
+      </div>
+      <div class="field"><label>geoip 下载地址</label><input id="geo-ip-url" class="mono"></div>
+      <div class="field"><label>geosite 下载地址</label><input id="geo-site-url" class="mono"></div>
+      <div class="row"><button class="btn sm" onclick="saveGeoUrls()">保存地址</button><span id="geo-update-status" class="hint"></span></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>访问 Token</h2><span class="desc">修改后当前浏览器会自动使用新 Token。</span></div>
+      <div class="field"><label>当前 Token</label><input id="token-old" type="password" autocomplete="current-password"></div>
+      <div class="field"><label>新 Token</label><input id="token-new" type="password" autocomplete="new-password"></div>
+      <div class="field"><label>确认新 Token</label><input id="token-confirm" type="password" autocomplete="new-password"></div>
+      <button class="btn primary sm" onclick="changeToken()">修改 Token</button>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== Backups ===================== -->
+<section class="tab-content" id="tab-backups">
+  <div class="card flush">
+    <div class="card-head"><h2>配置备份</h2><span class="spacer"></span><button class="btn ghost sm" onclick="loadBackups()">刷新</button><span class="desc">每次保存配置前自动备份，保留最近几份。恢复前会再备份当前配置。</span></div>
+    <div id="backup-list"><div class="empty">加载中…</div></div>
+  </div>
+</section>
+
+    </main>
+  </div>
+</div>
+
+<!-- mobile bottom navigation -->
+<nav class="bottom-nav tabs">
+  <div class="tab active" data-tab="overview" onclick="switchTab('overview')"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>总览</div>
+  <div class="tab" data-tab="nodes" onclick="switchTab('nodes')"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/></svg>节点</div>
+  <div class="tab" data-tab="traffic" onclick="switchTab('traffic')"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>流量</div>
+  <div class="tab" data-tab="logs" onclick="switchTab('logs')"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM9 8h6M9 12h6M9 16h4"/></svg>日志</div>
+  <div class="tab" data-tab="__more" onclick="openModal('modal-more')"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg>更多</div>
+</nav>
+
+<!-- action / save bar -->
+<div class="actionbar" id="actionbar"><div class="ab-text" id="ab-text"></div><div class="btn-group" id="ab-btns"></div></div>
+
+<!-- ===================== Modals ===================== -->
+<div class="modal-overlay" id="modal-more" onclick="if(event.target===this)closeModal('modal-more')">
+  <div class="modal sm">
+    <h3>更多</h3>
+    <div class="menu" style="position:static;box-shadow:none;border:0;padding:6px 0 0;animation:none" id="more-list"></div>
+    <div class="divider"></div>
+    <div class="row" style="justify-content:space-between"><span class="hint">外观</span><div class="theme-seg" id="theme-seg-m" style="width:150px">
+      <button data-t="light" onclick="setTheme('light')"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg></button>
+      <button data-t="auto" onclick="setTheme('auto')"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/></svg></button>
+      <button data-t="dark" onclick="setTheme('dark')"><svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+    </div></div>
+    <div class="modal-footer"><button class="btn ghost" onclick="doLogout()">退出登录</button><button class="btn" onclick="closeModal('modal-more')">关闭</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-confirm">
+  <div class="modal sm">
+    <h3 id="cf-title">确认</h3>
+    <div class="modal-desc" id="cf-body"></div>
+    <div class="modal-footer"><button class="btn" id="cf-cancel">取消</button><button class="btn primary" id="cf-ok">确定</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-import" onclick="if(event.target===this)closeModal('modal-import')">
+  <div class="modal md">
+    <h3>导入节点链接</h3>
+    <div class="modal-desc">粘贴 vless:// vmess:// ss:// trojan:// 链接，每行一个。支持 REALITY、XHTTP、gRPC、HTTPUpgrade、ECH。导入后立即保存。</div>
+    <textarea id="conn-import-links" class="mono" style="width:100%;min-height:180px" spellcheck="false" placeholder="vless://..."></textarea>
+    <label class="switch" style="margin-top:12px"><input type="checkbox" id="conn-import-tfo"><span class="track"></span><span style="font-size:13px">启用 TCP Fast Open</span></label>
+    <div class="modal-footer"><button class="btn" onclick="closeModal('modal-import')">取消</button><button class="btn primary" id="btn-import" onclick="connImportLinks()">导入</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-test-settings" onclick="if(event.target===this)closeModal('modal-test-settings')">
+  <div class="modal md">
+    <h3>测试设置</h3>
+    <div class="modal-desc">延迟测试通过临时核心访问测试地址；测速下载测速地址的内容。</div>
+    <div class="field"><label>延迟测试地址</label><select id="conn-test-url-select"></select></div>
+    <div class="field"><label>自定义测试地址<em>填写后优先使用</em></label><input id="conn-test-url-custom" class="mono" placeholder="https://..."></div>
+    <div class="field"><label>测速地址</label><input id="conn-speed-url" class="mono" value="https://speed.cloudflare.com/__down?bytes=10000000"></div>
+    <div class="modal-footer"><button class="btn primary" onclick="closeModal('modal-test-settings')">完成</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-rule" onclick="if(event.target===this)closeModal('modal-rule')">
+  <div class="modal md">
+    <h3>添加路由规则</h3>
+    <div class="modal-desc">添加后会出现在列表末尾，点底部「保存并生效」后应用。</div>
+    <div class="form-grid">
+      <div class="field">
+        <label>匹配类型</label>
+        <select id="rt-cond-type" onchange="routingTypeHint()">
+          <option value="domain">域名（含子域名）</option>
+          <option value="full">完整域名</option>
+          <option value="keyword">域名关键词</option>
+          <option value="geosite">域名集 geosite</option>
+          <option value="ip">IP / CIDR</option>
+          <option value="geoip">IP 集 geoip</option>
+          <option value="port">目标端口</option>
+          <option value="sourceIP">来源设备 IP</option>
+        </select>
+      </div>
+      <div class="field"><label>代理节点<em>“走代理”时使用</em></label><select id="rt-outbound"></select></div>
+      <div class="field full"><label>匹配值<em id="rt-hint">每行或逗号分隔，如 openai.com</em></label><textarea id="rt-cond-value" spellcheck="false" placeholder="openai.com&#10;chatgpt.com"></textarea></div>
+      <div class="field full"><label>备注</label><input id="rt-remark" placeholder="可选"></div>
+    </div>
+    <div class="modal-footer" style="justify-content:space-between;flex-wrap:wrap">
+      <button class="btn" id="rt-bypass-btn" onclick="routingAddBypass()" title="IP/CIDR 在 iptables 层直接放行，不经过代理核心">加入透明代理绕过</button>
+      <div class="btn-group">
+        <button class="btn" onclick="routingAdd('direct')">直连</button>
+        <button class="btn danger" onclick="routingAdd('block')">阻断</button>
+        <button class="btn primary" onclick="routingAdd('proxy')">走代理</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="modal-edit-inbound" onclick="if(event.target===this)closeModal('modal-edit-inbound')">
+  <div class="modal md">
+    <h3 id="modal-inbound-title">编辑入站</h3>
+    <div class="modal-desc">保存后立即写入配置并重启代理核心。</div>
+    <div class="form-grid">
+      <div class="field"><label>Tag</label><input id="ei-tag" placeholder="my-proxy"></div>
+      <div class="field"><label>协议</label><select id="ei-protocol"><option value="socks">SOCKS5</option><option value="http">HTTP</option></select></div>
+      <div class="field"><label>监听地址</label><input id="ei-listen" value="0.0.0.0" class="mono"></div>
+      <div class="field"><label>端口</label><input id="ei-port" type="number" placeholder="10808" class="mono"></div>
+      <div class="field"><label>UDP</label><select id="ei-udp"><option value="true">开启</option><option value="false">关闭</option></select></div>
+      <div class="field"><label>流量嗅探（sniffing）</label><select id="ei-sniff"><option value="true">开启</option><option value="false">关闭</option></select></div>
+      <div class="field full"><label>出口</label><select id="ei-outbound"></select></div>
+    </div>
+    <div class="modal-footer" style="justify-content:space-between">
+      <button class="btn danger" onclick="deleteInbound()" id="btn-delete-inbound">删除</button>
+      <div class="btn-group"><button class="btn" onclick="closeModal('modal-edit-inbound')">取消</button><button class="btn primary" onclick="saveEditInbound()">保存</button></div>
+    </div>
+  </div>
+</div>
+<!-- Unified Add/Edit Outbound Modal -->
+<div class="modal-overlay" id="modal-outbound" onclick="if(event.target===this)closeModal('modal-outbound')">
+  <div class="modal">
+    <h3 id="modal-ob-title">新增节点</h3>
+    <div class="tabs-line">
+      <div class="tab active" id="mob-tab-link" onclick="switchObModalTab('link')">解析节点链接</div>
+      <div class="tab" id="mob-tab-form" onclick="switchObModalTab('form')">表单编辑</div>
+      <div class="tab" id="mob-tab-json" onclick="switchObModalTab('json')">编辑 JSON</div>
+    </div>
+    <div id="mob-pane-link">
+      <textarea class="config-editor" id="vless-link" spellcheck="false" style="min-height:120px" placeholder="vless:// vmess:// ss:// trojan:// ..."></textarea>
+      <p style="color:var(--text2);font-size:12px;margin-top:8px">支持 vless / vmess / ss / trojan，含 REALITY、XHTTP（mode、extra）、gRPC、HTTPUpgrade、ECH，可粘贴多行批量添加。</p>
+      <label class="switch" style="margin-top:10px"><input type="checkbox" id="modal-tfo"><span class="track"></span><span style="font-size:13px">TCP Fast Open</span></label>
+      <div class="btn-group" style="margin-top:12px">
+        <button class="btn primary" onclick="parseAndAddVless()">解析并新增</button>
+      </div>
+    </div>
+    <div id="mob-pane-form" style="display:none">
+      <div class="form-section">
+        <h4>基本信息</h4>
+        <div class="form-grid">
+          <div class="field"><label>名称 (tag)</label><input id="of-tag" autocomplete="off" placeholder="us-xhttp-01"></div>
+          <div class="field"><label>协议</label><select id="of-protocol" onchange="ofRefresh()"><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="trojan">Trojan</option><option value="shadowsocks">Shadowsocks</option></select></div>
+          <div class="field"><label>服务器地址<em>域名 / IP / TXT 端点</em></label><input id="of-address" placeholder="example.com"></div>
+          <div class="field"><label>端口</label><input id="of-port" type="number" min="1" max="65535" placeholder="443"></div>
+        </div>
+      </div>
+      <div class="form-section">
+        <h4>认证</h4>
+        <div class="form-grid">
+          <div class="field"><label id="of-id-label">UUID</label><input id="of-id" autocomplete="off"></div>
+          <div class="field" data-proto="vless vmess shadowsocks"><label id="of-security-label">加密</label><input id="of-security" list="of-security-list"><datalist id="of-security-list"></datalist></div>
+          <div class="field" data-proto="vless"><label>流控 (flow)</label><select id="of-flow"><option value="">无</option><option value="xtls-rprx-vision">xtls-rprx-vision</option><option value="xtls-rprx-vision-udp443">xtls-rprx-vision-udp443</option></select></div>
+        </div>
+      </div>
+      <div class="form-section">
+        <h4>传输</h4>
+        <div class="form-grid">
+          <div class="field"><label>传输方式 (network)</label><select id="of-network" onchange="ofRefresh()"><option value="tcp">TCP / RAW</option><option value="ws">WebSocket</option><option value="xhttp">XHTTP</option><option value="grpc">gRPC</option><option value="httpupgrade">HTTPUpgrade</option></select></div>
+          <div class="field" data-net="ws xhttp httpupgrade"><label>Host<em>伪装域名</em></label><input id="of-host"></div>
+          <div class="field" data-net="ws xhttp httpupgrade grpc"><label id="of-path-label">Path</label><input id="of-path" placeholder="/"></div>
+          <div class="field" data-net="xhttp"><label>XHTTP 模式</label><select id="of-xhttp-mode"><option value="">auto (默认)</option><option value="packet-up">packet-up</option><option value="stream-up">stream-up</option><option value="stream-one">stream-one</option></select></div>
+          <div class="field" data-net="grpc"><label>gRPC 模式</label><select id="of-grpc-multi"><option value="false">gun (默认)</option><option value="true">multi</option></select></div>
+          <div class="field full" data-net="xhttp"><label>XHTTP extra<em>JSON，可选：xPadding*、xmux、headers 等</em></label><textarea id="of-xhttp-extra" spellcheck="false" placeholder='{"xmux":{"maxConnections":3}}'></textarea></div>
+        </div>
+      </div>
+      <div class="form-section">
+        <h4>传输层安全</h4>
+        <div class="form-grid">
+          <div class="field"><label>安全 (security)</label><select id="of-tls-mode" onchange="ofRefresh()"><option value="none">无</option><option value="tls">TLS</option><option value="reality">REALITY</option></select></div>
+          <div class="field" data-sec="tls reality"><label>SNI (serverName)</label><input id="of-sni"></div>
+          <div class="field" data-sec="tls reality"><label>指纹 (fingerprint)</label><select id="of-fp"><option value="">不设置</option><option>chrome</option><option>firefox</option><option>safari</option><option>ios</option><option>android</option><option>edge</option><option>360</option><option>qq</option><option>random</option><option>randomized</option></select></div>
+          <div class="field" data-sec="tls"><label>ALPN</label><input id="of-alpn" list="of-alpn-list" placeholder="h2,http/1.1"><datalist id="of-alpn-list"><option value="h2"><option value="http/1.1"><option value="h2,http/1.1"><option value="h3"></datalist></div>
+          <div class="field" data-sec="tls"><label>证书指纹 (pinnedPeerCertSha256)<em>自签证书时填，替代已移除的 allowInsecure</em></label><input id="of-pcs" placeholder="SHA256 十六进制，多个用逗号分隔"></div>
+          <div class="field" data-sec="tls"><label>ECH 强制查询</label><select id="of-ech-force"><option value="full">full</option><option value="half">half</option><option value="none">none</option></select></div>
+          <div class="field full" data-sec="tls"><label>ECH (echConfigList)<em>Base64 配置，或 "域名+DoH 地址" 动态查询</em></label><input id="of-ech" placeholder="cloudflare-ech.com+https://dns.alidns.com/dns-query"></div>
+          <div class="field full" data-sec="reality"><label>公钥 (publicKey / pbk)</label><input id="of-pbk" autocomplete="off"></div>
+          <div class="field" data-sec="reality"><label>shortId (sid)</label><input id="of-sid" autocomplete="off"></div>
+          <div class="field" data-sec="reality"><label>spiderX (spx)</label><input id="of-spx" placeholder="/"></div>
+        </div>
+      </div>
+      <div class="form-section">
+        <h4>高级</h4>
+        <div class="form-grid">
+          <div class="field"><label>多路复用 (mux)</label><select id="of-mux" onchange="ofRefresh()"><option value="off">关闭</option><option value="on">开启</option></select></div>
+          <div class="field" id="of-mux-conc-field"><label>mux 并发</label><input id="of-mux-conc" type="number" placeholder="8"></div>
+          <div class="field inline"><input type="checkbox" id="of-tfo"><label for="of-tfo" style="font-size:13px;color:var(--text)">TCP Fast Open</label></div>
+        </div>
+        <p class="hint" style="font-size:12px;color:var(--text2);margin-bottom:10px">表单未覆盖的字段（sockopt、_delay、xmux 以外的自定义项等）保存时原样保留。</p>
+      </div>
+      <div class="btn-group" style="margin-top:4px">
+        <button class="btn primary" onclick="saveFormOutboundDirect()">保存节点</button>
+        <button class="btn" onclick="saveFormOutbound()">生成 JSON 预览</button>
+      </div>
+    </div>
+    <div id="mob-pane-json" style="display:none">
+      <textarea class="config-editor" id="eo-json" spellcheck="false" style="min-height:300px"></textarea>
+      <div class="btn-group" style="margin-top:12px">
+        <button class="btn primary" onclick="saveEditOutbound()">确认</button>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-outbound')">取消</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const API='';
+let token=localStorage.getItem('xray_token')||'';
+let statusData=null, configData=null, inboundsData=[], routingData={}, inboundRouteMap={}, outboundsData=[];
+let editingIdx=-1, editingOutboundIdx=-1, restoreTarget='';
+let currentTab='overview';
+
+/* ================= basics ================= */
+function hdrs(){return {'Content-Type':'application/json','X-Token':token}}
+function $(id){return document.getElementById(id)}
+function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function toast(msg,ok=true){
+  const box=$('toasts'), d=document.createElement('div');
+  d.className='toast '+(ok?'ok':'err'); d.textContent=msg; box.appendChild(d);
+  setTimeout(()=>{d.classList.add('out');setTimeout(()=>d.remove(),220);},ok?3200:5200);
+}
+async function api(path,opts={}){
+  try{
+    const r=await fetch(API+path,{headers:hdrs(),...opts});
+    if(r.status===401){showLogin();return null;}
+    const j=await r.json();
+    if(j.error){toast(j.error+(j.detail?'：'+String(j.detail).slice(0,160):''),false);return null}
+    return j;
+  }catch(e){toast(e.message,false);return null}
+}
+function copyToClipboard(text){
+  if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(text).catch(()=>fallbackCopy(text));}
+  else fallbackCopy(text);
+}
+function fallbackCopy(text){
+  const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.left='-9999px';
+  document.body.appendChild(ta);ta.select();try{document.execCommand('copy');}catch(e){}document.body.removeChild(ta);
+}
+function fmtSpeed(bps){
+  if(!(bps>0))return '0 B/s';
+  if(bps<1024)return bps.toFixed(0)+' B/s';
+  if(bps<1048576)return (bps/1024).toFixed(1)+' KB/s';
+  if(bps<1073741824)return (bps/1048576).toFixed(1)+' MB/s';
+  return (bps/1073741824).toFixed(2)+' GB/s';
+}
+function fmtBytes(b){
+  b=b||0;
+  if(b<1024)return b+' B';
+  if(b<1048576)return (b/1024).toFixed(1)+' KB';
+  if(b<1073741824)return (b/1048576).toFixed(1)+' MB';
+  if(b<1099511627776)return (b/1073741824).toFixed(2)+' GB';
+  return (b/1099511627776).toFixed(2)+' TB';
+}
+async function withBusy(btn,fn){
+  if(btn)btn.classList.add('loading');
+  try{return await fn();}finally{if(btn)btn.classList.remove('loading');}
+}
+const ICONS={
+  zap:'<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
+  gauge:'<path d="M12 14l4-4"/><path d="M3.3 19a10 10 0 1 1 17.4 0"/>',
+  edit:'<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+  link:'<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
+  trash:'<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>',
+  power:'<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/>',
+  refresh:'<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
+  nodes:'<rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/>',
+  copy:'<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
+  play:'<path d="M6 4l14 8-14 8z"/>',
+  x:'<path d="M18 6 6 18M6 6l12 12"/>',
+  shield:'<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+  check:'<path d="M20 6 9 17l-5-5"/>',
+  alert:'<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
+  minus:'<path d="M5 12h14"/>',
+  more:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+};
+function icon(n){return '<svg viewBox="0 0 24 24">'+(ICONS[n]||'')+'</svg>';}
+
+/* ================= theme ================= */
+function applyTheme(){
+  const pref=localStorage.getItem('derwalld_theme')||'auto';
+  const dark=pref==='dark'||(pref==='auto'&&matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme=dark?'dark':'light';
+  document.querySelectorAll('.theme-seg button').forEach(b=>b.classList.toggle('on',b.dataset.t===pref));
+  if(typeof renderTraffic==='function'&&currentTab==='traffic')renderTraffic();
+  drawSpark();
+}
+function setTheme(t){localStorage.setItem('derwalld_theme',t);applyTheme();}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',applyTheme);
+
+/* ================= login ================= */
+function showLogin(){
+  $('login-overlay').style.display='flex';
+  setTimeout(()=>$('login-token').focus(),50);
+}
+function showLoginError(msg){const el=$('login-error');el.textContent=msg;el.style.display='block';}
+function doLogin(){
+  const val=$('login-token').value.trim();
+  if(!val){showLoginError('请输入 Token');return;}
+  fetch(API+'/api/status',{headers:{'X-Token':val}}).then(r=>{
+    if(r.ok){token=val;localStorage.setItem('xray_token',token);$('login-overlay').style.display='none';$('login-error').style.display='none';boot();}
+    else showLoginError('Token 错误，请重新输入');
+  }).catch(e=>showLoginError('连接失败: '+e.message));
+}
+function doLogout(){
+  localStorage.removeItem('xray_token');token='';
+  closeModal('modal-more');$('login-token').value='';$('login-error').style.display='none';showLogin();
+}
+
+/* ================= modal / confirm / menu ================= */
+function openModal(id){closeMenu();$(id).classList.add('show');if(id==='modal-more')renderMoreList();
+  const f=$(id).querySelector('textarea,input:not([type=checkbox])');if(f&&id!=='modal-confirm')setTimeout(()=>f.focus(),60);}
+function closeModal(id){const el=$(id);if(el)el.classList.remove('show')}
+function confirmDialog({title='确认',body='',ok='确定',danger=false}={}){
+  return new Promise(res=>{
+    $('cf-title').textContent=title;$('cf-body').innerHTML=body;
+    const okb=$('cf-ok'), cb=$('cf-cancel');
+    okb.textContent=ok;okb.className='btn '+(danger?'danger solid':'primary');
+    const done=v=>{closeModal('modal-confirm');okb.onclick=cb.onclick=null;res(v);};
+    okb.onclick=()=>done(true);cb.onclick=()=>done(false);
+    $('modal-confirm').onclick=e=>{if(e.target===$('modal-confirm'))done(false);};
+    $('modal-confirm').classList.add('show');setTimeout(()=>okb.focus(),50);
+  });
+}
+let _menuEl=null;
+function closeMenu(){if(_menuEl){_menuEl.remove();_menuEl=null;}}
+function openMenu(anchor,items,ev){
+  // the opening click must not reach the document "click outside" handler
+  ev=ev||window.event; if(ev&&ev.stopPropagation)ev.stopPropagation();
+  closeMenu();
+  const m=document.createElement('div');m.className='menu';
+  items.forEach(it=>{
+    if(it==='sep'){m.insertAdjacentHTML('beforeend','<div class="sep"></div>');return;}
+    if(it.header){m.insertAdjacentHTML('beforeend','<div class="label">'+escapeHtml(it.header)+'</div>');return;}
+    if(it.html){m.insertAdjacentHTML('beforeend','<div class="info">'+it.html+'</div>');return;}
+    const b=document.createElement('button');
+    b.innerHTML=(it.icon?icon(it.icon):'')+'<span>'+escapeHtml(it.label)+'</span>';
+    if(it.danger)b.classList.add('danger');
+    if(it.disabled)b.disabled=true;
+    b.onclick=e=>{e.stopPropagation();closeMenu();it.fn&&it.fn();};
+    m.appendChild(b);
+  });
+  document.body.appendChild(m);_menuEl=m;
+  const r=anchor.getBoundingClientRect(), mw=m.offsetWidth, mh=m.offsetHeight;
+  let left=Math.min(r.right-mw,window.innerWidth-mw-8);left=Math.max(8,left);
+  let top=r.bottom+6;if(top+mh>window.innerHeight-8)top=Math.max(8,r.top-mh-6);
+  m.style.left=left+'px';m.style.top=top+'px';
+}
+document.addEventListener('click',e=>{if(_menuEl&&!_menuEl.contains(e.target))closeMenu();});
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape')return;
+  if(_menuEl){closeMenu();return;}
+  const open=[...document.querySelectorAll('.modal-overlay.show')].pop();
+  if(open&&open.id!=='modal-confirm')closeModal(open.id);
+});
+window.addEventListener('scroll',()=>{$('topbar').classList.toggle('scrolled',window.scrollY>4);closeMenu();},{passive:true});
+
+/* ================= navigation ================= */
+const PAGES={
+  overview:['总览','连接状态、实时速率与健康检查'],
+  nodes:['节点','选择节点后连接；多选时自动负载均衡'],
+  routing:['路由规则','自定义分流：直连、走代理或阻断'],
+  dns:['DNS','代理核心的上游 DNS 与 Hosts'],
+  inbounds:['入站','本地 SOCKS / HTTP 监听端口'],
+  traffic:['流量分析','本机网卡流量与按对端 IP 的连接统计'],
+  logs:['访问日志','经过代理核心的连接记录与服务日志'],
+  config:['配置文件','直接编辑代理核心配置'],
+  system:['系统设置','内核参数、Geo 数据与访问 Token'],
+  backups:['备份','配置文件的历史备份'],
+};
+function switchTab(name){
+  if(!PAGES[name])name='overview';
+  currentTab=name;
+  document.querySelectorAll('.tabs .tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.toggle('active',t.id==='tab-'+name));
+  $('page-title').textContent=PAGES[name][0];$('page-sub').textContent=PAGES[name][1];
+  document.title=PAGES[name][0]+' · '+document.querySelector('.brand').textContent.trim();
+  if(location.hash.slice(1)!==name)history.replaceState(null,'','#'+name);
+  closeModal('modal-more');closeMenu();window.scrollTo({top:0});
+  if(name==='overview')loadOverview();
+  if(name==='nodes')loadNodesPage();
+  if(name==='routing'&&!dirty.routing)loadRouting();
+  if(name==='dns'){if(!dirty.dns)loadDns();if(!dirty.hosts)loadDnsHosts();}
+  if(name==='inbounds'){loadInbounds();loadTestUrls();}
+  if(name==='traffic'){loadTraffic();loadPeers(true);}
+  if(name==='logs'){loadAccessStats();loadLogs();}
+  if(name==='config')loadConfig();
+  if(name==='system'){if(!dirty.sysctl)loadSysctl();loadGeoInfo();}
+  if(name==='backups')loadBackups();
+  renderActionBar();
+}
+function renderMoreList(){
+  const el=$('more-list'); el.innerHTML='';
+  ['routing','dns','inbounds','config','system','backups'].forEach(k=>{
+    const b=document.createElement('button');
+    b.innerHTML='<span>'+PAGES[k][0]+'</span><span class="hint" style="margin-left:auto">'+PAGES[k][1]+'</span>';
+    b.onclick=()=>switchTab(k);el.appendChild(b);
+  });
+}
+
+/* ================= dirty state + action bar ================= */
+// Pages with "edit locally, then save" semantics register a pending change here.
+const dirty={};
+const DIRTY_DEF={
+  routing:{tab:'routing',label:'路由规则',save:()=>routingSaveCustom(),discard:()=>loadRouting()},
+  dns:{tab:'dns',label:'DNS 服务器',save:()=>saveDns(),discard:()=>loadDns()},
+  hosts:{tab:'dns',label:'Hosts',save:()=>saveDnsHosts(),discard:()=>loadDnsHosts()},
+  sysctl:{tab:'system',label:'内核参数',save:()=>saveSysctl(),discard:()=>loadSysctl()},
+};
+function markDirty(key,on=true){
+  if(on)dirty[key]=true;else delete dirty[key];
+  document.querySelectorAll('.nav .tab').forEach(t=>t.classList.toggle('has-dirty',Object.keys(dirty).some(k=>DIRTY_DEF[k].tab===t.dataset.tab)));
+  renderActionBar();
+}
+window.addEventListener('beforeunload',e=>{if(Object.keys(dirty).length){e.preventDefault();e.returnValue='';}});
+function renderActionBar(){
+  const bar=$('actionbar'), txt=$('ab-text'), btns=$('ab-btns');
+  bar.classList.remove('dirty');
+  if(currentTab==='nodes'){renderNodeBar(bar,txt,btns);return;}
+  const keys=Object.keys(dirty).filter(k=>DIRTY_DEF[k].tab===currentTab);
+  if(!keys.length){bar.classList.remove('show');return;}
+  bar.classList.add('show','dirty');
+  txt.innerHTML='<span><b>'+keys.map(k=>DIRTY_DEF[k].label).join('、')+'</b> 有未保存的修改</span><span class="muted">保存后会重启代理核心，已有连接会断开约 2 秒</span>';
+  btns.innerHTML='';
+  const discard=document.createElement('button');discard.className='btn';discard.textContent='放弃';
+  discard.onclick=async()=>{for(const k of keys){markDirty(k,false);await DIRTY_DEF[k].discard();}};
+  const save=document.createElement('button');save.className='btn primary';save.textContent='保存并生效';
+  save.onclick=()=>withBusy(save,async()=>{for(const k of keys){const ok=await DIRTY_DEF[k].save();if(ok!==false)markDirty(k,false);}});
+  btns.append(discard,save);
+}
+
+/* ================= stats + sparkline ================= */
+let statsTimer=null; const spark={rx:[],tx:[]}; const SPARK_N=60;
+async function loadStats(){
+  if(!token)return;
+  let d;
+  try{const r=await fetch(API+'/api/stats',{headers:hdrs()});if(!r.ok)return;d=await r.json();}catch(e){return;}
+  const rx=fmtSpeed(d.total_rx_speed), tx=fmtSpeed(d.total_tx_speed);
+  $('header-stats').innerHTML='<span class="rx">↓ <b>'+rx+'</b></span><span class="tx">↑ <b>'+tx+'</b></span>';
+  $('stat-rx').textContent=rx;$('stat-tx').textContent=tx;
+  spark.rx.push(d.total_rx_speed||0);spark.tx.push(d.total_tx_speed||0);
+  if(spark.rx.length>SPARK_N){spark.rx.shift();spark.tx.shift();}
+  $('stats-interfaces').innerHTML=Object.entries(d.interfaces||{}).map(([n,i])=>'<span class="mono">'+escapeHtml(n)+'</span> ↓'+fmtBytes(i.rx_bytes)+' ↑'+fmtBytes(i.tx_bytes)).join('　·　');
+  if(currentTab==='overview')drawSpark();
+}
+function startStatsPolling(){if(statsTimer)return;loadStats();statsTimer=setInterval(loadStats,2000);}
+function drawSpark(){
+  const svg=$('ov-spark');if(!svg||!svg.clientWidth)return;
+  const W=svg.clientWidth,H=96,n=SPARK_N;
+  svg.setAttribute('viewBox','0 0 '+W+' '+H);
+  const max=Math.max(1024,...spark.rx,...spark.tx)*1.15;
+  const path=(arr)=>{
+    if(!arr.length)return '';
+    const off=n-arr.length;
+    return arr.map((v,i)=>((i?'L':'M')+((off+i)*W/(n-1)).toFixed(1)+','+(H-2-(H-6)*v/max).toFixed(1))).join('');
+  };
+  const area=(arr,c)=>{const p=path(arr);if(!p)return '';const x0=((n-arr.length)*W/(n-1)).toFixed(1);
+    return '<path d="'+p+'L'+W+','+H+'L'+x0+','+H+'Z" fill="'+c+'" opacity=".12"/><path d="'+p+'" fill="none" stroke="'+c+'" stroke-width="1.8" stroke-linejoin="round"/>';};
+  const cs=getComputedStyle(document.documentElement);
+  svg.innerHTML=area(spark.tx,cs.getPropertyValue('--chart-tx').trim())+area(spark.rx,cs.getPropertyValue('--chart-rx').trim());
+}
+
+/* ================= connection state + pill ================= */
+let connState=null;
+const STRAT={roundRobin:'轮询',leastPing:'最低延迟',random:'随机'};
+async function refreshConnState(){
+  const d=await api('/api/connect/status');
+  if(!d)return null;
+  connState=d;renderPill();
+  return d;
+}
+function connOn(){return !!(connState&&connState.active&&connState.xray_running);}
+function renderPill(){
+  const s=connState||{}, dot=$('pill-dot'), t=$('pill-text');
+  if(connOn()){
+    const tags=s.selected_tags||[];
+    dot.className='dot on';
+    t.innerHTML='<b>'+escapeHtml(tags[0]||'已连接')+'</b>'+(tags.length>1?' <span class="sub">+'+(tags.length-1)+'</span>':'')+(s.transparent_enabled?' <span class="sub">· 透明代理</span>':'');
+  }else if(s.was_active_but_stopped){dot.className='dot off';t.textContent='已断开';}
+  else{dot.className='dot idle';t.textContent='未连接';}
+}
+function openConnMenu(el){
+  const s=connState||{}, on=connOn(), items=[];
+  if(on){
+    const tags=s.selected_tags||[];
+    items.push({header:'当前连接'});
+    items.push({html:tags.map(x=>'<code>'+escapeHtml(x)+'</code>').join(' ')+'<br>'+(tags.length>1?'负载均衡 · '+(STRAT[s.balancer_strategy]||s.balancer_strategy||'')+'<br>':'')+
+      'SOCKS5 :'+(s.inbound_socks_port||10810)+' · HTTP :'+(s.inbound_http_port||10818)+(s.transparent_enabled?' · 透明 :'+(s.transparent_port||12345):'')});
+    items.push('sep');
+    items.push({label:'切换节点',icon:'nodes',fn:()=>switchTab('nodes')});
+    items.push({label:'重启代理核心',icon:'refresh',fn:()=>svcAction('restart')});
+    items.push({label:'断开连接',icon:'power',danger:true,fn:connStop});
+  }else{
+    items.push({html:s.was_active_but_stopped?'连接已断开，代理核心未在运行。':'尚未连接。选择一个或多个节点后点「连接」。'});
+    items.push({label:'选择节点连接',icon:'nodes',fn:()=>switchTab('nodes')});
+    if(s.was_active_but_stopped&&(s.selected_tags||[]).length)items.push({label:'按上次的节点重新连接',icon:'play',fn:()=>connStart((s.selected_tags||[]).slice())});
+  }
+  openMenu(el,items);
+}
+
+/* ================= overview ================= */
+async function loadOverview(){
+  const [st,cs,gw,pr,tr]=await Promise.all([
+    api('/api/status'),refreshConnState(),api('/api/gateway/status'),
+    api('/api/traffic/peers?hours=1&limit=2000&enrich=0'),api('/api/traffic/history?range=24h')]);
+  if(st){statusData=st;renderVersion(st);}
+  renderHero(cs);
+  renderCore(st);
+  renderHealth(st,cs,gw,pr);
+  renderTop(pr);
+  renderKpis(st,pr,tr);
+  drawSpark();
+}
+function renderVersion(st){
+  const m=String(st.xray_version||'').match(/\d+\.\d+\.\d+/);
+  $('version').textContent=m?'核心 v'+m[0]:'-';
+}
+function renderHero(s){
+  s=s||{};const on=connOn();
+  const ic=$('ov-icon');ic.className='hero-icon'+(on?' on':s.was_active_but_stopped?' warn':'');
+  ic.innerHTML=icon(on?'shield':s.was_active_but_stopped?'alert':'shield');
+  const tags=s.selected_tags||[];
+  $('ov-title').textContent=on?'已连接':s.was_active_but_stopped?'连接已断开':'未连接';
+  $('ov-sub').textContent=on?(tags.length>1?tags.length+' 个节点 · 负载均衡（'+(STRAT[s.balancer_strategy]||s.balancer_strategy)+'）':'单节点')+(s.transparent_enabled?' · 透明代理':'')+(s.dns_actual?' · DNS 接管':'')
+    :s.was_active_but_stopped?'代理核心没有在运行，可按上次的节点重新连接':'选择节点后即可开始代理';
+  $('ov-nodes').innerHTML=on?tags.map(t=>'<span class="tag blue mono">'+escapeHtml(t)+'</span>').join(''):'';
+  $('ov-endpoints').innerHTML=on?('<dt>SOCKS5</dt><dd>0.0.0.0:'+(s.inbound_socks_port||10810)+'</dd><dt>HTTP</dt><dd>0.0.0.0:'+(s.inbound_http_port||10818)+'</dd>'+
+    (s.transparent_enabled?'<dt>透明代理</dt><dd>0.0.0.0:'+(s.transparent_port||12345)+'</dd>':'')):'';
+  const a=$('ov-actions');a.innerHTML='';
+  const mk=(cls,html,fn)=>{const b=document.createElement('button');b.className='btn '+cls;b.innerHTML=html;b.onclick=()=>fn(b);a.appendChild(b);return b;};
+  if(on){mk('','切换节点',()=>switchTab('nodes'));mk('danger',icon('power')+'断开连接',connStop);}
+  else{
+    if(s.was_active_but_stopped&&tags.length)mk('primary lg',icon('play')+'重新连接',b=>connStart(tags.slice(),b));
+    mk(s.was_active_but_stopped&&tags.length?'lg':'primary lg',icon('nodes')+'选择节点',()=>switchTab('nodes'));
+  }
+}
+function renderCore(st){
+  if(!st)return;
+  $('status-pill-core').innerHTML='<span class="status-pill '+(st.running?'active':'inactive')+'">'+(st.running?'运行中':'已停止')+'</span>';
+  $('ov-core').innerHTML='<dt>PID</dt><dd>'+escapeHtml(st.pid||'-')+'</dd><dt>内存</dt><dd>'+escapeHtml(st.memory||'-')+'</dd><dt>运行时长</dt><dd>'+escapeHtml(st.started_at||'-')+'</dd><dt>配置</dt><dd title="'+escapeHtml(st.config_path||'')+'">'+escapeHtml((st.config_path||'-').split('/').pop())+'</dd>';
+  $('btn-svc-start').classList.toggle('hidden',!!st.running);$('btn-svc-stop').classList.toggle('hidden',!st.running);
+  $('listen-tbody').innerHTML=(st.listen||[]).length?(st.listen||[]).map(a=>'<span class="tag outline mono">'+escapeHtml(a)+'</span>').join(''):'<span class="hint">无</span>';
+}
+function renderHealth(st,cs,gw,pr){
+  const items=[];
+  const H=(state,title,sub)=>items.push('<div class="health-item"><span class="hi-icon '+state+'">'+icon(state==='ok'?'check':state==='idle'?'minus':state==='warn'?'alert':'x')+'</span><div class="hi-text"><div>'+title+'</div><div class="hi-sub">'+sub+'</div></div></div>');
+  st=st||{};cs=cs||{};gw=gw||{};
+  H(st.running?'ok':'bad','代理核心',st.running?'运行中 · PID '+escapeHtml(st.pid||'-')+' · '+escapeHtml(st.memory||''):'未运行');
+  if(connOn())H('ok','连接',(cs.selected_tags||[]).length+' 个节点');
+  else H(cs.was_active_but_stopped?'bad':'idle','连接',cs.was_active_but_stopped?'已断开，需要重新连接':'未连接');
+  if(cs.transparent_enabled)H(gw.rules_in_sync?'ok':'warn','透明代理',gw.rules_in_sync?'iptables 规则已生效':'iptables 规则未同步');
+  else H('idle','透明代理','未启用');
+  H(cs.dns_actual?'ok':(connOn()?'warn':'idle'),'DNS 接管',cs.dns_actual?'本机 DNS 由代理核心接管':'未接管');
+  if(cs.transparent_enabled)H(gw.ip_forward?'ok':'bad','IP 转发',gw.ip_forward?'已开启':'未开启，局域网设备无法上网');
+  const ps=(pr&&pr.status)||{};
+  if(ps.enabled===false)H('idle','连接统计','已关闭（PEER_STATS=0）');
+  else H(ps.acct===false?'warn':'ok','连接统计',ps.acct===false?'未开启 nf_conntrack_acct，到「系统设置」开启':'跟踪中 '+(ps.flows||0)+' 个连接');
+  $('ov-health').innerHTML=items.join('');
+}
+function renderTop(pr){
+  const el=$('ov-top');
+  // Group application targets by domain (one domain usually resolves to several IPs).
+  const agg=new Map();
+  ((pr&&pr.rows)||[]).filter(r=>r.kind==='core').forEach(r=>{
+    const k=(r.domains&&r.domains[0])||r.ip, a=agg.get(k)||{name:k,bytes:0,ips:0};
+    a.bytes+=r.rx+r.tx;a.ips++;agg.set(k,a);
+  });
+  const rows=[...agg.values()].sort((a,b)=>b.bytes-a.bytes).slice(0,6);
+  if(!rows.length){el.innerHTML='<div class="empty">最近 1 小时暂无数据</div>';return;}
+  const max=Math.max(1,...rows.map(r=>r.bytes));
+  el.innerHTML=rows.map(r=>'<div class="top-item"><span class="nm" title="'+escapeHtml(r.name)+(r.ips>1?'（'+r.ips+' 个 IP）':'')+'">'+escapeHtml(r.name)+(r.ips>1?' <span class="muted">×'+r.ips+'</span>':'')+'</span><span class="vl">'+fmtBytes(r.bytes)+'</span><span class="bar"><i style="width:'+(r.bytes*100/max).toFixed(1)+'%"></i></span></div>').join('');
+}
+function renderKpis(st,pr,tr){
+  const ifs=(tr&&tr.interfaces)||[], sum=k=>ifs.reduce((a,i)=>a+((i[k]||{}).rx||0)+((i[k]||{}).tx||0),0);
+  const t=(pr&&pr.totals)||{}, g=k=>((t[k]||{}).rx||0)+((t[k]||{}).tx||0);
+  const kpi=(l,v,f)=>'<div class="stat"><div class="label">'+l+'</div><div class="value">'+v+'</div><div class="foot">'+f+'</div></div>';
+  $('ov-kpis').innerHTML=
+    kpi('今日流量',fmtBytes(sum('today')),'整机网卡收发')+
+    kpi('本月流量',fmtBytes(sum('month')),'整机网卡收发')+
+    kpi('代理节点（1 小时）',fmtBytes(g('node')),'经代理线路的实际流量')+
+    kpi('直连（1 小时）',fmtBytes(g('direct')),'不经代理直接出网');
+}
+
+/* ================= service actions ================= */
+async function svcAction(action){
+  if(action!=='start'){
+    const ok=await confirmDialog({title:action==='stop'?'停止代理核心？':'重启代理核心？',
+      body:action==='stop'?'所有经过代理的连接都会中断，直到再次启动。':'现有连接会中断约 2 秒后自动恢复。',ok:action==='stop'?'停止':'重启',danger:action==='stop'});
+    if(!ok)return;
+  }
+  const d=await api('/api/service/'+action,{method:'POST',body:'{}'});
+  if(d&&d.success)toast({start:'已启动',stop:'已停止',restart:'已重启'}[action]);
+  else toast('操作失败',false);
+  setTimeout(()=>{if(currentTab==='overview')loadOverview();else refreshConnState();},600);
+}
+</script>
+<script>
+/* ================= nodes (connect + outbounds merged) ================= */
+let connNodes=[];          // [{tag,protocol,address,port,network,selected}]
+let connLatency={};        // tag -> {ping_ok,ping_ms(s),exit_ip,speed_mbps,speed_ok}
+const connTesting=new Set();
+let connSettingsDirty=false;
+
+async function loadNodesPage(){
+  const [d]=await Promise.all([refreshConnState(),loadOutbounds(),loadConnTestUrls()]);
+  if(!d)return;
+  const keep=new Set(connNodes.filter(n=>n.selected).map(n=>n.tag));
+  connNodes=(d.nodes||[]).map(n=>Object.assign({},n));
+  // Keep a pending (unapplied) selection across reloads; otherwise reflect the server.
+  if(keep.size&&selectionDiffers(keep))connNodes.forEach(n=>n.selected=keep.has(n.tag));
+  if(!connSettingsDirty){
+    if(d.balancer_strategy)$('conn-strategy').value=d.balancer_strategy;
+    $('conn-transparent').checked=!!d.transparent_enabled;
+    if(d.inbound_socks_port)$('conn-port-socks').value=d.inbound_socks_port;
+    if(d.inbound_http_port)$('conn-port-http').value=d.inbound_http_port;
+    if(d.transparent_port)$('conn-port-tp').value=d.transparent_port;
+  }
+  connToggleTp();
+  renderConnNodes();
+  renderSysOutbounds();
+  loadTpBypass();loadTpForward();
+}
+function selectionDiffers(set){
+  const cur=new Set((connState&&connState.selected_tags)||[]);
+  if(!connOn())return set.size>0;
+  if(cur.size!==set.size)return true;
+  for(const t of set)if(!cur.has(t))return true;
+  return false;
+}
+function selectedTags(){return connNodes.filter(n=>n.selected).map(n=>n.tag);}
+function latBadge(tag){
+  if(connTesting.has(tag))return '<span class="lat run">测试中</span>';
+  const l=connLatency[tag];
+  if(!l||l.ping_ok===undefined)return '<span class="lat">—</span>';
+  if(!l.ping_ok)return '<span class="lat bad" title="连接失败">失败</span>';
+  const ms=Math.round(parseFloat(l.ping_ms)*1000);
+  return '<span class="lat '+(ms<1500?'good':ms<3000?'mid':'bad')+'" title="出口 IP '+escapeHtml(l.exit_ip||'-')+'">'+ms+' ms</span>';
+}
+function renderConnNodes(){
+  const list=$('conn-node-list'), q=($('node-search').value||'').trim().toLowerCase();
+  $('node-count').textContent=connNodes.length;
+  if(!connNodes.length){
+    list.innerHTML='<div class="empty">'+icon('nodes')+'还没有节点<br><span class="hint">点右上角「导入链接」或「新增节点」添加</span></div>';
+    $('node-check-all').checked=false;renderActionBar();return;
+  }
+  const inUse=new Set(connOn()?(connState.selected_tags||[]):[]);
+  const rows=connNodes.map((n,i)=>({n,i})).filter(({n})=>!q||(n.tag||'').toLowerCase().includes(q)||(n.address||'').toLowerCase().includes(q));
+  list.innerHTML=rows.length?rows.map(({n,i})=>{
+    const l=connLatency[n.tag]||{};
+    const sp=l.speed_ok||l.speed_mbps?(l.speed_mbps||0)+' Mbps':'';
+    return `<div class="node${n.selected?' selected':''}" onclick="connToggle(${i})">
+      <span onclick="event.stopPropagation()"><input type="checkbox" ${n.selected?'checked':''} onchange="connToggle(${i})"></span>
+      <div class="nm"><b title="${escapeHtml(n.tag)}">${escapeHtml(n.tag||'-')}</b>
+        <div class="tags">${inUse.has(n.tag)?'<span class="tag inuse">使用中</span>':''}<span class="tag">${escapeHtml(n.protocol||'-')}</span><span class="tag">${escapeHtml(n.network||'tcp')}</span></div></div>
+      <div class="addr" title="${escapeHtml(n.address)}:${escapeHtml(n.port)}">${escapeHtml(n.address||'-')}:${escapeHtml(n.port||'-')}${l.exit_ip?'<span class="exit">出口 '+escapeHtml(l.exit_ip)+'</span>':''}</div>
+      <div style="text-align:right">${latBadge(n.tag)}</div>
+      <div class="spd">${sp}</div>
+      <div class="act"><button class="btn ghost icon sm" title="更多" onclick="nodeMenu(this,${i},event)">${icon('more')}</button></div>
+    </div>`;
+  }).join(''):'<div class="empty">没有匹配“'+escapeHtml(q)+'”的节点</div>';
+  const sel=connNodes.filter(n=>n.selected).length;
+  $('node-check-all').checked=sel>0&&sel===connNodes.length;
+  $('node-check-all').indeterminate=sel>0&&sel<connNodes.length;
+  renderActionBar();
+}
+function nodeMenu(el,i,ev){
+  const n=connNodes[i];
+  openMenu(el,[
+    {header:n.tag},
+    {label:'测延迟',icon:'zap',fn:()=>connDoTest([n.tag],'ping')},
+    {label:'测速',icon:'gauge',fn:()=>connDoTest([n.tag],'speed')},
+    'sep',
+    {label:'编辑',icon:'edit',fn:()=>connEditNode(i)},
+    {label:'复制分享链接',icon:'link',fn:()=>connExportNode(i)},
+    'sep',
+    {label:'删除',icon:'trash',danger:true,fn:()=>connDeleteNode(i)},
+  ],ev);
+}
+function connToggle(i){connNodes[i].selected=!connNodes[i].selected;renderConnNodes();}
+function connToggleAll(on){connNodes.forEach(n=>n.selected=on);renderConnNodes();}
+function connSettingsChanged(){connSettingsDirty=true;renderActionBar();}
+function connToggleTp(){$('conn-tp-details').classList.toggle('hidden',!$('conn-transparent').checked);}
+
+function renderNodeBar(bar,txt,btns){
+  const tags=selectedTags(), on=connOn(), changed=on&&(selectionDiffers(new Set(tags))||connSettingsDirty);
+  bar.classList.add('show');
+  btns.innerHTML='';
+  const add=(cls,html,fn,title)=>{const b=document.createElement('button');b.className='btn '+cls;b.innerHTML=html;if(title)b.title=title;b.onclick=()=>fn(b);btns.appendChild(b);return b;};
+  const strat=STRAT[$('conn-strategy').value]||'';
+  if(!tags.length){
+    txt.innerHTML=on?'<span>已连接 <b>'+(connState.selected_tags||[]).length+'</b> 个节点</span><span class="muted">勾选节点可切换或批量测试</span>':'<span class="muted">勾选一个或多个节点后连接</span>';
+    if(on)add('danger',icon('power')+'断开',()=>connStop());
+    return;
+  }
+  if(changed)bar.classList.add('dirty');
+  txt.innerHTML='<span>已选 <b>'+tags.length+'</b> 个节点'+(tags.length>1?' · 负载均衡（'+strat+'）':'')+'</span>'+
+    (changed?'<span class="muted">与当前连接不同，应用后会重新连接（约 2 秒中断）</span>':on?'<span class="muted">正在使用</span>':'');
+  add('ghost','清空',()=>connToggleAll(false));
+  add('',icon('zap')+'测延迟',b=>connDoTest(tags,'ping',b));
+  add('',icon('gauge')+'测速',b=>connDoTest(tags,'speed',b));
+  add('icon','<svg viewBox="0 0 24 24">'+ICONS.more+'</svg>',b=>openMenu(b,[
+    {label:'复制分享链接（'+tags.length+'）',icon:'link',fn:()=>connExportSelected()},
+    {label:'删除所选（'+tags.length+'）',icon:'trash',danger:true,fn:()=>connDeleteSelected()},
+  ]),'更多');
+  if(on){
+    add('danger',icon('power')+'断开',()=>connStop());
+    if(changed)add('primary',icon('play')+'应用更改',b=>connStart(tags,b));
+  }else add('primary',icon('play')+'连接',b=>connStart(tags,b));
+}
+
+async function connStart(tags,btn){
+  tags=tags||selectedTags();
+  if(!tags.length){toast('请至少选择一个节点',false);return;}
+  const body={tags,strategy:$('conn-strategy').value,transparent:$('conn-transparent').checked,ports:{
+    socks:parseInt($('conn-port-socks').value)||10810,http:parseInt($('conn-port-http').value)||10818,transparent:parseInt($('conn-port-tp').value)||12345}};
+  await withBusy(btn,async()=>{
+    const d=await api('/api/connect/start',{method:'POST',body:JSON.stringify(body)});
+    if(!d||!d.ok)return;
+    connSettingsDirty=false;
+    toast('已连接 '+tags.length+' 个节点'+(body.transparent?' · 透明代理':'')+(d.restart&&d.restart.success?'':'（核心重启失败，请查看日志）'),!!(d.restart&&d.restart.success));
+  });
+  if(currentTab==='nodes')await loadNodesPage();else if(currentTab==='overview')await loadOverview();else await refreshConnState();
+}
+async function connStop(){
+  const ok=await confirmDialog({title:'断开连接？',body:'代理会停止，透明代理和 DNS 接管会恢复原状。依赖代理的服务（如 kiro.dev）将无法访问。',ok:'断开',danger:true});
+  if(!ok)return;
+  const d=await api('/api/connect/stop',{method:'POST',body:'{}'});
+  if(d&&d.ok)toast('已断开连接');
+  if(currentTab==='nodes')await loadNodesPage();else if(currentTab==='overview')await loadOverview();else await refreshConnState();
+}
+function connTestUrl(){
+  const custom=($('conn-test-url-custom').value||'').trim();
+  return custom||$('conn-test-url-select').value||'https://api.ipify.org';
+}
+async function loadConnTestUrls(){
+  const sel=$('conn-test-url-select');if(sel.options.length)return;
+  const d=await api('/api/test-urls');if(!d)return;
+  sel.innerHTML=(d.urls||[]).map(u=>'<option value="'+escapeHtml(u)+'">'+escapeHtml(u)+'</option>').join('');
+}
+async function connTestAll(){
+  const tags=connNodes.map(n=>n.tag);
+  if(!tags.length){toast('还没有节点',false);return;}
+  await connDoTest(tags,'ping',$('btn-test-all'));
+}
+async function connDoTest(tags,mode,btn){
+  tags.forEach(t=>connTesting.add(t));renderConnNodes();
+  const speedUrl=($('conn-speed-url').value||'').trim()||'https://speed.cloudflare.com/__down?bytes=10000000';
+  try{
+    await withBusy(btn,async()=>{
+      const d=await api('/api/connect/test-selected',{method:'POST',body:JSON.stringify({tags,mode,url:connTestUrl(),speed_url:speedUrl})});
+      if(!d||!d.ok)return;
+      let ok=0;
+      for(const r of d.results){
+        connLatency[r.tag]=Object.assign(connLatency[r.tag]||{},{ping_ok:r.ping_ok,ping_ms:r.ping_ms,exit_ip:r.exit_ip},mode==='speed'?{speed_mbps:r.speed_mbps||0,speed_ok:r.speed_ok}:{});
+        if(mode==='speed'?r.speed_ok:r.ping_ok)ok++;
+      }
+      const fail=d.results.length-ok;
+      toast((mode==='speed'?'测速':'延迟测试')+'完成：'+ok+' 个可用'+(fail?'，'+fail+' 个失败':''),!fail||ok>0);
+    });
+  }finally{tags.forEach(t=>connTesting.delete(t));renderConnNodes();}
+}
+function connEditNode(i){
+  const n=connNodes[i];const idx=outboundsData.findIndex(ob=>ob.tag===n.tag);
+  if(idx>=0)editOutbound(idx);else toast('节点数据未加载，请刷新页面',false);
+}
+function connExportNode(i){
+  const idx=outboundsData.findIndex(ob=>ob.tag===connNodes[i].tag);
+  if(idx<0){toast('节点数据未加载',false);return;}
+  const link=outboundToShareLink(outboundsData[idx]);
+  if(!link){toast('不支持导出该协议: '+outboundsData[idx].protocol,false);return;}
+  copyToClipboard(link);toast('已复制 '+connNodes[i].tag+' 的分享链接');
+}
+function connExportSelected(){
+  const tags=new Set(selectedTags());
+  const links=outboundsData.filter(ob=>tags.has(ob.tag)).map(outboundToShareLink).filter(Boolean);
+  if(!links.length){toast('没有可导出的节点',false);return;}
+  copyToClipboard(links.join('\n'));toast('已复制 '+links.length+' 个分享链接');
+}
+async function removeNodes(tags){
+  if(connOn()&&tags.some(t=>(connState.selected_tags||[]).includes(t))){toast('不能删除正在使用的节点，请先切换或断开',false);return false;}
+  const d=await api('/api/outbounds');if(!d)return false;
+  const set=new Set(tags);
+  const r=await api('/api/outbounds',{method:'POST',body:JSON.stringify({outbounds:(d.outbounds||[]).filter(ob=>!set.has(ob.tag))})});
+  if(r&&r.ok){tags.forEach(t=>delete connLatency[t]);connNodes=connNodes.filter(n=>!set.has(n.tag));toast('已删除 '+tags.length+' 个节点');await loadNodesPage();return true;}
+  return false;
+}
+async function connDeleteNode(i){
+  const n=connNodes[i];
+  if(await confirmDialog({title:'删除节点？',body:'<code>'+escapeHtml(n.tag)+'</code> 将从配置中移除。引用它的路由规则需要另行修改。',ok:'删除',danger:true}))removeNodes([n.tag]);
+}
+async function connDeleteSelected(){
+  const tags=selectedTags();
+  if(await confirmDialog({title:'删除 '+tags.length+' 个节点？',body:tags.map(t=>'<code>'+escapeHtml(t)+'</code>').join(' '),ok:'删除',danger:true}))removeNodes(tags);
+}
+async function connImportLinks(){
+  const text=($('conn-import-links').value||'').trim();
+  const links=text.split('\n').map(s=>s.trim()).filter(l=>l.includes('://'));
+  if(!links.length){toast('未识别到有效链接',false);return;}
+  const tfo=$('conn-import-tfo').checked;
+  await withBusy($('btn-import'),async()=>{
+    const newObs=[];
+    for(const link of links){
+      const r=await api('/api/outbounds/parse-vless',{method:'POST',body:JSON.stringify({link,tfo})});
+      if(r&&r.outbound)newObs.push(r.outbound);
+    }
+    if(!newObs.length){toast('解析失败',false);return;}
+    const d=await api('/api/outbounds');if(!d)return;
+    const existing=d.outbounds||[], tagsSeen=new Set(existing.map(ob=>ob.tag));
+    for(const ob of newObs){let t=ob.tag,k=1;while(tagsSeen.has(t)){t=ob.tag+'-'+k++;}ob.tag=t;tagsSeen.add(t);existing.push(ob);}
+    const r=await api('/api/outbounds',{method:'POST',body:JSON.stringify({outbounds:existing})});
+    if(r&&r.ok){toast('已导入 '+newObs.length+' 个节点'+(newObs.length<links.length?'，'+(links.length-newObs.length)+' 条解析失败':''));$('conn-import-links').value='';closeModal('modal-import');await loadNodesPage();}
+  });
+}
+function renderSysOutbounds(){
+  const el=$('sys-ob-list');if(!el)return;
+  const sys=outboundsData.map((ob,i)=>({ob,i})).filter(({ob})=>['freedom','blackhole','dns'].includes(ob.protocol));
+  el.innerHTML=sys.length?sys.map(({ob,i})=>'<button class="chip" onclick="editOutbound('+i+')">'+icon('edit').replace('<svg','<svg style="width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2"')+escapeHtml(ob.tag)+' <span class="muted">'+({freedom:'直连',blackhole:'丢弃',dns:'DNS'}[ob.protocol])+'</span></button>').join(''):'<span class="hint">无</span>';
+}
+async function loadOutbounds(){
+  const d=await api('/api/outbounds');
+  if(!d)return;
+  outboundsData=d.outbounds||[];
+}
+function renderOutbounds(){renderSysOutbounds();}
+async function saveOutbounds(){
+  const d=await api('/api/outbounds',{method:'POST',body:JSON.stringify({outbounds:outboundsData})});
+  if(d&&d.ok){toast('节点已保存'+(d.restart&&d.restart.success?'，核心已重启':''));await loadNodesPage();return true;}
+  return false;
+}
+function saveFormOutboundDirect(){
+  let ob;
+  try{ob=formToOutbound(editingOutboundBase);}catch(e){toast('表单校验失败: '+e.message,false);return;}
+  const dup=outboundsData.findIndex((x,i)=>x.tag===ob.tag&&i!==editingOutboundIdx);
+  if(dup>=0){toast('名称已存在: '+ob.tag,false);return;}
+  const oldTag=editingOutboundIdx>=0?outboundsData[editingOutboundIdx].tag:null;
+  if(editingOutboundIdx>=0)outboundsData[editingOutboundIdx]=ob;else outboundsData.push(ob);
+  closeModal('modal-outbound');
+  saveOutbounds();
+  if(oldTag&&oldTag!==ob.tag)toast('节点已改名，引用旧名称的路由规则需要同步修改',false);
+}
+function saveEditOutbound(){
+  let ob;
+  try{ob=JSON.parse($('eo-json').value);}catch(e){toast('JSON 解析失败: '+e.message,false);return;}
+  if(editingOutboundIdx>=0)outboundsData[editingOutboundIdx]=ob;else outboundsData.push(ob);
+  closeModal('modal-outbound');saveOutbounds();
+}
+async function parseAndAddVless(){
+  const raw=$('vless-link').value.trim();
+  const lines=raw.split('\n').map(l=>l.trim()).filter(l=>l.includes('://'));
+  if(!lines.length){toast('未识别到有效链接',false);return;}
+  const tfo=$('modal-tfo')?.checked||false;
+  let added=0;
+  for(const link of lines){
+    const d=await api('/api/outbounds/parse-vless',{method:'POST',body:JSON.stringify({link,tfo})});
+    if(d&&d.outbound){outboundsData.push(d.outbound);added++;}
+  }
+  if(!added){toast('解析失败',false);return;}
+  closeModal('modal-outbound');
+  if(await saveOutbounds())toast('已添加 '+added+' 个节点');
+}
+function exportOutbound(idx){
+  const ob=outboundsData[idx];if(!ob)return;
+  const link=outboundToShareLink(ob);
+  if(!link){toast('不支持导出该协议: '+ob.protocol,false);return;}
+  copyToClipboard(link);toast('已复制: '+ob.tag);
+}
+</script>
+<script>
+/* ===== reused page logic from the previous UI (overridden below where redesigned) ===== */
+let trafficRange='24h', trafficData=null;
+const TR_COLORS=['#165dff','#00b42a','#ff7d00','#722ed1','#f53f3f','#14c9c9','#86909c'];
+function setTrafficRange(r){
+  trafficRange=r;
+  document.querySelectorAll('#tr-range button').forEach(b=>b.classList.toggle('on',b.dataset.r===r));
+  loadTraffic();
+}
+async function loadTraffic(){
+  const d=await api('/api/traffic/history?range='+encodeURIComponent(trafficRange));
+  if(!d||!d.ok){document.getElementById('tr-iface-tbody').innerHTML='<tr><td colspan="7" style="color:var(--red)">'+escapeHtml((d&&d.error)||'加载失败')+'</td></tr>';return;}
+  trafficData=d;
+  const sel=document.getElementById('tr-iface'), cur=sel.value||'__all__';
+  sel.innerHTML='<option value="__all__">全部网卡</option>'+d.interfaces.map(i=>'<option value="'+escapeHtml(i.name)+'">'+escapeHtml(i.name)+(i.ips.length?' '+escapeHtml(i.ips[0]):'')+'</option>').join('');
+  sel.value=[...sel.options].some(o=>o.value===cur)?cur:'__all__';
+  const monthTotal=d.interfaces.reduce((a,i)=>a+i.month.rx+i.month.tx,0)||0;
+  const pair=x=>fmtBytes(x.rx)+' / '+fmtBytes(x.tx);
+  document.getElementById('tr-iface-tbody').innerHTML=d.interfaces.length?d.interfaces.map((i,k)=>{
+    const m=i.month.rx+i.month.tx, pct=monthTotal?m*100/monthTotal:0;
+    const since=i.since?new Date(i.since*1000).toLocaleString('zh-CN',{hour12:false}):'-';
+    return '<tr'+(i.active?'':' style="color:var(--text2)"')+'><td>'+escapeHtml(i.name)+(i.active?'':' <span style="font-size:11px;color:var(--text2)">(已不在)</span>')+'</td><td>'+escapeHtml(i.ips.join(', ')||'-')+'</td><td>'+pair(i.today)+'</td><td>'+pair(i.month)+'</td>'+
+      '<td><div style="display:flex;align-items:center;gap:8px"><div class="tr-share" style="width:90px"><div style="width:'+pct.toFixed(1)+'%;background:'+TR_COLORS[k%TR_COLORS.length]+'"></div></div><span>'+pct.toFixed(1)+'%</span></div></td>'+
+      '<td>'+pair(i.total)+'</td><td style="font-size:12px;color:var(--text2)">'+since+'</td></tr>';
+  }).join(''):'<tr><td colspan="7" style="color:var(--text2)">暂无数据，采样开始后约 1 分钟出现</td></tr>';
+  renderTraffic();
+}
+function renderTraffic(){
+  const d=trafficData; if(!d)return;
+  const iface=document.getElementById('tr-iface').value||'__all__';
+  const pts=d.buckets.map(b=>{let rx=0,tx=0;for(const [k,v] of Object.entries(b.data)){if(iface==='__all__'||k===iface){rx+=v.rx;tx+=v.tx;}}return {label:b.label,rx,tx};});
+  const svg=document.getElementById('tr-chart');
+  const W=Math.max(svg.clientWidth||800,320), H=200, padL=64, padB=22, padT=8, plotW=W-padL-8, plotH=H-padB-padT;
+  svg.setAttribute('viewBox','0 0 '+W+' '+H);
+  const max=Math.max(1,...pts.map(p=>Math.max(p.rx,p.tx)));
+  const n=pts.length, bw=plotW/n, barW=Math.max(2,Math.min(14,bw*0.36));
+  let g='';
+  for(let i=0;i<=4;i++){const y=padT+plotH-plotH*i/4;g+='<line x1="'+padL+'" x2="'+(W-8)+'" y1="'+y+'" y2="'+y+'" stroke="#e5e6eb"/><text x="'+(padL-6)+'" y="'+(y+4)+'" text-anchor="end" font-size="11" fill="#86909c">'+fmtBytes(Math.round(max*i/4))+'</text>';}
+  const step=Math.ceil(n/Math.max(4,Math.min(12,Math.floor(plotW/52))));
+  pts.forEach((p,i)=>{
+    const x=padL+bw*i+bw/2, hr=plotH*p.rx/max, ht=plotH*p.tx/max, tip=escapeHtml(p.label)+'  ↓ '+fmtBytes(p.rx)+'  ↑ '+fmtBytes(p.tx);
+    g+='<g><title>'+tip+'</title><rect x="'+(x-barW-1)+'" y="'+(padT+plotH-hr)+'" width="'+barW+'" height="'+hr+'" fill="#00b42a" rx="1"/><rect x="'+(x+1)+'" y="'+(padT+plotH-ht)+'" width="'+barW+'" height="'+ht+'" fill="#ff7d00" rx="1"/><rect x="'+(padL+bw*i)+'" y="'+padT+'" width="'+bw+'" height="'+plotH+'" fill="transparent"/></g>';
+    if(i%step===0||i===n-1)g+='<text x="'+x+'" y="'+(H-6)+'" text-anchor="middle" font-size="11" fill="#86909c">'+escapeHtml(p.label)+'</text>';
+  });
+  svg.innerHTML=g;
+  const srx=pts.reduce((a,p)=>a+p.rx,0), stx=pts.reduce((a,p)=>a+p.tx,0);
+  document.getElementById('tr-sum').textContent='区间合计 ↓ '+fmtBytes(srx)+'  ↑ '+fmtBytes(stx);
+}
+window.addEventListener('resize',()=>{if(document.getElementById('tab-traffic').classList.contains('active'))renderTraffic();});
+
+let peerHours=1, peerKind='core', peerLimit=10;
+const PEER_KIND_DESC={
+  core:'应用要访问的原始目标 IP（如 kiro.dev 解析出的地址）。这部分流量的实际线路走「代理节点」或「直连」，合计时不重复计入。',
+  node:'代理核心连到节点服务器的实际线上流量。',
+  direct:'不经代理、直接连到公网 IP 的流量（含核心直连出口和局域网设备 NAT 出去的流量）。',
+  internal:'连到内网 / 私有地址的流量。',
+  inbound:'对方主动连到本机的连接，如访问面板、SSH。'};
+let peerData=null, peerDataHours=0, peerMeta={}, peerSeq=0;
+function setPeerKind(k){
+  peerKind=k; peerLimit=10;
+  document.querySelectorAll('#pr-kind button').forEach(b=>b.classList.toggle('on',b.dataset.k===k));
+  renderPeers();
+}
+function setPeerRange(h){
+  peerHours=h; peerLimit=10;
+  document.querySelectorAll('#pr-range button').forEach(b=>b.classList.toggle('on',+b.dataset.h===h));
+  loadPeers(true);
+}
+function peerMore(){peerLimit+=20;renderPeers();}
+function peerSearch(){peerLimit=10;renderPeers();}
+// One request per time range (all kinds, no whois); tabs, search and paging are local.
+async function loadPeers(force){
+  if(!force&&peerData&&peerDataHours===peerHours){renderPeers();return;}
+  const seq=++peerSeq, wrap=document.getElementById('pr-wrap');
+  wrap.classList.add('is-loading');
+  const d=await api('/api/traffic/peers?hours='+peerHours+'&limit=2000&enrich=0');
+  if(seq!==peerSeq)return;
+  wrap.classList.remove('is-loading');
+  if(!d||!d.ok){
+    document.getElementById('pr-tbody').innerHTML='<tr><td colspan="9" style="color:var(--red)">'+escapeHtml((d&&d.error)||'加载失败')+'</td></tr>';
+    return;
+  }
+  peerData=d; peerDataHours=peerHours;
+  renderPeerHeader(d);
+  renderPeers();
+}
+function renderPeerHeader(d){
+  const s=d.status||{}, st=document.getElementById('pr-status');
+  let msg=[];
+  if(!s.enabled)msg.push('<span style="color:var(--yellow)">已通过 PEER_STATS=0 关闭</span>');
+  else if(s.acct===false)msg.push('<span style="color:var(--yellow)">宿主机未开启 net.netfilter.nf_conntrack_acct，开启后新连接才有字节计数：sysctl -w net.netfilter.nf_conntrack_acct=1</span>');
+  if(s.error)msg.push('<span style="color:var(--red)">'+escapeHtml(s.error)+'</span>');
+  if(s.enabled)msg.push('跟踪中连接 '+(s.flows||0)+'，已处理关闭事件 '+(s.events||0)+(s.dropped?'，<span style="color:var(--yellow)">事件丢失 '+s.dropped+' 次（短连接可能少算）</span>':'')+(s.last_dump?'，上次全量读取 '+new Date(s.last_dump*1000).toLocaleTimeString('zh-CN',{hour12:false}):''));
+  st.innerHTML=msg.join('；');
+  const t=d.totals||{}, g=k=>t[k]||{rx:0,tx:0,peers:0};
+  document.getElementById('pr-sum').innerHTML='线上合计 ↓ <b>'+fmtBytes((d.wire||{}).rx||0)+'</b> ↑ <b>'+fmtBytes((d.wire||{}).tx||0)+'</b>'+
+    '　代理节点 '+fmtBytes(g('node').rx+g('node').tx)+'　直连 '+fmtBytes(g('direct').rx+g('direct').tx)+'　内网 '+fmtBytes(g('internal').rx+g('internal').tx)+'　入站 '+fmtBytes(g('inbound').rx+g('inbound').tx);
+  document.querySelectorAll('#pr-kind button').forEach(b=>{b.querySelector('span').textContent=g(b.dataset.k).peers?'('+g(b.dataset.k).peers+')':'';});
+}
+function peerMetaCell(ip){
+  const m=peerMeta[ip];
+  if(m===undefined)return '<span class="muted">…</span>';
+  if(!m)return '-';
+  return 'AS'+escapeHtml(m.asn||'')+' '+escapeHtml(m.country||'')+'<div style="font-size:11px;color:var(--text2);max-width:220px;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(m.as_name||'')+'</div>';
+}
+function renderPeers(){
+  const kind=peerKind, q=document.getElementById('pr-q').value.trim().toLowerCase();
+  document.getElementById('pr-kind-desc').textContent=PEER_KIND_DESC[kind]||'';
+  const tb=document.getElementById('pr-tbody');
+  if(!peerData){tb.innerHTML='<tr><td colspan="9" style="color:var(--text2)">加载中…</td></tr>';return;}
+  let rows=(peerData.rows||[]).filter(r=>r.kind===kind);
+  if(q)rows=rows.filter(r=>r.ip.toLowerCase().includes(q)||(r.domains||[]).some(x=>x.toLowerCase().includes(q))||(r.node||'').toLowerCase().includes(q));
+  const matched=rows.length; rows=rows.slice(0,peerLimit);
+  const kindTag=r=>{
+    const c={core:'var(--accent)',node:'#722ed1',direct:'var(--green)',internal:'var(--text3)',inbound:'var(--yellow)'}[r.kind]||'var(--text3)';
+    let l=r.label; if(r.kind==='core')l+=r.route==='direct'?' → 直连':r.route==='block'?' → 拦截':' → '+(r.outbound||'代理');
+    return '<span style="color:'+c+'">'+escapeHtml(l)+'</span>';
+  };
+  tb.innerHTML=rows.length?rows.map(r=>{
+    const name=r.kind==='node'?('节点 '+escapeHtml(r.node||'')):escapeHtml((r.domains||[]).join(', ')||'-');
+    const last=r.last_seen?new Date(r.last_seen*1000).toLocaleString('zh-CN',{hour12:false,month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'-';
+    const metaTd=isPrivateIp(r.ip)?'<td>-</td>':'<td data-meta-ip="'+escapeHtml(r.ip)+'">'+peerMetaCell(r.ip)+'</td>';
+    return '<tr><td>'+escapeHtml(r.ip)+'</td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis">'+name+'</td>'+metaTd+'<td>'+kindTag(r)+'</td><td>'+escapeHtml((r.proto||'')+':'+(r.port||''))+'</td><td>'+fmtBytes(r.rx)+'</td><td>'+fmtBytes(r.tx)+'</td><td>'+r.conns+'</td><td style="font-size:12px;color:var(--text2)">'+last+'</td></tr>';
+  }).join(''):'<tr><td colspan="9" style="color:var(--text2)">'+(q?'没有匹配的记录':'暂无数据（每分钟全量读取一次，新连接关闭时实时计入）')+'</td></tr>';
+  const more=document.getElementById('pr-more');
+  more.style.display=matched>rows.length?'':'none';
+  document.getElementById('pr-more-info').textContent='已显示 '+rows.length+' / '+matched;
+  fetchPeerMeta(rows.map(r=>r.ip).filter(ip=>!isPrivateIp(ip)&&peerMeta[ip]===undefined));
+}
+async function fetchPeerMeta(ips){
+  if(!ips.length)return;
+  const d=await api('/api/ip-meta?ips='+encodeURIComponent(ips.join(',')));
+  const meta=(d&&d.meta)||{};
+  ips.forEach(ip=>{peerMeta[ip]=meta[ip]||null;});
+  document.querySelectorAll('#pr-tbody td[data-meta-ip]').forEach(td=>{
+    const ip=td.dataset.metaIp; if(ips.includes(ip))td.innerHTML=peerMetaCell(ip);
+  });
+}
+function isPrivateIp(ip){
+  return /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|0\.|::1$|fe80:|fc|fd)/i.test(ip);
+}
+
+
+async function loadTestUrls(){
+  const d=await api('/api/test-urls');
+  if(!d)return;
+  const sel=document.getElementById('test-url-select');
+  if(!sel)return;
+  sel.innerHTML=(d.urls||[]).map(u=>`<option value="${u.replace(/"/g,'&quot;')}">${u}</option>`).join('');
+}
+
+function currentTestUrl(){
+  const custom=(document.getElementById('test-url-custom')?.value||'').trim();
+  if(custom)return custom;
+  return document.getElementById('test-url-select')?.value || 'https://api.ipify.org';
+}
+
+async function saveCurrentTestUrl(){
+  const u=currentTestUrl();
+  const sel=document.getElementById('test-url-select');
+  const urls=Array.from(sel.options).map(o=>o.value);
+  if(!urls.includes(u)) urls.unshift(u);
+  const d=await api('/api/test-urls',{method:'POST',body:JSON.stringify({urls})});
+  if(d&&d.ok){toast('测试 URL 已保存'); loadTestUrls();}
+}
+
+async function testInbound(idx){
+  const ib=inboundsData[idx];
+  const box=document.getElementById('inbound-test-output');
+  box.style.display='block';
+  box.textContent=`Testing ${ib.tag} ${ib.listen}:${ib.port} -> ${currentTestUrl()} ...`;
+  const d=await api('/api/inbounds/test',{method:'POST',body:JSON.stringify({tag:ib.tag,url:currentTestUrl()})});
+  if(!d){box.textContent+='\n请求失败';return;}
+  const status=d.ok?'OK':'FAILED';
+  box.textContent=`[${status}] ${d.tag} via ${d.proxy} -> ${d.url}\nHTTP: ${d.http_code || '-'}  time: ${d.time_total || '-'}s  exit: ${d.exit_code}\n\nSTDOUT:\n${d.stdout || ''}\n\nSTDERR:\n${d.stderr || ''}`;
+}
+
+async function loadInbounds(){
+  const d=await api('/api/inbounds');
+  if(!d)return;
+  inboundsData=d.inbounds||[];
+  inboundRouteMap={};
+  const rout=(d.routing||{});
+  if(rout&&rout.rules){
+    rout.rules.forEach(r=>{
+      if(r.inboundTag){
+        const dest=r.balancerTag||r.outboundTag||'?';
+        r.inboundTag.forEach(t=>{inboundRouteMap[t]=dest;});
+      }
+    });
+  }
+  const tb=document.getElementById('inbounds-tbody');
+  tb.innerHTML=inboundsData.map((ib,i)=>{
+    const ob=inboundRouteMap[ib.tag]||'-';
+    return `<tr>
+      <td>${ib.tag}</td>
+      <td>${ib.protocol}</td>
+      <td>${ib.listen||'0.0.0.0'}</td>
+      <td>${ib.port}</td>
+      <td><span class="tag ${tagForPort(ib.port)}">${ob}</span></td>
+      <td><button class="btn primary" onclick="testInbound(${i})">测试</button> <button class="btn" onclick="editInbound(${i})">编辑</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function editInbound(idx){
+  editingIdx=idx;
+  const ib=inboundsData[idx];
+  document.getElementById('modal-inbound-title').textContent='编辑入站';
+  document.getElementById('btn-delete-inbound').style.display='';
+  document.getElementById('ei-tag').value=ib.tag||'';
+  document.getElementById('ei-protocol').value=ib.protocol||'socks';
+  document.getElementById('ei-listen').value=ib.listen||'0.0.0.0';
+  document.getElementById('ei-port').value=ib.port||'';
+  document.getElementById('ei-udp').value=(ib.settings&&ib.settings.udp)?'true':'false';
+  document.getElementById('ei-sniff').value=(ib.sniffing&&ib.sniffing.enabled)?'true':'false';
+  loadOutboundSelector(inboundRouteMap[ib.tag]||'');
+  document.getElementById('modal-edit-inbound').classList.add('show');
+}
+
+function showAddInboundModal(){
+  editingIdx=-1;
+  document.getElementById('modal-inbound-title').textContent='新增入站';
+  document.getElementById('btn-delete-inbound').style.display='none';
+  document.getElementById('ei-tag').value='';
+  document.getElementById('ei-protocol').value='socks';
+  document.getElementById('ei-listen').value='0.0.0.0';
+  document.getElementById('ei-port').value='';
+  document.getElementById('ei-udp').value='true';
+  document.getElementById('ei-sniff').value='true';
+  loadOutboundSelector('');
+  document.getElementById('modal-edit-inbound').classList.add('show');
+}
+
+async function loadOutboundSelector(selected){
+  const sel=document.getElementById('ei-outbound');
+  // Load outbounds
+  const od=await api('/api/outbounds');
+  let opts='<option value="">(未绑定)</option>';
+  const obTags=[];
+  if(od&&od.outbounds){
+    od.outbounds.filter(ob=>ob.tag).forEach(ob=>{
+      obTags.push(ob.tag);
+      opts+=`<option value="${ob.tag}">${ob.tag}</option>`;
+    });
+  }
+  // Load balancers
+  const rd=await api('/api/routing');
+  if(rd&&rd.routing&&rd.routing.balancers){
+    rd.routing.balancers.forEach(b=>{
+      opts+=`<option value="bal:${b.tag}">${b.tag} (${(b.selector||[]).join(', ')})</option>`;
+    });
+  }
+  sel.innerHTML=opts;
+  // Find matching option
+  for(const opt of sel.options){
+    if(opt.value===selected||opt.value===('bal:'+selected)){opt.selected=true;break;}
+  }
+}
+
+async function saveEditInbound(){
+  const isNew=editingIdx<0;
+  const ib=isNew?{}:inboundsData[editingIdx];
+  const oldTag=ib.tag||'';
+  ib.tag=document.getElementById('ei-tag').value.trim();
+  ib.protocol=document.getElementById('ei-protocol').value.trim();
+  ib.listen=document.getElementById('ei-listen').value.trim()||'0.0.0.0';
+  ib.port=parseInt(document.getElementById('ei-port').value);
+  if(!ib.tag||!ib.port){toast('Tag 和端口必填',false);return;}
+  if(!ib.settings)ib.settings={};
+  ib.settings.udp=document.getElementById('ei-udp').value==='true';
+  if(ib.protocol==='socks'){ib.settings.auth='noauth';}
+  if(!ib.sniffing)ib.sniffing={};
+  ib.sniffing.enabled=document.getElementById('ei-sniff').value==='true';
+  ib.sniffing.destOverride=['http','tls','quic'];
+  const selVal=document.getElementById('ei-outbound').value||'';
+  if(isNew){
+    inboundsData.push(ib);
+  }
+  // Handle bal: prefix
+  if(selVal.startsWith('bal:')){
+    inboundRouteMap[ib.tag]=selVal.slice(4);
+  } else {
+    inboundRouteMap[ib.tag]=selVal;
+  }
+  if(oldTag&&oldTag!==ib.tag){
+    delete inboundRouteMap[oldTag];
+  }
+  closeModal('modal-edit-inbound');
+  await saveInbounds();
+  await loadInbounds();
+}
+
+async function deleteInbound(){
+  if(editingIdx<0)return;
+  const ib=inboundsData[editingIdx];
+  if(!confirm('确定删除入站 '+ib.tag+'?'))return;
+  delete inboundRouteMap[ib.tag];
+  inboundsData.splice(editingIdx,1);
+  closeModal('modal-edit-inbound');
+  await saveInbounds();
+  await loadInbounds();
+}
+
+async function saveInbounds(){
+  const rd=await api('/api/routing');
+  let routing=(rd&&rd.routing)||{rules:[]};
+  const rules=(routing.rules||[]).filter(r=>!(r.inboundTag&&r.inboundTag.some(t=>inboundsData.some(ib=>ib.tag===t))));
+  for(const ib of inboundsData){
+    const out=inboundRouteMap[ib.tag];
+    if(out){
+      const rule={type:'field', inboundTag:[ib.tag]};
+      // Check if it's a balancer
+      if(routing.balancers&&routing.balancers.some(b=>b.tag===out)){
+        rule.balancerTag=out;
+      } else {
+        rule.outboundTag=out;
+      }
+      rules.unshift(rule);
+    }
+  }
+  routing.rules=rules;
+  const d=await api('/api/inbounds',{method:'POST',body:JSON.stringify({inbounds:inboundsData,routing})});
+  if(d&&d.ok){toast('入站已保存'+(d.restart&&d.restart.success?'，核心已重启':''));}
+}
+
+
+// ==== node-form:begin ====
+const OF_NET_KEYS={tcp:['tcpSettings','rawSettings'],raw:['tcpSettings','rawSettings'],ws:['wsSettings'],grpc:['grpcSettings'],xhttp:['xhttpSettings','splithttpSettings'],httpupgrade:['httpupgradeSettings'],kcp:['kcpSettings'],http:['httpSettings'],h2:['httpSettings']};
+const OF_ALL_NET_KEYS=['tcpSettings','rawSettings','wsSettings','grpcSettings','xhttpSettings','splithttpSettings','httpupgradeSettings','kcpSettings','httpSettings'];
+const OF_SS_METHODS=['aes-128-gcm','aes-256-gcm','chacha20-ietf-poly1305','xchacha20-ietf-poly1305','2022-blake3-aes-128-gcm','2022-blake3-aes-256-gcm','2022-blake3-chacha20-poly1305','none'];
+let editingOutboundBase=null;
+function ofEl(id){return document.getElementById(id);}
+function ofv(id){const e=ofEl(id);if(!e)return '';return e.type==='checkbox'?!!e.checked:String(e.value??'').trim();}
+function ofset(id,v){const e=ofEl(id);if(!e)return;if(e.type==='checkbox'){e.checked=!!v;return;}
+  const val=(v===undefined||v===null)?'':String(v);
+  // keep values the select does not list (e.g. kcp, randomizednoalpn) instead of silently dropping them
+  if(e.tagName==='SELECT'&&val!==''&&![...e.options].some(o=>o.value===val)){const o=document.createElement('option');o.value=val;o.textContent=val;o.dataset.extra='1';e.appendChild(o);}
+  e.value=val;}
+function ofClone(o){return o===undefined?undefined:JSON.parse(JSON.stringify(o));}
+function ofSetOrDel(obj,key,val){if(val===''||val===undefined||val===null||(Array.isArray(val)&&!val.length))delete obj[key];else obj[key]=val;}
+
+function ofRefresh(){
+  const proto=ofv('of-protocol'),net=ofv('of-network'),sec=ofv('of-tls-mode');
+  if(!document.querySelectorAll)return;
+  document.querySelectorAll('#mob-pane-form [data-proto],#mob-pane-form [data-net],#mob-pane-form [data-sec]').forEach(el=>{
+    const ok=(!el.dataset.proto||el.dataset.proto.split(' ').includes(proto))&&(!el.dataset.net||el.dataset.net.split(' ').includes(net))&&(!el.dataset.sec||el.dataset.sec.split(' ').includes(sec));
+    el.classList.toggle('hidden',!ok);
+  });
+  const idLabel={vless:'UUID',vmess:'UUID',trojan:'密码',shadowsocks:'密码'}[proto]||'UUID';
+  ofEl('of-id-label').textContent=idLabel;
+  ofEl('of-security-label').textContent={vless:'加密 (encryption)',vmess:'加密 (security)',shadowsocks:'加密方法 (method)'}[proto]||'加密';
+  const list={vless:['none'],vmess:['auto','aes-128-gcm','chacha20-poly1305','none','zero'],shadowsocks:OF_SS_METHODS}[proto]||[];
+  ofEl('of-security-list').innerHTML=list.map(x=>`<option value="${x}">`).join('');
+  ofEl('of-path-label').textContent=net==='grpc'?'serviceName':'Path';
+  ofEl('of-mux-conc-field').classList.toggle('hidden',ofv('of-mux')!=='on');
+}
+
+function outboundToForm(ob){
+  ob=ob||{};
+  const p=ob.protocol||'vless';
+  ofset('of-tag',ob.tag||'');
+  ofset('of-protocol',p);
+  let address='',port='',ident='',sec='',flow='';
+  try{
+    if(p==='shadowsocks'||p==='trojan'){
+      const s=(ob.settings&&ob.settings.servers&&ob.settings.servers[0])||{};
+      address=s.address||'';port=s.port||'';ident=s.password||'';sec=p==='shadowsocks'?(s.method||''):'';flow=s.flow||'';
+    }else{
+      const v=(ob.settings&&ob.settings.vnext&&ob.settings.vnext[0])||{};const u=(v.users&&v.users[0])||{};
+      address=v.address||'';port=v.port||'';ident=u.id||'';sec=p==='vmess'?(u.security||''):(u.encryption||'');flow=u.flow||'';
+    }
+  }catch(e){}
+  ofset('of-address',address);ofset('of-port',port);ofset('of-id',ident);ofset('of-security',sec);ofset('of-flow',flow);
+  const ss=ob.streamSettings||{};
+  let net=ss.network||'tcp'; if(net==='raw')net='tcp'; if(net==='splithttp')net='xhttp';
+  ofset('of-network',net);
+  ofset('of-tls-mode',ss.security||'none');
+  const tls=ss.tlsSettings||{},rl=ss.realitySettings||{};
+  const t=ss.security==='reality'?rl:tls;
+  ofset('of-sni',t.serverName||'');
+  ofset('of-fp',t.fingerprint||'');
+  ofset('of-alpn',Array.isArray(tls.alpn)?tls.alpn.join(','):'');
+  ofset('of-pcs',tls.pinnedPeerCertSha256||'');
+  ofset('of-ech',tls.echConfigList||'');
+  ofset('of-ech-force',tls.echForceQuery||'full');
+  ofset('of-pbk',rl.publicKey||'');ofset('of-sid',rl.shortId||'');ofset('of-spx',rl.spiderX||'');
+  let host='',path='',mode='',extra='',multi='false';
+  if(net==='ws'){const w=ss.wsSettings||{};host=w.host||(w.headers&&w.headers.Host)||'';path=w.path||'';}
+  else if(net==='httpupgrade'){const h=ss.httpupgradeSettings||{};host=h.host||'';path=h.path||'';}
+  else if(net==='xhttp'){const x=ss.xhttpSettings||ss.splithttpSettings||{};host=x.host||'';path=x.path||'';mode=x.mode||'';extra=x.extra&&Object.keys(x.extra).length?JSON.stringify(x.extra,null,2):'';}
+  else if(net==='grpc'){const g=ss.grpcSettings||{};path=g.serviceName||'';multi=g.multiMode?'true':'false';}
+  ofset('of-host',host);ofset('of-path',path);ofset('of-xhttp-mode',mode==='auto'?'':mode);ofset('of-xhttp-extra',extra);ofset('of-grpc-multi',multi);
+  const mux=ob.mux||{};
+  ofset('of-mux',mux.enabled?'on':'off');ofset('of-mux-conc',mux.enabled&&mux.concurrency!==undefined?mux.concurrency:'');
+  ofset('of-tfo',!!(ss.sockopt&&ss.sockopt.tcpFastOpen));
+  ofRefresh();
+}
+
+// Builds the outbound from the form on top of `base` (the node being edited), so
+// every field the form does not know about is preserved unchanged.
+function formToOutbound(base){
+  const protocol=ofv('of-protocol');
+  const sameProto=!!(base&&base.protocol===protocol);
+  const ob=sameProto?ofClone(base):(base?Object.fromEntries(Object.entries(ofClone(base)).filter(([k])=>!['settings','protocol'].includes(k))):{});
+  ob.tag=ofv('of-tag')||'new-node';
+  ob.protocol=protocol;
+  const address=ofv('of-address');
+  const port=parseInt(ofv('of-port')||'0',10);
+  if(!address)throw new Error('请填写服务器地址');
+  if(!(port>=1&&port<=65535))throw new Error('端口无效');
+  const ident=ofv('of-id'),sec=ofv('of-security'),flow=ofv('of-flow');
+  const settings=sameProto&&ob.settings?ob.settings:{};
+  if(protocol==='shadowsocks'||protocol==='trojan'){
+    const servers=Array.isArray(settings.servers)&&settings.servers.length?settings.servers:[{}];
+    const s=servers[0];s.address=address;s.port=port;s.password=ident;
+    if(protocol==='shadowsocks'){s.method=sec||'aes-128-gcm';if(!sameProto){s.ota=false;s.level=1;}}
+    else ofSetOrDel(s,'flow',flow);
+    settings.servers=servers;delete settings.vnext;
+  }else{
+    const vnext=Array.isArray(settings.vnext)&&settings.vnext.length?settings.vnext:[{}];
+    const v=vnext[0];v.address=address;v.port=port;
+    const users=Array.isArray(v.users)&&v.users.length?v.users:[{}];const u=users[0];u.id=ident;
+    if(protocol==='vmess'){u.security=sec||'auto';if(u.alterId===undefined)u.alterId=0;delete u.encryption;delete u.flow;}
+    else{u.encryption=sec||'none';ofSetOrDel(u,'flow',flow);}
+    v.users=users;settings.vnext=vnext;delete settings.servers;
+  }
+  ob.settings=settings;
+
+  const ss=ofClone(ob.streamSettings)||{};
+  const net=ofv('of-network');
+  const keepNet=(ss.network==='raw'&&net==='tcp')?'raw':(ss.network==='splithttp'&&net==='xhttp'?'splithttp':net);
+  ss.network=keepNet;
+  const own=OF_NET_KEYS[net]||[];
+  for(const k of OF_ALL_NET_KEYS){if(!own.includes(k))delete ss[k];}
+  const host=ofv('of-host'),path=ofv('of-path');
+  if(net==='ws'){
+    const w=ss.wsSettings||{};w.path=path||'/';ofSetOrDel(w,'host',host);
+    if(w.headers&&w.headers.Host!==undefined){delete w.headers.Host;}
+    ss.wsSettings=w;
+  }else if(net==='httpupgrade'){
+    const h=ss.httpupgradeSettings||{};h.path=path||'/';ofSetOrDel(h,'host',host);ss.httpupgradeSettings=h;
+  }else if(net==='xhttp'){
+    const key=ss.splithttpSettings&&!ss.xhttpSettings?'splithttpSettings':'xhttpSettings';
+    const x=ss[key]||{};x.path=path||'/';ofSetOrDel(x,'host',host);ofSetOrDel(x,'mode',ofv('of-xhttp-mode'));
+    const extraRaw=ofv('of-xhttp-extra');
+    if(extraRaw){let e;try{e=JSON.parse(extraRaw);}catch(err){throw new Error('XHTTP extra 不是合法 JSON: '+err.message);}
+      if(!e||typeof e!=='object'||Array.isArray(e))throw new Error('XHTTP extra 必须是 JSON 对象');x.extra=e;}
+    else delete x.extra;
+    ss[key]=x;
+  }else if(net==='grpc'){
+    const g=ss.grpcSettings||{};g.serviceName=path==='/'?'':path;
+    if(ofv('of-grpc-multi')==='true')g.multiMode=true;else delete g.multiMode;ss.grpcSettings=g;
+  }
+  const mode=ofv('of-tls-mode');
+  ss.security=mode;
+  const sni=ofv('of-sni'),fp=ofv('of-fp');
+  if(mode==='tls'){
+    const t=ss.tlsSettings||{};
+    ofSetOrDel(t,'serverName',sni||host||(t.serverName?'':address));
+    ofSetOrDel(t,'fingerprint',fp);
+    ofSetOrDel(t,'alpn',ofv('of-alpn').split(',').map(s=>s.trim()).filter(Boolean));
+    ofSetOrDel(t,'pinnedPeerCertSha256',ofv('of-pcs'));
+    const ech=ofv('of-ech');
+    if(ech){t.echConfigList=ech;t.echForceQuery=ofv('of-ech-force')||'full';}else{delete t.echConfigList;delete t.echForceQuery;}
+    ss.tlsSettings=t;delete ss.realitySettings;
+  }else if(mode==='reality'){
+    const r=ss.realitySettings||{};
+    ofSetOrDel(r,'serverName',sni||address);ofSetOrDel(r,'fingerprint',fp||'chrome');
+    ofSetOrDel(r,'publicKey',ofv('of-pbk'));ofSetOrDel(r,'shortId',ofv('of-sid'));ofSetOrDel(r,'spiderX',ofv('of-spx'));
+    if(!r.publicKey)throw new Error('REALITY 需要公钥 (pbk)');
+    ss.realitySettings=r;delete ss.tlsSettings;
+  }else{delete ss.tlsSettings;delete ss.realitySettings;}
+  const sock=ss.sockopt||{};
+  if(ofv('of-tfo'))sock.tcpFastOpen=true;else delete sock.tcpFastOpen;
+  if(Object.keys(sock).length)ss.sockopt=sock;else delete ss.sockopt;
+  ob.streamSettings=ss;
+  if(ofv('of-mux')==='on'){
+    const c=parseInt(ofv('of-mux-conc')||'8',10);
+    ob.mux=Object.assign({},ob.mux||{},{enabled:true,concurrency:Number.isFinite(c)?c:8});
+  }else if(ob.mux){ob.mux=Object.assign({},ob.mux,{enabled:false});}
+  return ob;
+}
+
+function _shareQuery(params){
+  return Object.entries(params).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
+}
+function _b64utf8(s){return btoa(unescape(encodeURIComponent(s)));}
+
+// Transport + security params shared by vless / trojan / ss(Xray style) links.
+function _streamShareParams(ss){
+  const p={};
+  const net0=ss.network||'tcp';
+  const net=net0==='raw'?'tcp':(net0==='splithttp'?'xhttp':net0);
+  const sec=ss.security||'none';
+  if(net!=='tcp')p.type=net;
+  if(sec!=='none')p.security=sec;
+  if(sec==='tls'){
+    const t=ss.tlsSettings||{};
+    p.sni=t.serverName;p.fp=t.fingerprint;
+    if(Array.isArray(t.alpn)&&t.alpn.length)p.alpn=t.alpn.join(',');
+
+    if(t.echConfigList){p.ech=t.echConfigList;if(t.echForceQuery&&t.echForceQuery!=='full')p.echForceQuery=t.echForceQuery;}
+    if(t.pinnedPeerCertSha256)p.pcs=t.pinnedPeerCertSha256;
+  }else if(sec==='reality'){
+    const r=ss.realitySettings||{};
+    p.sni=r.serverName;p.fp=r.fingerprint;p.pbk=r.publicKey;p.sid=r.shortId;p.spx=r.spiderX;p.pqv=r.mldsa65Verify;
+  }
+  if(net==='ws'){const w=ss.wsSettings||{};p.host=w.host||(w.headers&&w.headers.Host);p.path=w.path;}
+  else if(net==='httpupgrade'){const h=ss.httpupgradeSettings||{};p.host=h.host;p.path=h.path;}
+  else if(net==='xhttp'){const x=ss.xhttpSettings||ss.splithttpSettings||{};p.host=x.host;p.path=x.path;p.mode=x.mode;
+    if(x.extra&&Object.keys(x.extra).length)p.extra=JSON.stringify(x.extra);}
+  else if(net==='grpc'){const g=ss.grpcSettings||{};p.serviceName=g.serviceName;if(g.multiMode)p.mode='multi';p.authority=g.authority;}
+  else if(net==='tcp'){const h=((ss.tcpSettings||ss.rawSettings||{}).header)||{};
+    if(h.type==='http'){p.headerType='http';const rq=h.request||{};const hh=(rq.headers&&(rq.headers.Host||rq.headers.host))||[];
+      p.host=Array.isArray(hh)?hh.join(','):hh;p.path=Array.isArray(rq.path)?rq.path[0]:rq.path;}}
+  else if(net==='kcp'){const k=ss.kcpSettings||{};p.headerType=k.header&&k.header.type;p.seed=k.seed;}
+  return p;
+}
+
+function outboundToShareLink(ob){
+  const p=ob.protocol||'';
+  const ss=ob.streamSettings||{};
+  const frag='#'+encodeURIComponent(ob.tag||'');
+  try{
+    if(p==='vless'){
+      const v=ob.settings.vnext[0];const u=v.users[0];
+      const params=Object.assign({encryption:u.encryption||'none',flow:u.flow},_streamShareParams(ss));
+      return 'vless://'+encodeURIComponent(u.id)+'@'+v.address+':'+v.port+'?'+_shareQuery(params)+frag;
+    }
+    if(p==='trojan'){
+      const s=ob.settings.servers[0];
+      const params=Object.assign({flow:s.flow},_streamShareParams(ss));
+      const q=_shareQuery(params);
+      return 'trojan://'+encodeURIComponent(s.password)+'@'+s.address+':'+s.port+(q?'?'+q:'')+frag;
+    }
+    if(p==='vmess'){
+      const v=ob.settings.vnext[0];const u=v.users[0];
+      const sp=_streamShareParams(ss);
+      const obj={v:'2',ps:ob.tag||'',add:String(v.address),port:String(v.port),id:u.id,aid:String(u.alterId||0),scy:u.security||'auto',
+        net:sp.type||'tcp',type:sp.headerType||'none',host:sp.host||'',path:(sp.type==='grpc'?sp.serviceName:sp.path)||'',tls:sp.security||'',sni:sp.sni||''};
+      if(sp.fp)obj.fp=sp.fp;if(sp.alpn)obj.alpn=sp.alpn;
+      if(sp.mode&&sp.type==='xhttp')obj.mode=sp.mode;if(sp.extra)obj.extra=sp.extra;
+      return 'vmess://'+_b64utf8(JSON.stringify(obj));
+    }
+    if(p==='shadowsocks'){
+      const s=ob.settings.servers[0];
+      const user=_b64utf8(s.method+':'+s.password).replace(/=+$/,'');
+      const base='ss://'+user+'@'+s.address+':'+s.port;
+      const net=ss.network||'tcp';
+      if(net==='tcp'||net==='raw'){
+        return base+frag;
+      }
+      if(net==='ws'&&(ss.security||'none')!=='reality'){
+        // v2ray-plugin form: understood by v2rayN / Shadowrocket / Clash. SIP003: escape \ ; = in values.
+        const w=ss.wsSettings||{};const esc=x=>String(x).replace(/[\\;=]/g,c=>'\\'+c);
+        const parts=['v2ray-plugin','mode=websocket'];
+        const host=w.host||(w.headers&&w.headers.Host);
+        if(ss.security==='tls'){parts.push('tls');const sni=(ss.tlsSettings||{}).serverName;if(sni&&sni!==host)parts.push('sni='+esc(sni));}
+        if(host)parts.push('host='+esc(host));
+        if(w.path)parts.push('path='+esc(w.path));
+        return base+'/?plugin='+encodeURIComponent(parts.join(';'))+frag;
+      }
+      return base+'?'+_shareQuery(_streamShareParams(ss))+frag;
+    }
+  }catch(e){console.error('export error:',e);}
+  return null;
+}
+// ==== node-form:end ====
+function saveFormOutbound(){
+  try{
+    const ob=formToOutbound(editingOutboundBase);
+    document.getElementById('eo-json').value=JSON.stringify(ob,null,2);
+    switchObModalTab('json');
+    toast('已根据表单生成 JSON，确认后保存');
+  }catch(e){ toast('表单校验失败: '+e.message,false); }
+}
+
+
+function showAddOutboundModal(){
+  editingOutboundIdx=-1;
+  editingOutboundBase=null;
+  document.getElementById('modal-ob-title').textContent='新增节点';
+  document.getElementById('vless-link').value='';
+  document.getElementById('eo-json').value=JSON.stringify({tag:'new-proxy',protocol:'vless',settings:{vnext:[{address:'example.com',port:443,users:[{id:'UUID',encryption:'none'}]}]},streamSettings:{network:'ws',security:'tls',tlsSettings:{serverName:'example.com',allowInsecure:false},wsSettings:{host:'example.com',path:'/'}}}, null, 2);
+  outboundToForm(JSON.parse(document.getElementById('eo-json').value));
+  switchObModalTab('link');
+  document.getElementById('modal-outbound').classList.add('show');
+}
+
+function editOutbound(idx){
+  editingOutboundIdx=idx;
+  document.getElementById('modal-ob-title').textContent='编辑节点 · '+(outboundsData[idx].tag||'');
+  editingOutboundBase=outboundsData[idx];
+  document.getElementById('eo-json').value=JSON.stringify(outboundsData[idx], null, 2);
+  outboundToForm(outboundsData[idx]);
+  switchObModalTab('form');
+  document.getElementById('modal-outbound').classList.add('show');
+}
+
+function switchObModalTab(tab){
+  const isLink=tab==='link';
+  const isForm=tab==='form';
+  if(isForm){
+    // keep the form in sync with hand edits made in the JSON tab
+    try{ const ob=JSON.parse(document.getElementById('eo-json').value); if(ob&&typeof ob==='object'){ editingOutboundBase=ob; outboundToForm(ob);} }catch(e){}
+  }
+  document.getElementById('mob-tab-link').className='tab'+(isLink?' active':'');
+  document.getElementById('mob-tab-form').className='tab'+(isForm?' active':'');
+  document.getElementById('mob-tab-json').className='tab'+((!isLink&&!isForm)?' active':'');
+  document.getElementById('mob-pane-link').style.display=isLink?'block':'none';
+  document.getElementById('mob-pane-form').style.display=isForm?'block':'none';
+  document.getElementById('mob-pane-json').style.display=(!isLink&&!isForm)?'block':'none';
+}
+
+
+let routingCustom=[];
+let routingProxyTarget='__proxy__';
+let routingBypass=[];
+const RT_TYPE_LABEL={domain:'域名',full:'完整域名',keyword:'关键词',geosite:'域名集',regexp:'正则',ip:'IP',geoip:'IP 集',port:'端口',sourceIP:'来源 IP',network:'网络',protocol:'协议',inboundTag:'入站'};
+const RT_HINTS={domain:'每行或逗号分隔，如 openai.com',full:'精确匹配，如 api.openai.com',keyword:'包含即匹配，如 google',geosite:'如 openai、google、category-ads-all、cn',ip:'如 1.2.3.4、10.0.0.0/8',geoip:'如 cn、private、telegram',port:'如 443、8000-9000',sourceIP:'局域网设备，如 192.168.1.23'};
+const RT_PRESETS={
+  ads:{type:'geosite',vals:['category-ads-all'],act:'block',remark:'广告拦截'},
+  ai:{type:'geosite',vals:['openai','anthropic','google-gemini'],act:'proxy',remark:'AI 服务'},
+  kiro:{type:'domain',vals:['kiro.dev','amazonaws.com','aws.dev','awsstatic.com'],act:'proxy',remark:'Kiro / AWS'},
+  google:{type:'geosite',vals:['google','youtube'],act:'proxy',remark:'Google / YouTube'},
+  github:{type:'geosite',vals:['github'],act:'proxy',remark:'GitHub'},
+  apple:{type:'geosite',vals:['apple-cn'],act:'direct',remark:'Apple 国内服务'},
+  bt:{type:'protocol',vals:['bittorrent'],act:'direct',remark:'BT 下载'},
+};
+
+function routingTypeHint(){
+  const t=document.getElementById('rt-cond-type').value;
+  document.getElementById('rt-hint').textContent=RT_HINTS[t]||'';
+  document.getElementById('rt-bypass-btn').disabled=!['ip','sourceIP'].includes(t)||t==='sourceIP';
+}
+
+function rtSplit(s){return String(s||'').split(/[\s,，;；]+/).map(x=>x.trim()).filter(Boolean);}
+
+// UI type + values -> Xray rule match fields
+function rtBuildMatch(type,vals){
+  const m={};
+  if(type==='domain')m.domain=vals.map(v=>/^(domain|full|keyword|regexp|geosite|ext):/.test(v)?v:'domain:'+v.replace(/^\*?\./,''));
+  else if(type==='full')m.domain=vals.map(v=>v.startsWith('full:')?v:'full:'+v);
+  else if(type==='keyword')m.domain=vals.map(v=>v.startsWith('keyword:')?v:'keyword:'+v);
+  else if(type==='geosite')m.domain=vals.map(v=>v.startsWith('geosite:')?v:'geosite:'+v);
+  else if(type==='ip')m.ip=vals;
+  else if(type==='geoip')m.ip=vals.map(v=>v.startsWith('geoip:')?v:'geoip:'+v);
+  else if(type==='port')m.port=vals.join(',');
+  else if(type==='sourceIP')m.sourceIP=vals;
+  else if(type==='protocol')m.protocol=vals;
+  return m;
+}
+
+function rtDescribe(r){
+  const out=[];
+  for(const [k,label] of [['domain',null],['ip',null],['sourceIP','来源 IP'],['port','端口'],['network','网络'],['protocol','协议'],['inboundTag','入站']]){
+    if(r[k]===undefined)continue;
+    const vals=Array.isArray(r[k])?r[k]:[r[k]];
+    let type=label;
+    if(k==='domain'){const p=String(vals[0]).split(':')[0];type=RT_TYPE_LABEL[p]||'域名';}
+    if(k==='ip'){type=String(vals[0]).startsWith('geoip:')?'IP 集':'IP';}
+    out.push({type,vals});
+  }
+  return out;
+}
+
+function rtTargetLabel(r){
+  const t=r.balancerTag||r.outboundTag||'';
+  if(t===routingProxyTarget)return '<span class="tag us">走代理（当前节点）</span>';
+  if(t==='direct')return '<span class="tag kr">直连</span>';
+  if(t==='block')return '<span class="tag red">阻断</span>';
+  return `<span class="tag us">代理 · ${escapeHtml(t)}</span>`;
+}
+
+function routingRenderCustom(){
+  const tb=document.getElementById('rt-custom-tbody');
+  if(!routingCustom.length){tb.innerHTML='<tr><td colspan="6" class="empty">暂无自定义规则，可在上方添加或点常用模板</td></tr>';return;}
+  tb.innerHTML=routingCustom.map((r,i)=>{
+    const d=rtDescribe(r);
+    const type=d.map(x=>`<span class="tag default">${x.type}</span>`).join(' ');
+    const vals=d.map(x=>x.vals.map(v=>`<code>${escapeHtml(String(v).replace(/^(domain|full|keyword|geosite|geoip):/,''))}</code>`).join('')).join('');
+    return `<tr>
+      <td style="color:var(--text2)">${i+1}</td><td>${type}</td><td><div class="match-vals">${vals}</div></td>
+      <td>${rtTargetLabel(r)}</td><td style="font-family:inherit;color:var(--text3)">${escapeHtml(r.remark||'')}</td>
+      <td><div class="ob-actions">
+        <button class="btn sm" onclick="routingMove(${i},-1)" ${i===0?'disabled':''}>上移</button>
+        <button class="btn sm" onclick="routingMove(${i},1)" ${i>=routingCustom.length-1?'disabled':''}>下移</button>
+        <button class="btn sm danger" onclick="routingDelete(${i})">删除</button></div></td></tr>`;
+  }).join('');
+}
+
+function routingRenderRules(){
+  const rules=(routingData.rules||[]).filter(r=>!String(r.ruleTag||'').startsWith('user:'));
+  const tb=document.getElementById('routing-tbody');
+  if(!rules.length){tb.innerHTML='<tr><td colspan="4" class="empty">尚未连接，暂无系统规则</td></tr>';return;}
+  tb.innerHTML=rules.map((r,i)=>{
+    const d=rtDescribe(r);
+    const type=d.length?d.map(x=>`<span class="tag default">${x.type}</span>`).join(' '):'<span class="tag default">全部</span>';
+    const vals=d.map(x=>x.vals.map(v=>`<code>${escapeHtml(v)}</code>`).join('')).join('');
+    const ob=r.outboundTag||(r.balancerTag?r.balancerTag+'（负载均衡）':'-');
+    const cls=ob==='direct'?'tag kr':ob==='block'?'tag red':'tag us';
+    return `<tr class="ob-system"><td>${i+1}</td><td>${type}</td><td><div class="match-vals">${vals}</div></td><td><span class="${cls}">${escapeHtml(ob)}</span></td></tr>`;
+  }).join('');
+}
+
+function routingRenderBypass(){
+  const el=document.getElementById('rt-bypass-list');
+  el.innerHTML=routingBypass.length?routingBypass.map((c,i)=>`<span class="chip">${escapeHtml(c)}<span class="x" onclick="routingRemoveBypass(${i})" title="删除">✕</span></span>`).join(''):'<span>暂无自定义绕过</span>';
+}
+
+function routingSetDirty(on){document.getElementById('rt-dirty').style.display=on?'inline':'none';}
+
+async function loadRouting(){
+  const [d,c,b]=await Promise.all([api('/api/routing'),api('/api/routing/custom'),api('/api/transparent/bypass')]);
+  if(d)routingData=d.routing||{};
+  if(c){routingCustom=c.rules||[];routingProxyTarget=c.proxy_target||'__proxy__';}
+  if(b)routingBypass=b.custom||[];
+  routingRenderRules();routingRenderCustom();routingRenderBypass();routingSetDirty(false);routingTypeHint();
+  routingLoadOutbounds();
+}
+
+async function routingLoadOutbounds(){
+  const d=await api('/api/outbounds');
+  if(!d)return;
+  const sel=document.getElementById('rt-outbound');
+  let opts=`<option value="${routingProxyTarget}">当前连接的节点（推荐）</option>`;
+  for(const ob of (d.outbounds||[])){
+    if(['freedom','blackhole','dns'].includes(ob.protocol))continue;
+    opts+=`<option value="${escapeHtml(ob.tag)}">${escapeHtml(ob.tag)} (${ob.protocol})</option>`;
+  }
+  for(const b of (routingData.balancers||[]))opts+=`<option value="bal:${escapeHtml(b.tag)}">${escapeHtml(b.tag)}（负载均衡）</option>`;
+  sel.innerHTML=opts;
+}
+
+function routingPushRule(match,act,remark){
+  const rule=Object.assign({type:'field'},match);
+  if(act==='direct'||act==='block')rule.outboundTag=act;
+  else{const t=document.getElementById('rt-outbound').value||routingProxyTarget;
+    if(t.startsWith('bal:'))rule.balancerTag=t.slice(4);else rule.outboundTag=t;}
+  if(remark)rule.remark=remark;
+  routingCustom.push(rule);
+  routingRenderCustom();routingSetDirty(true);
+}
+
+function routingAdd(act){
+  const type=document.getElementById('rt-cond-type').value;
+  const vals=rtSplit(document.getElementById('rt-cond-value').value);
+  if(!vals.length){toast('请填写匹配值',false);return;}
+  if(type==='ip'||type==='sourceIP'){
+    const bad=vals.filter(v=>!/^!?[0-9a-fA-F:.]+(\/\d{1,3})?$/.test(v));
+    if(bad.length){toast('IP 格式不正确: '+bad.join(', '),false);return;}
+  }
+  if(type==='port'&&!vals.every(v=>/^\d{1,5}(-\d{1,5})?$/.test(v))){toast('端口格式不正确',false);return;}
+  routingPushRule(rtBuildMatch(type,vals),act,document.getElementById('rt-remark').value.trim());
+  document.getElementById('rt-cond-value').value='';document.getElementById('rt-remark').value='';
+  toast('已添加，点击“保存并生效”应用');
+}
+
+function routingPreset(key){
+  const p=RT_PRESETS[key];if(!p)return;
+  routingPushRule(rtBuildMatch(p.type,p.vals),p.act,p.remark);
+  toast('已添加“'+p.remark+'”，点击“保存并生效”应用');
+}
+
+function routingMove(i,delta){
+  const j=i+delta;if(j<0||j>=routingCustom.length)return;
+  [routingCustom[i],routingCustom[j]]=[routingCustom[j],routingCustom[i]];
+  routingRenderCustom();routingSetDirty(true);
+}
+function routingDelete(i){routingCustom.splice(i,1);routingRenderCustom();routingSetDirty(true);}
+
+async function routingSaveCustom(){
+  const box=document.getElementById('routing-output');
+  box.style.display='block';box.textContent='保存中...';
+  const d=await api('/api/routing/custom',{method:'POST',body:JSON.stringify({rules:routingCustom})});
+  if(d&&d.ok){box.textContent='已保存并生效'+(d.restart&&d.restart.success?'，核心已重启':'');toast('路由规则已生效');loadRouting();}
+  else box.textContent='保存失败: '+(d&&d.error||'unknown')+(d&&d.detail?'\n'+d.detail:'');
+}
+
+async function routingSaveBypass(list){
+  const r=await api('/api/transparent/bypass',{method:'POST',body:JSON.stringify({custom:list})});
+  if(r&&r.ok){routingBypass=r.custom||[];routingRenderBypass();toast('绕过列表已更新'+(r.reloaded?'，iptables 已重建':''));return true;}
+  toast('保存失败: '+(r&&r.error||''),false);return false;
+}
+async function routingAddBypass(){
+  const vals=rtSplit(document.getElementById('rt-cond-value').value);
+  if(!vals.length){toast('请填写 IP / CIDR',false);return;}
+  if(await routingSaveBypass([...new Set([...routingBypass,...vals])]))document.getElementById('rt-cond-value').value='';
+}
+function routingRemoveBypass(i){const l=routingBypass.slice();l.splice(i,1);routingSaveBypass(l);}
+
+async function loadDns(){
+  const d=await api('/api/dns');
+  if(!d)return;
+  const dns=d.dns||{};
+  const servers=Array.isArray(dns.servers)?dns.servers:[];
+  document.getElementById('dns-servers').value=servers.map(s=>typeof s==='string'?s:JSON.stringify(s)).join('\n');
+  document.getElementById('dns-client-ip').value=dns.clientIp||'';
+  dnsLoaded=dns;
+}
+let dnsLoaded=null;
+
+async function saveDns(){
+  if(!dnsLoaded){toast('DNS 配置尚未加载',false);return;}
+  const servers=document.getElementById('dns-servers').value.split('\n').map(s=>s.trim()).filter(Boolean).map(s=>{
+    if(s.startsWith('{')){ try{return JSON.parse(s);}catch(e){ return s; } }
+    return s;
+  });
+  // keep hosts (edited in the Hosts card) and any other fields of the current dns block
+  const dns=Object.assign({},dnsLoaded,{servers});
+  const cip=document.getElementById('dns-client-ip').value.trim();
+  if(cip) dns.clientIp=cip; else delete dns.clientIp;
+  const d=await api('/api/dns',{method:'POST',body:JSON.stringify({dns})});
+  if(d&&d.ok) toast('DNS 已保存'+(d.restart&&d.restart.success?'，核心已重启':'')+(d.iptables_rebuilt?'，iptables 已重建':''));
+  else if(d&&d.error) toast(d.error,false);
+}
+
+async function loadDnsHosts(){
+  const d=await api('/api/dns/hosts');
+  if(!d)return;
+  document.getElementById('dns-hosts-editor').value=d.text||'';
+}
+
+async function saveDnsHosts(){
+  const text=document.getElementById('dns-hosts-editor').value;
+  const d=await api('/api/dns/hosts',{method:'POST',body:JSON.stringify({text})});
+  if(d&&d.ok) toast('Hosts 已保存'+(d.restart&&d.restart.success?'，核心已重启':'')+(d.iptables_rebuilt?'，iptables 已重建':''));
+  else if(d&&d.error) toast(d.error,false);
+}
+
+async function loadGeoInfo(){
+  const d=await api('/api/geo/info');
+  if(!d)return;
+  document.getElementById('geo-ip-size').textContent=d['geoip.dat']?d['geoip.dat'].size_human:'N/A';
+  document.getElementById('geo-site-size').textContent=d['geosite.dat']?d['geosite.dat'].size_human:'N/A';
+  document.getElementById('geo-ip-modified').textContent='geoip: '+(d['geoip.dat']?d['geoip.dat'].modified:'N/A');
+  document.getElementById('geo-site-modified').textContent='geosite: '+(d['geosite.dat']?d['geosite.dat'].modified:'N/A');
+  if(d.urls){
+    document.getElementById('geo-ip-url').value=d.urls.geoip||'';
+    document.getElementById('geo-site-url').value=d.urls.geosite||'';
+  }
+}
+
+async function saveGeoUrls(){
+  const geoip=document.getElementById('geo-ip-url').value.trim();
+  const geosite=document.getElementById('geo-site-url').value.trim();
+  const d=await api('/api/geo/urls',{method:'POST',body:JSON.stringify({geoip,geosite})});
+  if(d&&d.ok)toast('Geo URL 已保存');
+  else toast('保存失败',false);
+}
+
+async function updateGeo(){
+  const btn=document.getElementById('geo-update-btn');
+  const status=document.getElementById('geo-update-status');
+  btn.disabled=true;btn.textContent='更新中...';status.textContent='正在下载，请稍候...';
+  try{
+    const d=await api('/api/geo/update',{method:'POST'});
+    if(d&&d.ok){
+      status.innerHTML='<span style="color:var(--green)">✓ 更新成功</span>';
+      if(d.results){
+        for(const[k,v]of Object.entries(d.results)){
+          status.innerHTML+=`<br>${k}: ${v.ok?v.size_human||'OK':'失败 - '+v.error}`;
+        }
+      }
+      loadGeoInfo();
+    }else{
+      status.innerHTML='<span style="color:var(--red)">✗ 更新失败</span>';
+      if(d&&d.results){
+        for(const[k,v]of Object.entries(d.results)){
+          if(!v.ok)status.innerHTML+=`<br>${k}: ${v.error}`;
+        }
+      }
+    }
+  }catch(e){status.innerHTML='<span style="color:var(--red)">✗ 请求异常: '+e.message+'</span>';}
+  finally{btn.disabled=false;btn.textContent='更新 GeoIP/GeoSite';}
+}
+
+async function loadConfig(){
+  const d=await api('/api/config');
+  if(!d)return;
+  configData=d.config;
+  document.getElementById('config-editor').value=d.config;
+}
+
+async function saveConfig(){
+  const val=document.getElementById('config-editor').value;
+  const d=await api('/api/config',{method:'POST',body:JSON.stringify({config:val})});
+  if(d&&d.ok)toast('配置已保存'+(d&&d.restart&&d.restart.success?'，核心已重启':''));
+  else toast('保存失败',false);
+}
+
+async function testConfig(){
+  const d=await api('/api/config/test');
+  if(d)toast(d.ok?'配置校验通过':'配置校验失败: '+d.output.slice(0,200),d.ok);
+}
+
+async function changeToken(){
+  const old=document.getElementById('token-old').value.trim();
+  const nw=document.getElementById('token-new').value.trim();
+  const cf=document.getElementById('token-confirm').value.trim();
+  if(!old||!nw||!cf){toast('请填写所有字段',false);return;}
+  const d=await api('/api/token',{method:'POST',body:JSON.stringify({old,new:nw,confirm:cf})});
+  if(!d){toast('请求失败',false);return;}
+  if(d.error){toast(d.error,false);return;}
+  toast(d.message||'Token 已修改');
+  token=nw;
+  localStorage.setItem('xray_token',token);
+  document.getElementById('token-old').value='';
+  document.getElementById('token-new').value='';
+  document.getElementById('token-confirm').value='';
+}
+
+
+
+let accessMinutes=5;
+let accessTimer=null;
+function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function routeTypeLabel(t){return ({proxy:'代理',direct:'直连',blocked:'拦截'}[t]||t||'');}
+function asInfo(meta){
+  if(!meta)return '<span style="color:var(--text2)">-</span>';
+  const asn=meta.asn?('AS'+meta.asn):'';
+  const name=meta.as_name||'';
+  const cc=meta.country||'';
+  return '<div style="font-size:12px">'+escapeHtml([asn,cc].filter(Boolean).join(' '))+'</div><div style="font-size:11px;color:var(--text2);max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="'+escapeHtml(name)+'">'+escapeHtml(name)+'</div>';
+}
+function targetCell(x){
+  const domains=x.domains||[];
+  if(domains.length){
+    return '<div><code>'+escapeHtml(domains[0])+'</code></div><div style="font-size:11px;color:var(--text2)">'+escapeHtml(x.target||'')+'</div>';
+  }
+  return '<code>'+escapeHtml(x.target||'')+'</code>';
+}
+async function loadAccessStats(minutes){
+  if(minutes)accessMinutes=minutes;
+  const type=document.getElementById('access-type')?.value||'all';
+  const q=document.getElementById('access-search')?.value||'';
+  const d=await api('/api/access-stats?minutes='+accessMinutes+'&type='+encodeURIComponent(type)+'&q='+encodeURIComponent(q));
+  if(!d)return;
+  const summary=document.getElementById('access-summary');
+  if(!d.ok){
+    summary.innerHTML='<span style="color:var(--red)">访问日志不可用：'+escapeHtml(d.error||d.hint||'unknown')+'</span>';
+    document.getElementById('access-records').innerHTML='';
+    return;
+  }
+  summary.innerHTML='最近 <b>'+d.window_minutes+'</b> 分钟：总计 <b>'+d.total+'</b>，代理 <b style="color:var(--green)">'+d.proxy+'</b>，直连 <b>'+d.direct+'</b>，拦截 <b style="color:var(--red)">'+d.blocked+'</b>，补全 <b>'+((d.enriched_targets)||0)+'</b> 个目标 <span style="color:var(--text2);font-size:11px">('+escapeHtml(d.log_file)+')</span>';
+  document.getElementById('access-records').innerHTML=(d.records||[]).map(r=>'<tr><td>'+escapeHtml(r.time)+'</td><td>'+escapeHtml(r.client)+'</td><td>'+targetCell(r)+'</td><td>'+asInfo(r.ip_meta)+'</td><td>'+escapeHtml(r.port||'')+'</td><td>'+escapeHtml(routeTypeLabel(r.route_type))+'</td><td>'+escapeHtml(r.outbound)+'</td></tr>').join('')||'<tr><td colspan="7" style="color:var(--text2)">暂无记录</td></tr>';
+}
+function loadAccessStatsDebounced(){clearTimeout(accessTimer);accessTimer=setTimeout(()=>loadAccessStats(),300);}
+
+async function clearLogs(){
+  if(!confirm('确认清理访问统计、核心/面板日志和 IP 归属缓存？此操作不可恢复。'))return;
+  const d=await api('/api/logs/clear',{method:'POST'});
+  if(!d)return;
+  if(d.ok){
+    toast('已清理统计和日志');
+    await loadAccessStats();
+    await loadLogs(200);
+  }else{
+    toast('清理部分失败: '+JSON.stringify(d.errors||[]));
+  }
+}
+
+let _rawLogs='';
+async function loadLogs(n){
+  const d=await api('/api/logs?lines='+n);
+  if(!d)return;
+  _rawLogs=d.logs;
+  filterLogs();
+  const box=document.getElementById('log-box');
+  box.scrollTop=box.scrollHeight;
+}
+function filterLogs(){
+  const q=(document.getElementById('log-filter').value||'').trim().toLowerCase();
+  const box=document.getElementById('log-box');
+  if(!q){box.textContent=_rawLogs;box.scrollTop=box.scrollHeight;return;}
+  const lines=_rawLogs.split('\n');
+  const matched=lines.filter(l=>l.toLowerCase().includes(q));
+  box.textContent=matched.join('\n')||'(无匹配)';
+  box.scrollTop=box.scrollHeight;
+}
+
+async function loadBackups(){
+  const d=await api('/api/backups');
+  if(!d)return;
+  const el=document.getElementById('backup-list');
+  if(!d.backups.length){el.innerHTML='<p style="color:var(--text2)">暂无备份</p>';return;}
+  el.innerHTML=d.backups.map(p=>`<div class="backup-item"><span>${p.split('/').pop()}</span><button class="btn" onclick="restoreBackup('${p}')">恢复</button></div>`).join('');
+}
+
+function restoreBackup(path){
+  restoreTarget=path;
+  document.getElementById('restore-path').textContent=path;
+  document.getElementById('modal-restore').classList.add('show');
+}
+
+async function confirmRestore(){
+  closeModal('modal-restore');
+  const d=await api('/api/restore',{method:'POST',body:JSON.stringify({path:restoreTarget})});
+  if(d&&d.ok)toast('已恢复');
+}
+
+
+// --- Sysctl ---
+async function loadSysctl(){
+  const d=await api('/api/sysctl');
+  if(!d)return;
+  const tbody=document.getElementById('sysctl-tbody');
+  document.getElementById('sysctl-hint').innerHTML=d.writable
+    ?'<span style="color:var(--green)">可直接修改宿主机参数</span>'+(d.persist?'，持久化到 '+escapeHtml(d.persist):'，<span style="color:var(--yellow)">未挂载宿主机 /etc/sysctl.d，重启后失效</span>')
+    :'<span style="color:var(--yellow)">当前容器内 /proc/sys 只读，保存不会生效。启动容器时加上 -v /proc/sys/net:/host/proc/sys/net -v /etc/sysctl.d:/host/etc/sysctl.d</span>';
+  tbody.innerHTML=d.params.map(p=>{
+    const mismatch=p.recommended&&p.value!==p.recommended&&p.value!=='(unavailable)';
+    const rec=p.recommended?`<span style="color:var(--text2)">${escapeHtml(p.recommended)}</span>`:'<span style="color:var(--text2)">—</span>';
+    return `<tr>
+      <td style="font-family:monospace;font-size:12px">${escapeHtml(p.key)}</td>
+      <td style="color:var(--text2);font-size:12px;white-space:normal;min-width:180px">${escapeHtml(p.desc)}</td>
+      <td><input class="sysctl-val" data-key="${escapeHtml(p.key)}" data-orig="${escapeHtml(p.value)}" value="${escapeHtml(p.value)}" style="width:120px;padding:4px;background:var(--bg);color:var(--text);border:1px solid ${mismatch?'var(--yellow)':'var(--border)'};border-radius:4px;font-family:monospace;font-size:12px"></td>
+      <td>${rec}</td>
+      <td>${mismatch?`<button class="btn" style="font-size:11px;padding:2px 8px" onclick="applyOne('${p.key}','${p.recommended}')">应用</button>`:''}</td>
+    </tr>`;
+  }).join('');
+}
+async function saveSysctl(){
+  const changes={};
+  document.querySelectorAll('.sysctl-val').forEach(inp=>{
+    const key=inp.dataset.key;
+    const val=inp.value.trim();
+    if(val&&val!==inp.dataset.orig)changes[key]=val;
+  });
+  if(!Object.keys(changes).length){toast('无修改',false);return;}
+  const d=await api('/api/sysctl',{method:'POST',body:JSON.stringify({changes})});
+  if(d&&d.ok){toast('已生效 '+d.applied.length+' 项'+(d.persisted?'，已写入 '+d.persisted:''));}
+  else toast('部分失败: '+((d&&d.errors)||[d&&d.error||'unknown']).join('；'),false);
+  loadSysctl();
+}
+function applyOne(key,val){
+  const inp=document.querySelector(`.sysctl-val[data-key="${key}"]`);
+  if(inp)inp.value=val;
+}
+async function applyRecommended(){
+  const d=await api('/api/sysctl');
+  if(!d)return;
+  const changes={};
+  d.params.forEach(p=>{if(p.recommended&&p.value!==p.recommended&&p.writable)changes[p.key]=p.recommended;});
+  if(!Object.keys(changes).length){toast('全部已是推荐值');return;}
+  const r=await api('/api/sysctl',{method:'POST',body:JSON.stringify({changes})});
+  if(r&&r.ok){toast('已应用推荐值 ('+r.applied.length+'项)');}
+  else toast('部分失败: '+((r&&r.errors)||[r&&r.error||'unknown']).join('；'),false);
+  loadSysctl();
+}
+
+
+async function loadTpBypass(){
+  const d=await api('/api/transparent/bypass');
+  if(!d)return;
+  const el1=document.getElementById('tp-default-cidrs');
+  const el2=document.getElementById('tp-auto-cidrs');
+  const el3=document.getElementById('tp-custom-cidrs');
+  if(el1)el1.value=(d.defaults||[]).join('\n');
+  if(el2)el2.value=(d.auto||[]).join('\n');
+  if(el3)el3.value=(d.custom||[]).join('\n');
+}
+
+async function loadTpForward(){
+  const d=await api('/api/gateway/status');
+  const el=document.getElementById('gw-body');
+  if(!d||!el)return;
+  const lan=(d.lan||[]);
+  const ip=lan.length?lan[0].ip:'本机局域网 IP';
+  const ifs=d.send_redirects_ifaces||{};
+  const redirOff=d.send_redirects==='0'&&Object.values(ifs).every(v=>v==='0');
+  const redirCmd='sysctl -w net.ipv4.conf.all.send_redirects=0'+Object.keys(ifs).map(i=>' net.ipv4.conf.'+i+'.send_redirects=0').join('');
+  const chk=(cls,txt,title)=>`<span class="check ${cls}" title="${escapeHtml(title||'')}">${txt}</span>`;
+  const checks=[
+    d.transparent?chk('ok','透明代理已启用'):chk('bad','透明代理未启用','勾选上方“启用”后重新连接'),
+    d.ip_forward?chk('ok','IP 转发已开启'):chk('bad','IP 转发未开启','宿主机执行 sysctl -w net.ipv4.ip_forward=1'),
+    d.dns_inbound?chk('ok','DNS 入站 :53'):chk('warn','DNS 入站未就绪'),
+    d.rules_in_sync?chk('ok','iptables 规则最新'):chk(d.transparent?'warn':'','iptables 规则未生效'),
+    redirOff?chk('ok','ICMP 重定向已关闭'):'',
+    d.nft_forward_drop?chk('ok','已放行 Docker FORWARD DROP','宿主机 nftables FORWARD 默认丢弃，已在 DOCKER-USER 放行局域网'):'',
+  ].join('');
+  const rows=lan.length?lan.map(x=>`<span>${escapeHtml(x.iface)} · ${escapeHtml(x.cidr)}</span><b>网关 / DNS 填 ${escapeHtml(x.ip)}</b>`).join(''):'<span>网关 / DNS</span><b>本机局域网 IP</b>';
+  el.innerHTML=`<div class="gw-setup">${rows}
+      <span>手机 IP</span><b>同网段未占用的地址，子网掩码与网段一致</b>
+    </div><div class="gw-checks">${checks}</div>
+    ${redirOff?'':`<details style="margin-top:8px"><summary style="font-size:12px">可选：关闭 ICMP 重定向</summary><div class="log-box" style="margin-top:6px;padding:8px 10px;white-space:normal">不影响正常使用。旁路由接法下，本机给 UDP 等直连流量转发时会顺带告诉设备“这个目标可以直接找路由器”，部分系统会自动记下，之后访问同一 IP 的 TCP 也绕过代理。宿主机执行可避免：<br><code>${escapeHtml(redirCmd)}</code></div></details>`}
+    <p style="font-size:12px;color:var(--text2);margin-top:8px">TCP 全部经过代理；DNS 可以填本机或任意公共 DNS（都会被接管）；QUIC 被拒绝后浏览器自动改用 TCP；其他 UDP（游戏、语音）直连。IPv6 不经过本机，若路由器下发了 IPv6，建议在手机或路由器上关闭。</p>`;
+}
+
+async function tpSaveBypass(){
+  const custom=(document.getElementById('tp-custom-cidrs').value||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  const r=await api('/api/transparent/bypass',{method:'POST',body:JSON.stringify({custom})});
+  if(r&&r.ok){toast('绕过规则已保存');loadTpBypass();}
+  else toast('保存失败',false);
+}
+
+</script>
+<script>
+/* ================= overrides of reused page logic ================= */
+function showBox(id,text){const b=$(id);b.style.display='block';b.textContent=text;}
+
+/* --- routing --- */
+function routingSetDirty(on){markDirty('routing',!!on);}
+function openRuleModal(){routingTypeHint();openModal('modal-rule');}
+function presetMenu(){
+  const L={ads:'广告拦截',ai:'OpenAI / Claude / Gemini 走代理',kiro:'Kiro / AWS 走代理',google:'Google / YouTube 走代理',github:'GitHub 走代理',apple:'Apple 国内服务直连',bt:'BT 下载直连'};
+  return [{header:'添加常用规则'}].concat(Object.keys(L).map(k=>({label:L[k],fn:()=>routingPreset(k)})));
+}
+function routingRenderCustom(){
+  const tb=$('rt-custom-tbody');$('rt-count').textContent=routingCustom.length;
+  if(!routingCustom.length){tb.innerHTML='<tr><td colspan="6" class="empty">还没有自定义规则<br><span class="hint">点「添加规则」或「常用模板」</span></td></tr>';return;}
+  tb.innerHTML=routingCustom.map((r,i)=>{
+    const d=rtDescribe(r);
+    const type=d.map(x=>'<span class="tag default">'+x.type+'</span>').join(' ');
+    const vals=d.map(x=>x.vals.map(v=>'<code>'+escapeHtml(String(v).replace(/^(domain|full|keyword|geosite|geoip):/,''))+'</code>').join('')).join('');
+    return '<tr><td class="muted">'+(i+1)+'</td><td>'+type+'</td><td><div class="match-vals">'+vals+'</div></td><td>'+rtTargetLabel(r)+'</td><td style="font-family:inherit;color:var(--text-2)">'+escapeHtml(r.remark||'')+'</td>'+
+      '<td><div class="ob-actions" style="justify-content:flex-end">'+
+      '<button class="btn ghost icon sm" title="上移" onclick="routingMove('+i+',-1)" '+(i===0?'disabled':'')+'><svg viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></svg></button>'+
+      '<button class="btn ghost icon sm" title="下移" onclick="routingMove('+i+',1)" '+(i>=routingCustom.length-1?'disabled':'')+'><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>'+
+      '<button class="btn ghost icon sm danger" title="删除" onclick="routingDelete('+i+')">'+icon('trash')+'</button></div></td></tr>';
+  }).join('');
+}
+function routingRenderBypass(){
+  $('rt-bypass-list').innerHTML=routingBypass.length?routingBypass.map((c,i)=>'<span class="chip mono">'+escapeHtml(c)+'<span class="x" onclick="routingRemoveBypass('+i+')" title="删除">✕</span></span>').join(''):'<span class="hint">暂无自定义绕过</span>';
+}
+function routingAdd(act){
+  const type=$('rt-cond-type').value, vals=rtSplit($('rt-cond-value').value);
+  if(!vals.length){toast('请填写匹配值',false);return;}
+  if((type==='ip'||type==='sourceIP')&&vals.some(v=>!/^!?[0-9a-fA-F:.]+(\/\d{1,3})?$/.test(v))){toast('IP 格式不正确',false);return;}
+  if(type==='port'&&!vals.every(v=>/^\d{1,5}(-\d{1,5})?$/.test(v))){toast('端口格式不正确',false);return;}
+  routingPushRule(rtBuildMatch(type,vals),act,$('rt-remark').value.trim());
+  $('rt-cond-value').value='';$('rt-remark').value='';closeModal('modal-rule');
+  toast('已添加，点底部「保存并生效」应用');
+}
+function routingPreset(key){
+  const p=RT_PRESETS[key];if(!p)return;
+  routingPushRule(rtBuildMatch(p.type,p.vals),p.act,p.remark);
+  toast('已添加“'+p.remark+'”，点底部「保存并生效」应用');
+}
+async function routingAddBypass(){
+  const vals=rtSplit($('rt-cond-value').value);
+  if(!vals.length){toast('请填写 IP / CIDR',false);return;}
+  if(await routingSaveBypass([...new Set([...routingBypass,...vals])])){$('rt-cond-value').value='';closeModal('modal-rule');}
+}
+async function routingSaveCustom(){
+  const d=await api('/api/routing/custom',{method:'POST',body:JSON.stringify({rules:routingCustom})});
+  if(d&&d.ok){toast('路由规则已生效'+(d.restart&&d.restart.success?'，核心已重启':''));markDirty('routing',false);await loadRouting();return true;}
+  return false;
+}
+
+/* --- dns --- */
+async function saveDns(){
+  if(!dnsLoaded){toast('DNS 配置尚未加载',false);return false;}
+  const servers=$('dns-servers').value.split('\n').map(s=>s.trim()).filter(Boolean).map(s=>{if(s.startsWith('{')){try{return JSON.parse(s);}catch(e){}}return s;});
+  const dns=Object.assign({},dnsLoaded,{servers});
+  const cip=$('dns-client-ip').value.trim(); if(cip)dns.clientIp=cip; else delete dns.clientIp;
+  const d=await api('/api/dns',{method:'POST',body:JSON.stringify({dns})});
+  if(d&&d.ok){toast('DNS 已保存'+(d.restart&&d.restart.success?'，核心已重启':'')+(d.iptables_rebuilt?'，iptables 已重建':''));await loadDns();return true;}
+  return false;
+}
+async function saveDnsHosts(){
+  const d=await api('/api/dns/hosts',{method:'POST',body:JSON.stringify({text:$('dns-hosts-editor').value})});
+  if(d&&d.ok){toast('Hosts 已保存'+(d.restart&&d.restart.success?'，核心已重启':'')+(d.iptables_rebuilt?'，iptables 已重建':''));return true;}
+  return false;
+}
+
+/* --- inbounds --- */
+async function loadInbounds(){
+  const d=await api('/api/inbounds');
+  if(!d)return;
+  inboundsData=d.inbounds||[];inboundRouteMap={};
+  ((d.routing||{}).rules||[]).forEach(r=>{if(r.inboundTag){const dest=r.balancerTag||r.outboundTag||'?';r.inboundTag.forEach(t=>{inboundRouteMap[t]=dest;});}});
+  $('inbounds-tbody').innerHTML=inboundsData.length?inboundsData.map((ib,i)=>{
+    const ob=inboundRouteMap[ib.tag]||'-';
+    const sys=ib.tag==='dns'||ib.tag==='transparent';
+    return '<tr'+(sys?' class="ob-system"':'')+'><td>'+escapeHtml(ib.tag)+'</td><td>'+escapeHtml(ib.protocol)+'</td><td>'+escapeHtml(ib.listen||'0.0.0.0')+'</td><td>'+escapeHtml(ib.port)+'</td><td><span class="tag '+(ob==='direct'?'green':ob==='block'?'red':ob==='-'?'default':'blue')+'">'+escapeHtml(ob)+'</span></td>'+
+      '<td><div class="ob-actions" style="justify-content:flex-end">'+(['socks','http'].includes(ib.protocol)?'<button class="btn sm" onclick="testInbound('+i+')">'+icon('zap')+'测试</button>':'')+'<button class="btn sm" onclick="editInbound('+i+')">编辑</button></div></td></tr>';
+  }).join(''):'<tr><td colspan="6" class="empty">暂无入站</td></tr>';
+}
+async function deleteInbound(){
+  if(editingIdx<0)return;
+  const ib=inboundsData[editingIdx];
+  if(!await confirmDialog({title:'删除入站？',body:'<code>'+escapeHtml(ib.tag)+'</code>（端口 '+escapeHtml(ib.port)+'）将被删除，代理核心会重启。',ok:'删除',danger:true}))return;
+  delete inboundRouteMap[ib.tag];inboundsData.splice(editingIdx,1);
+  closeModal('modal-edit-inbound');await saveInbounds();await loadInbounds();
+}
+
+/* --- logs --- */
+let accessType='all', logLines=200;
+function setAccessType(t){accessType=t;document.querySelectorAll('#ac-type button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));loadAccessStats();}
+async function loadAccessStats(minutes){
+  if(minutes)accessMinutes=minutes;
+  document.querySelectorAll('#ac-range button').forEach(b=>b.classList.toggle('on',+b.dataset.m===accessMinutes));
+  const q=$('access-search').value||'', wrap=$('access-wrap');
+  wrap.classList.add('is-loading');
+  const d=await api('/api/access-stats?minutes='+accessMinutes+'&type='+encodeURIComponent(accessType)+'&q='+encodeURIComponent(q));
+  wrap.classList.remove('is-loading');
+  if(!d)return;
+  const summary=$('access-summary');
+  if(!d.ok){summary.innerHTML='<span style="color:var(--red)">访问日志不可用：'+escapeHtml(d.error||d.hint||'unknown')+'</span>';$('access-records').innerHTML='';return;}
+  summary.innerHTML='最近 '+d.window_minutes+' 分钟共 <b>'+d.total+'</b> 条 · 代理 <b style="color:var(--green)">'+d.proxy+'</b> · 直连 <b>'+d.direct+'</b> · 拦截 <b style="color:var(--red)">'+d.blocked+'</b>';
+  const rt=t=>({proxy:'<span class="tag blue">代理</span>',direct:'<span class="tag green">直连</span>',blocked:'<span class="tag red">拦截</span>'}[t]||escapeHtml(t||''));
+  $('access-records').innerHTML=(d.records||[]).length?(d.records||[]).map(r=>'<tr><td class="nowrap">'+escapeHtml(r.time)+'</td><td>'+escapeHtml(r.client)+'</td><td>'+targetCell(r)+'</td><td>'+asInfo(r.ip_meta)+'</td><td>'+escapeHtml(r.port||'')+'</td><td>'+rt(r.route_type)+'</td><td>'+escapeHtml(r.outbound||'')+'</td></tr>').join(''):'<tr><td colspan="7" class="empty">该时间段没有记录</td></tr>';
+}
+async function loadLogs(n){
+  if(n)logLines=n;
+  document.querySelectorAll('#log-lines button').forEach(b=>b.classList.toggle('on',+b.dataset.n===logLines));
+  const d=await api('/api/logs?lines='+logLines);
+  if(!d)return;
+  _rawLogs=d.logs;filterLogs();
+}
+async function clearLogs(){
+  if(!await confirmDialog({title:'清理统计和日志？',body:'会清空访问统计、核心与面板日志和 IP 归属缓存，无法恢复。',ok:'清理',danger:true}))return;
+  const d=await api('/api/logs/clear',{method:'POST'});
+  if(!d)return;
+  toast(d.ok?'已清理统计和日志':'部分清理失败: '+JSON.stringify(d.errors||[]),!!d.ok);
+  loadAccessStats();loadLogs();
+}
+
+/* --- config / backups --- */
+async function saveConfigConfirm(){
+  if(!await confirmDialog({title:'保存配置？',body:'保存前会自动备份当前配置并校验，保存后重启代理核心，已有连接会断开约 2 秒。',ok:'保存'}))return;
+  saveConfig();
+}
+async function loadBackups(){
+  const d=await api('/api/backups');
+  if(!d)return;
+  const el=$('backup-list');
+  if(!d.backups.length){el.innerHTML='<div class="empty">暂无备份</div>';return;}
+  el.innerHTML=d.backups.map(p=>{
+    const name=p.split('/').pop(), m=name.match(/(\d{8})[-_T]?(\d{6})/);
+    const when=m?m[1].replace(/(\d{4})(\d\d)(\d\d)/,'$1-$2-$3')+' '+m[2].replace(/(\d\d)(\d\d)(\d\d)/,'$1:$2:$3'):'';
+    return '<div class="backup-item"><div style="min-width:0"><div style="overflow:hidden;text-overflow:ellipsis">'+escapeHtml(name)+'</div>'+(when?'<div class="hint" style="font-family:inherit">'+when+'</div>':'')+'</div><button class="btn sm" data-p="'+escapeHtml(p)+'" onclick="restoreBackup(this.dataset.p)">'+icon('refresh')+'恢复</button></div>';
+  }).join('');
+}
+async function restoreBackup(path){
+  if(!await confirmDialog({title:'恢复这个备份？',body:'将用 <code>'+escapeHtml(path.split('/').pop())+'</code> 覆盖当前配置文件，当前配置会先自动备份。',ok:'恢复',danger:true}))return;
+  const d=await api('/api/restore',{method:'POST',body:JSON.stringify({path})});
+  if(d&&d.ok){toast('已恢复');loadBackups();}
+}
+
+/* --- sysctl --- */
+async function loadSysctl(){
+  const d=await api('/api/sysctl');
+  if(!d)return;
+  $('sysctl-hint').innerHTML=d.writable
+    ?'可直接修改宿主机参数'+(d.persist?'，持久化到 <code>'+escapeHtml(d.persist)+'</code>':'，<span style="color:var(--yellow)">未挂载宿主机 /etc/sysctl.d，重启后失效</span>')
+    :'<span style="color:var(--yellow)">容器内 /proc/sys 只读，保存不会生效。启动容器时加上 -v /proc/sys/net:/host/proc/sys/net -v /etc/sysctl.d:/host/etc/sysctl.d</span>';
+  $('sysctl-tbody').innerHTML=d.params.map(p=>{
+    const mismatch=p.recommended&&p.value!==p.recommended&&p.value!=='(unavailable)';
+    return '<tr><td style="font-size:12px">'+escapeHtml(p.key)+'</td><td style="font-family:inherit;color:var(--text-2);font-size:12.5px;white-space:normal;min-width:200px">'+escapeHtml(p.desc)+'</td>'+
+      '<td><input class="sysctl-val mono" data-key="'+escapeHtml(p.key)+'" data-orig="'+escapeHtml(p.value)+'" value="'+escapeHtml(p.value)+'" style="width:130px;height:30px'+(mismatch?';border-color:var(--yellow)':'')+'" oninput="markDirty(\'sysctl\',[...document.querySelectorAll(\'.sysctl-val\')].some(x=>x.value.trim()!==x.dataset.orig))"'+(p.writable===false?' disabled':'')+'></td>'+
+      '<td class="muted">'+(p.recommended?escapeHtml(p.recommended):'—')+'</td>'+
+      '<td>'+(mismatch?'<button class="btn sm" data-k="'+escapeHtml(p.key)+'" data-v="'+escapeHtml(p.recommended)+'" onclick="applyOne(this.dataset.k,this.dataset.v)">用推荐值</button>':'<span class="tag green">✓</span>')+'</td></tr>';
+  }).join('');
+}
+function applyOne(key,val){
+  const inp=document.querySelector('.sysctl-val[data-key="'+CSS.escape(key)+'"]');
+  if(inp){inp.value=val;markDirty('sysctl',true);}
+}
+async function saveSysctl(){
+  const changes={};
+  document.querySelectorAll('.sysctl-val').forEach(inp=>{const v=inp.value.trim();if(v&&v!==inp.dataset.orig)changes[inp.dataset.key]=v;});
+  if(!Object.keys(changes).length){markDirty('sysctl',false);return true;}
+  const d=await api('/api/sysctl',{method:'POST',body:JSON.stringify({changes})});
+  const ok=!!(d&&d.ok);
+  if(ok)toast('已生效 '+d.applied.length+' 项'+(d.persisted?'，已写入 '+d.persisted:''));
+  else if(d)toast('部分失败: '+((d.errors)||[d.error||'unknown']).join('；'),false);
+  markDirty('sysctl',false);await loadSysctl();return ok;
+}
+
+/* --- geo --- */
+async function updateGeo(){
+  const btn=$('geo-update-btn'), st=$('geo-update-status');
+  st.textContent='正在下载…';
+  await withBusy(btn,async()=>{
+    const d=await api('/api/geo/update',{method:'POST'});
+    const res=(d&&d.results)||{};
+    st.innerHTML=(d&&d.ok?'<span style="color:var(--green)">更新成功</span> ':'<span style="color:var(--red)">更新失败</span> ')+
+      Object.entries(res).map(([k,v])=>escapeHtml(k)+'：'+escapeHtml(v.ok?(v.size_human||'OK'):(v.error||'失败'))).join('；');
+    loadGeoInfo();
+  });
+}
+
+/* --- traffic chart (theme-aware colors) --- */
+function renderTraffic(){
+  const d=trafficData; if(!d)return;
+  const iface=$('tr-iface').value||'__all__';
+  const pts=d.buckets.map(b=>{let rx=0,tx=0;for(const [k,v] of Object.entries(b.data)){if(iface==='__all__'||k===iface){rx+=v.rx;tx+=v.tx;}}return {label:b.label,rx,tx};});
+  const svg=$('tr-chart');
+  const W=Math.max(svg.clientWidth||800,320), H=220, padL=64, padB=22, padT=10, plotW=W-padL-8, plotH=H-padB-padT;
+  svg.setAttribute('viewBox','0 0 '+W+' '+H);
+  const max=Math.max(1,...pts.map(p=>Math.max(p.rx,p.tx)));
+  const n=pts.length||1, bw=plotW/n, barW=Math.max(2,Math.min(14,bw*0.36));
+  let g='';
+  for(let i=0;i<=4;i++){const y=padT+plotH-plotH*i/4;g+='<line class="g" x1="'+padL+'" x2="'+(W-8)+'" y1="'+y+'" y2="'+y+'"/><text class="t" x="'+(padL-8)+'" y="'+(y+4)+'" text-anchor="end">'+fmtBytes(Math.round(max*i/4))+'</text>';}
+  const step=Math.ceil(n/Math.max(4,Math.min(12,Math.floor(plotW/56))));
+  pts.forEach((p,i)=>{
+    const x=padL+bw*i+bw/2, hr=plotH*p.rx/max, ht=plotH*p.tx/max, tip=escapeHtml(p.label)+'  ↓ '+fmtBytes(p.rx)+'  ↑ '+fmtBytes(p.tx);
+    g+='<g><title>'+tip+'</title><rect class="rx" x="'+(x-barW-1)+'" y="'+(padT+plotH-hr)+'" width="'+barW+'" height="'+hr+'" rx="2"/><rect class="tx" x="'+(x+1)+'" y="'+(padT+plotH-ht)+'" width="'+barW+'" height="'+ht+'" rx="2"/><rect x="'+(padL+bw*i)+'" y="'+padT+'" width="'+bw+'" height="'+plotH+'" fill="transparent"/></g>';
+    if(i%step===0||i===n-1)g+='<text class="t" x="'+x+'" y="'+(H-6)+'" text-anchor="middle">'+escapeHtml(p.label)+'</text>';
+  });
+  svg.innerHTML=g;
+  const srx=pts.reduce((a,p)=>a+p.rx,0), stx=pts.reduce((a,p)=>a+p.tx,0);
+  $('tr-sum').textContent='区间合计 ↓ '+fmtBytes(srx)+'  ↑ '+fmtBytes(stx);
+}
+function renderPeerHeader(d){
+  const s=d.status||{}, msg=[];
+  if(!s.enabled)msg.push('<span style="color:var(--yellow)">已通过 PEER_STATS=0 关闭</span>');
+  else if(s.acct===false)msg.push('<span style="color:var(--yellow)">宿主机未开启 nf_conntrack_acct，新连接才有字节计数（可在「系统设置」开启）</span>');
+  if(s.error)msg.push('<span style="color:var(--red)">'+escapeHtml(s.error)+'</span>');
+  if(s.enabled)msg.push('跟踪中 '+(s.flows||0)+' · 关闭事件 '+(s.events||0)+(s.dropped?' · <span style="color:var(--yellow)">丢失 '+s.dropped+'</span>':'')+(s.last_dump?' · 上次全量 '+new Date(s.last_dump*1000).toLocaleTimeString('zh-CN',{hour12:false}):''));
+  $('pr-status').innerHTML=msg.join(' · ');
+  const t=d.totals||{}, g=k=>t[k]||{rx:0,tx:0,peers:0}, w=d.wire||{};
+  const chip=(label,v,c)=>'<span class="tag '+c+'" style="height:24px">'+label+' <b class="mono" style="font-weight:600">'+v+'</b></span>';
+  $('pr-sum').innerHTML=chip('线上合计','↓ '+fmtBytes(w.rx||0)+' ↑ '+fmtBytes(w.tx||0),'default')+chip('代理节点',fmtBytes(g('node').rx+g('node').tx),'purple')+chip('直连',fmtBytes(g('direct').rx+g('direct').tx),'green')+chip('内网',fmtBytes(g('internal').rx+g('internal').tx),'default')+chip('入站',fmtBytes(g('inbound').rx+g('inbound').tx),'yellow');
+  document.querySelectorAll('#pr-kind button').forEach(b=>{b.querySelector('span').textContent=g(b.dataset.k).peers?g(b.dataset.k).peers:'';});
+}
+window.addEventListener('resize',()=>{if(currentTab==='traffic')renderTraffic();drawSpark();});
+
+/* ================= boot ================= */
+let booted=false;
+function boot(){
+  applyTheme();
+  startStatsPolling();
+  refreshConnState();
+  api('/api/status').then(st=>{if(st)renderVersion(st);});
+  if(!booted){booted=true;window.addEventListener('hashchange',()=>{const h=location.hash.slice(1);if(h&&h!==currentTab)switchTab(h);});}
+  switchTab((location.hash||'').slice(1)||'overview');
+}
+applyTheme();
+if(token){
+  fetch(API+'/api/status',{headers:{'X-Token':token}}).then(r=>{
+    if(r.ok){$('login-overlay').style.display='none';boot();}
+    else{localStorage.removeItem('xray_token');token='';showLogin();}
+  }).catch(()=>showLogin());
+}else showLogin();
+</script>
+</body>
+</html>

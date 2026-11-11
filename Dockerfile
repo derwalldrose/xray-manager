@@ -77,6 +77,7 @@ COPY app.py ${CODE_DIR}/app.py
 COPY txt_endpoints.py ${CODE_DIR}/txt_endpoints.py
 COPY conntrack_stats.py ${CODE_DIR}/conntrack_stats.py
 COPY ip_asn.py ${CODE_DIR}/ip_asn.py
+COPY ui.html ${CODE_DIR}/ui.html
 COPY xray-entrypoint.py ${CODE_DIR}/xray-entrypoint.py
 
 # Panel port (override at runtime: docker run -e PANEL_PORT=54322 ...)

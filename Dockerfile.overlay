@@ -4,6 +4,6 @@
 # Full rebuild from scratch: docker build -t derwalldrose/derwalld:v3.4 .
 FROM derwalldrose/derwalld:v2
 ENV TZ=Asia/Shanghai
-COPY app.py txt_endpoints.py conntrack_stats.py ip_asn.py xray-entrypoint.py /opt/derwalld/
+COPY app.py ui.html txt_endpoints.py conntrack_stats.py ip_asn.py xray-entrypoint.py /opt/derwalld/
 COPY xray-manager.conf /etc/supervisor/conf.d/xray-manager.conf
 LABEL org.opencontainers.image.title="derwalld" org.opencontainers.image.version="v3.4"
