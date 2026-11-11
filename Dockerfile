@@ -9,7 +9,8 @@ ARG TARGETARCH=amd64
 # Code/binaries live here (baked into image, NEVER mounted).
 # All runtime data lives under BASE_DIR (a single host volume).
 ENV CODE_DIR=/opt/derwalld \
-    BASE_DIR=/root/xray-manager
+    BASE_DIR=/root/xray-manager \
+    TZ=Asia/Shanghai
 
 # Install system deps + supervisor
 RUN apt-get update && \

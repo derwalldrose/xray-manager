@@ -1802,6 +1802,27 @@ def _xray_version():
     return out.strip().split("\n")[0] if out.strip() else "unknown"
 
 
+CONFIG_BACKUP_KEEP = max(1, int(os.environ.get("CONFIG_BACKUP_KEEP", "3") or 3))
+
+
+def _prune_config_backups(keep=None):
+    """Keep only the newest `keep` config backups (backup/config-*.json.bak and the
+    config/<name>.bak.* files written by restore). Each config save creates one."""
+    keep = CONFIG_BACKUP_KEEP if keep is None else keep
+    groups = [list(Path(f"{BASE_DIR}/backup").glob("config-*.json.bak")),
+              list(Path(XRAY_CFG).parent.glob(Path(XRAY_CFG).name + ".bak.*"))]
+    removed = 0
+    for files in groups:
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in files[keep:]:
+            try:
+                old.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 def _backup_config():
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_dir = f"{BASE_DIR}/backup"
@@ -1811,6 +1832,7 @@ def _backup_config():
         raw, _ = _read_config()
         with open(backup, "w") as f:
             f.write(raw)
+        _prune_config_backups()
         return backup
     except Exception:
         return ""
@@ -3447,10 +3469,30 @@ def _parse_session_line(line):
     return None
 
 
-def _build_sessions(max_lines=50000):
+_LOG_TS_RE = re.compile(r"^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})")
+
+
+def _read_log_window(cutoff=None, max_lines=50000):
+    """Tail of xray.log; also reads the rotated xray.log.1 when the current file
+    starts after `cutoff` (supervisor rotates xray.log every 10MB)."""
+    lines = _read_last_lines(XRAY_LOG_FILE, max_lines=max_lines)
+    if cutoff is None or len(lines) >= max_lines:
+        return lines
+    first = None
+    for line in lines[:200]:
+        m = _LOG_TS_RE.match(line)
+        if m:
+            first = _parse_access_time(m.group(1))
+            break
+    if first is None or first > cutoff:
+        lines = _read_last_lines(XRAY_LOG_FILE + ".1", max_lines=max_lines - len(lines)) + lines
+    return lines
+
+
+def _build_sessions(max_lines=50000, cutoff=None):
     """Read xray.log, group by session ID, build per-connection records."""
     grouped = {}
-    for line in _read_last_lines(XRAY_LOG_FILE, max_lines=max_lines):
+    for line in _read_log_window(cutoff, max_lines=max_lines):
         ev = _parse_session_line(line)
         if ev and ev.get("_sid"):
             grouped.setdefault(ev["_sid"], []).append(ev)
@@ -3614,7 +3656,7 @@ def api_access_stats():
     cutoff = datetime.now() - timedelta(minutes=minutes)
 
     try:
-        all_sessions = _build_sessions()
+        all_sessions = _build_sessions(cutoff=cutoff)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e),
                         "hint": f"xray.log not found or parse error: {XRAY_LOG_FILE}"})
@@ -3783,6 +3825,7 @@ def api_restore():
     try:
         with open(backup, "w") as f:
             f.write(raw)
+        _prune_config_backups()
     except Exception:
         pass
 
@@ -6608,6 +6651,9 @@ if __name__ == "__main__":
 
     # Create required directories
     _init_dirs()
+    pruned = _prune_config_backups()
+    if pruned:
+        print(f"  Pruned {pruned} old config backups (keep {CONFIG_BACKUP_KEEP})")
 
     # Cleanup stale transparent proxy iptables rules on startup
     with _STATE_LOCK:

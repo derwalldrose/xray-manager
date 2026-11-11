@@ -329,5 +329,44 @@ class GatewayTest(unittest.TestCase):
             self.assertFalse(any(b == "iptables-nft" for b, _, _ in app._gateway_rules()))
 
 
+
+class HousekeepingTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        (base / "backup").mkdir(); (base / "config").mkdir()
+        self.cfg = base / "config" / "x.json"; self.cfg.write_text("{}")
+        self.ps = [mock.patch.object(app, "BASE_DIR", str(base)), mock.patch.object(app, "XRAY_CFG", str(self.cfg)),
+                   mock.patch.object(app, "XRAY_LOG_FILE", str(base / "xray.log"))]
+        for p in self.ps: p.start()
+        self.base = base
+
+    def tearDown(self):
+        for p in self.ps: p.stop()
+        self.tmp.cleanup()
+
+    def test_backups_pruned_to_newest_three(self):
+        import os
+        for i in range(6):
+            f = self.base / "backup" / f"config-2026010{i}_000000.json.bak"; f.write_text(str(i)); os.utime(f, (1000 + i, 1000 + i))
+        newest = app._backup_config()
+        left = sorted(p.name for p in (self.base / "backup").glob("config-*.json.bak"))
+        self.assertEqual(len(left), 3)
+        self.assertIn(Path(newest).name, left)
+        self.assertNotIn("config-20260100_000000.json.bak", left)
+        self.assertEqual((self.base / "backup" / Path(newest).name).read_text(), "{}")
+
+    def test_access_window_reads_rotated_file(self):
+        old = "2026/11/11 01:00:00.1 [Info] [11] app/dispatcher: sniffed domain: old.example.com\n"
+        new = "2026/11/11 03:00:00.1 [Info] [22] app/dispatcher: sniffed domain: new.example.com\n"
+        (self.base / "xray.log.1").write_text(old)
+        (self.base / "xray.log").write_text(new)
+        from datetime import datetime as dt
+        both = app._read_log_window(dt(2026, 11, 11, 0, 30))
+        self.assertEqual(both, [old, new])
+        only_new = app._read_log_window(dt(2026, 11, 11, 2, 30, 0).replace(hour=3, minute=0, second=0))
+        self.assertEqual(only_new, [new])
+
+
 if __name__ == "__main__":
     unittest.main()
