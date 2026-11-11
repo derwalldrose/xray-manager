@@ -4193,7 +4193,7 @@ input[readonly],textarea[readonly]{background:var(--bg3)!important;color:var(--t
 .modal .tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:500}
 
 /* ---------- cards ---------- */
-.card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:20px 24px;margin-bottom:16px;box-shadow:var(--shadow)}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:20px 24px;margin-bottom:16px;box-shadow:var(--shadow);overflow-x:auto;min-width:0}
 .card h2{font-size:16px;font-weight:600;margin:-4px 0 16px;display:flex;align-items:center;gap:8px;color:var(--text)}
 .card h2::before{content:"";width:3px;height:14px;border-radius:2px;background:var(--accent);display:inline-block}
 .card h2 .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
@@ -4356,6 +4356,7 @@ details > summary{cursor:pointer;color:var(--text3)!important}
   .grid{grid-template-columns:repeat(2,1fr);gap:8px}
   .stat .value{font-size:15px}
   .form-grid,.rule-builder{grid-template-columns:1fr}
+  .edit-row label{text-align:left;white-space:normal;line-height:1.4}
   table{display:block;overflow-x:auto}
   th,td{padding:8px 10px;font-size:12px}
   .modal{width:96%;padding:14px;max-height:92vh}
@@ -4429,13 +4430,13 @@ details > summary{cursor:pointer;color:var(--text3)!important}
       </div>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
         <label style="color:var(--text2);font-size:12px">测试URL</label>
-        <select id="conn-test-url-select" style="min-width:240px;padding:5px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px"></select>
-        <input id="conn-test-url-custom" placeholder="自定义" style="min-width:200px;padding:5px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:12px">
+        <select id="conn-test-url-select" style="min-width:min(240px,100%);padding:5px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px"></select>
+        <input id="conn-test-url-custom" placeholder="自定义" style="min-width:min(200px,100%);padding:5px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:12px">
         <label style="color:var(--text2);font-size:12px">测速URL</label>
-        <input id="conn-speed-url" value="https://speed.cloudflare.com/__down?bytes=10000000" style="min-width:300px;padding:5px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:12px">
+        <input id="conn-speed-url" value="https://speed.cloudflare.com/__down?bytes=10000000" style="min-width:min(300px,100%);padding:5px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:12px">
       </div>
       <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:10px;flex-wrap:wrap">
-        <textarea id="conn-import-links" placeholder="快速导入：vless:// vmess:// ss:// trojan://（支持多行）" style="flex:1;min-width:350px;min-height:50px;padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:12px;resize:vertical"></textarea>
+        <textarea id="conn-import-links" placeholder="快速导入：vless:// vmess:// ss:// trojan://（支持多行）" style="flex:1;min-width:min(350px,100%);min-height:50px;padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:12px;resize:vertical"></textarea>
         <div style="display:flex;flex-direction:column;gap:4px;align-self:flex-end">
           <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text2);cursor:pointer"><input type="checkbox" id="conn-import-tfo"> TFO</label>
           <button class="btn primary" onclick="connImportLinks()" style="font-size:12px">导入</button>
@@ -4572,8 +4573,8 @@ details > summary{cursor:pointer;color:var(--text3)!important}
       <h2>入站端口管理</h2>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
         <label style="color:var(--text2);font-size:13px">测试 URL</label>
-        <select id="test-url-select" style="min-width:260px;padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px"></select>
-        <input id="test-url-custom" placeholder="自定义测试 URL" style="min-width:360px;padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace">
+        <select id="test-url-select" style="min-width:min(260px,100%);padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px"></select>
+        <input id="test-url-custom" placeholder="自定义测试 URL" style="min-width:min(360px,100%);padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace">
         <button class="btn" onclick="saveCurrentTestUrl()">加入常用</button>
       </div>
       <div class="log-box" id="inbound-test-output" style="display:none;margin-bottom:12px;max-height:220px"></div>
@@ -4598,18 +4599,18 @@ details > summary{cursor:pointer;color:var(--text3)!important}
       </div>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
         <label style="color:var(--text2);font-size:13px">测试 URL</label>
-        <select id="ob-test-url-select" style="min-width:260px;padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px"></select>
-        <input id="ob-test-url-custom" placeholder="自定义 URL" style="min-width:320px;padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace">
+        <select id="ob-test-url-select" style="min-width:min(260px,100%);padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px"></select>
+        <input id="ob-test-url-custom" placeholder="自定义 URL" style="min-width:min(320px,100%);padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace">
       </div>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
         <label style="color:var(--text2);font-size:13px">测速 URL</label>
-        <input id="ob-speed-url" value="https://speed.cloudflare.com/__down?bytes=10000000" style="min-width:460px;padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace">
+        <input id="ob-speed-url" value="https://speed.cloudflare.com/__down?bytes=10000000" style="min-width:min(460px,100%);padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace">
         <button class="btn primary" onclick="batchTestSelected('ping')">批量测延迟</button>
         <button class="btn" onclick="batchTestSelected('speed')">批量测速</button>
         <button class="btn" onclick="batchExportOutbounds()">批量导出</button>
       </div>
       <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:12px;flex-wrap:wrap">
-        <textarea id="quick-import-links" placeholder="快速导入：粘贴 vless:// vmess:// ss:// trojan:// 链接（支持多行）" style="flex:1;min-width:400px;min-height:60px;padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:12px;resize:vertical"></textarea>
+        <textarea id="quick-import-links" placeholder="快速导入：粘贴 vless:// vmess:// ss:// trojan:// 链接（支持多行）" style="flex:1;min-width:min(400px,100%);min-height:60px;padding:6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:12px;resize:vertical"></textarea>
         <div style="display:flex;flex-direction:column;gap:6px;align-self:flex-end">
           <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text2);cursor:pointer"><input type="checkbox" id="quick-import-tfo"> TCP Fast Open</label>
           <button class="btn primary" onclick="quickImportLinks()">解析导入</button>
@@ -4783,7 +4784,7 @@ details > summary{cursor:pointer;color:var(--text3)!important}
           <option value="direct">直连</option>
           <option value="blocked">拦截</option>
         </select>
-        <input id="access-search" placeholder="搜索域名/IP/节点/客户端" style="flex:1;min-width:220px;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px" oninput="loadAccessStatsDebounced()">
+        <input id="access-search" placeholder="搜索域名/IP/节点/客户端" style="flex:1;min-width:min(220px,100%);padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px" oninput="loadAccessStatsDebounced()">
         <button class="btn danger" onclick="clearLogs()">清理统计和日志</button>
       </div>
       <div id="access-summary" style="margin-bottom:12px;color:var(--text2)">加载中...</div>
@@ -4799,7 +4800,7 @@ details > summary{cursor:pointer;color:var(--text3)!important}
         <button class="btn" onclick="loadLogs(200)">200行</button>
         <button class="btn" onclick="loadLogs(500)">500行</button>
         <button class="btn primary" onclick="loadLogs(200)">刷新</button>
-        <input id="log-filter" placeholder="过滤关键词 (如: direct, telegram, error)" style="flex:1;min-width:200px;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px" oninput="filterLogs()">
+        <input id="log-filter" placeholder="过滤关键词 (如: direct, telegram, error)" style="flex:1;min-width:min(200px,100%);padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px" oninput="filterLogs()">
       </div>
       <div class="log-box" id="log-box">加载中...</div>
     </div>
@@ -6137,24 +6138,21 @@ async function loadDns(){
   const dns=d.dns||{};
   const servers=Array.isArray(dns.servers)?dns.servers:[];
   document.getElementById('dns-servers').value=servers.map(s=>typeof s==='string'?s:JSON.stringify(s)).join('\n');
-  document.getElementById('dns-hosts').value=dns.hosts?JSON.stringify(dns.hosts,null,2):'';
   document.getElementById('dns-client-ip').value=dns.clientIp||'';
+  dnsLoaded=dns;
 }
+let dnsLoaded=null;
 
 async function saveDns(){
-  let hosts={};
-  const hostsRaw=document.getElementById('dns-hosts').value.trim();
-  if(hostsRaw){
-    try{hosts=JSON.parse(hostsRaw);}catch(e){toast('hosts JSON 解析失败: '+e.message,false);return;}
-  }
+  if(!dnsLoaded){toast('DNS 配置尚未加载',false);return;}
   const servers=document.getElementById('dns-servers').value.split('\n').map(s=>s.trim()).filter(Boolean).map(s=>{
     if(s.startsWith('{')){ try{return JSON.parse(s);}catch(e){ return s; } }
     return s;
   });
-  const dns={servers};
-  if(Object.keys(hosts).length) dns.hosts=hosts;
+  // keep hosts (edited in the Hosts card) and any other fields of the current dns block
+  const dns=Object.assign({},dnsLoaded,{servers});
   const cip=document.getElementById('dns-client-ip').value.trim();
-  if(cip) dns.clientIp=cip;
+  if(cip) dns.clientIp=cip; else delete dns.clientIp;
   const d=await api('/api/dns',{method:'POST',body:JSON.stringify({dns})});
   if(d&&d.ok) toast('DNS 已保存'+(d.restart&&d.restart.success?'，核心已重启':'')+(d.iptables_rebuilt?'，iptables 已重建':''));
   else if(d&&d.error) toast(d.error,false);
