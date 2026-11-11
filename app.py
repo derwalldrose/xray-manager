@@ -41,6 +41,7 @@ import socket
 from flask import Flask, jsonify, request, Response
 from txt_endpoints import materialize_config
 import conntrack_stats as _ct
+import ip_asn as _ipasn
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -78,6 +79,8 @@ CUSTOM_RULES_FILE = f"{BASE_DIR}/state/custom-rules.json"
 TOKEN_FILE = f"{BASE_DIR}/state/token"
 GEOIP_PATH = f"{BASE_DIR}/data/geoip.dat"
 GEOSITE_PATH = f"{BASE_DIR}/data/geosite.dat"
+IP_ASN_PATH = f"{BASE_DIR}/data/ip2asn-v4.tsv.gz"
+_asn_db = _ipasn.AsnDB(IP_ASN_PATH, [u for u in (os.environ.get("IP_ASN_URL") or "").split(",") if u] or (_ipasn.DEFAULT_URL, _ipasn.FALLBACK_URL))
 GEO_CDN_PREFIX = "https://hub.543083.xyz/"
 GEO_URLS_FILE = f"{BASE_DIR}/state/geo-urls.json"
 ACCESS_LOG_FILE = f"{BASE_DIR}/logs/access.log"
@@ -3563,7 +3566,10 @@ _PEER_RX_SNIFF = re.compile(r"\[(\d+)\] app/dispatcher: sniffed domain: (\S+)")
 _PEER_RX_ACCEPT = re.compile(r" from (\S+) accepted (?:tcp|udp):(\[[^\]]+\]|[0-9.]+):\d+ \[[^\]]*?(?:->|>>)\s*([^\]\s]+)\]")
 
 
-def _peer_domain_map():
+_PEER_DOMAIN_LOCK = threading.Lock()
+
+
+def _peer_domain_map(wait=False):
     """({ip: [domain, ...]}, {ip: outbound_tag}) from the core log of the last 24h
     (cached 60s). Transparent connections are linked by the client endpoint:
     "[sid] dokodemo: received request for C" + "[sid] sniffed domain: D" +
@@ -3572,6 +3578,24 @@ def _peer_domain_map():
     now = time.time()
     if now - _PEER_DOMAIN_CACHE["t"] < 60:
         return _PEER_DOMAIN_CACHE["map"], _PEER_DOMAIN_CACHE.get("routes", {})
+    if _PEER_DOMAIN_CACHE["t"] and not wait:
+        # Stale-while-revalidate: answer from the previous map, rebuild in background.
+        if _PEER_DOMAIN_LOCK.acquire(blocking=False):
+            def _bg():
+                try:
+                    _peer_domain_map_build()
+                finally:
+                    _PEER_DOMAIN_LOCK.release()
+            threading.Thread(target=_bg, daemon=True).start()
+        return _PEER_DOMAIN_CACHE["map"], _PEER_DOMAIN_CACHE.get("routes", {})
+    with _PEER_DOMAIN_LOCK:
+        if time.time() - _PEER_DOMAIN_CACHE["t"] < 60:
+            return _PEER_DOMAIN_CACHE["map"], _PEER_DOMAIN_CACHE.get("routes", {})
+        return _peer_domain_map_build()
+
+
+def _peer_domain_map_build():
+    now = time.time()
     import collections
     m = collections.defaultdict(collections.Counter)
     routes = {}
@@ -3611,6 +3635,15 @@ def _peer_stats_start():
         return
     _ct_acc = _ct.ConntrackAccounting(TRAFFIC_DB, _peer_context, dump_interval=60, keep_days=PEER_KEEP_DAYS)
     _ct_acc.start()
+
+
+@app.route("/api/ip-meta")
+def api_ip_meta():
+    ips = [x.strip() for x in (request.args.get("ips") or "").split(",") if x.strip()][:100]
+    ips = [ip for ip in ips if _is_ip(ip) and not _ct._is_private(ip)]
+    meta = _enrich_ip_meta(ips) if ips else {}
+    return jsonify({"ok": True, "db": _asn_db.status(), "meta": {ip: {"asn": m.get("asn"), "country": m.get("country"),
+                                              "as_name": m.get("as_name")} for ip, m in meta.items()}})
 
 
 @app.route("/api/traffic/peers")
@@ -4013,23 +4046,48 @@ def _query_team_cymru(ips, timeout=4):
     return result
 
 
+IP_META_MISS_TTL = 3600
+
+
 def _enrich_ip_meta(ips):
-    cache = _load_ip_meta_cache()
+    out = {}
+    rest = []
+    cache = None
+    for ip in set(ips):
+        m = _asn_db.lookup(ip) if _asn_db.rows else None
+        if m:
+            if not m.get("country"):
+                cache = cache if cache is not None else _load_ip_meta_cache()
+                m["country"] = (cache.get(ip) or {}).get("country", "")
+            out[ip] = m
+        else:
+            rest.append(ip)
+    if not rest:
+        return out
+    cache = cache if cache is not None else _load_ip_meta_cache()
     now = int(time.time())
     ttl = 7 * 24 * 3600
     missing = []
-    for ip in sorted(set(ips)):
+    for ip in sorted(rest):
         if not _is_ip(ip):
             continue
         meta = cache.get(ip)
-        if not meta or now - int(meta.get("updated_at", 0) or 0) > ttl:
+        age = now - int((meta or {}).get("updated_at", 0) or 0)
+        if not meta or age > (IP_META_MISS_TTL if meta.get("miss") else ttl):
             missing.append(ip)
     if missing:
-        queried = _query_team_cymru(missing[:100])
+        batch = missing[:100]
+        queried = _query_team_cymru(batch)
+        # Remember IPs whois could not answer (or a failed query) for a while,
+        # so every page view does not wait for the 4s whois timeout again.
+        for ip in batch:
+            if ip not in queried and not _ct._is_private(ip):
+                queried[ip] = {"miss": True, "updated_at": now}
         if queried:
             cache.update(queried)
             _save_ip_meta_cache(cache)
-    return {ip: cache.get(ip) for ip in ips if cache.get(ip)}
+    out.update({ip: cache[ip] for ip in rest if cache.get(ip) and not cache[ip].get("miss")})
+    return out
 
 
 def _target_display(target, domains):
@@ -4441,6 +4499,8 @@ input[readonly],textarea[readonly]{background:var(--bg3)!important;color:var(--t
 .seg button:last-child{border-right:0}
 .seg button.on{background:var(--accent-soft);color:var(--accent);font-weight:500}
 .tr-chart{width:100%;height:200px;display:block}
+.loadable{transition:opacity .15s}.loadable.is-loading{opacity:.45;pointer-events:none}
+.muted{color:var(--text2)}
 .tr-share{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--bg3);min-width:80px}
 .tr-legend{display:flex;gap:14px;font-size:12px;color:var(--text2);align-items:center}
 .tr-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
@@ -4813,15 +4873,15 @@ details > summary{cursor:pointer;color:var(--text3)!important}
           <button data-h="24" onclick="setPeerRange(24)">24 小时</button>
           <button data-h="168" onclick="setPeerRange(168)">7 天</button>
         </div>
-        <input id="pr-q" placeholder="搜索 IP / 域名 / 节点" onkeydown="if(event.key==='Enter'){peerLimit=10;loadPeers();}" style="height:30px;flex:1;min-width:min(200px,100%);padding:0 10px;border:1px solid var(--border2);border-radius:4px">
-        <button class="btn" onclick="loadPeers()">刷新</button>
+        <input id="pr-q" placeholder="搜索 IP / 域名 / 节点" oninput="peerSearch()" style="height:30px;flex:1;min-width:min(200px,100%);padding:0 10px;border:1px solid var(--border2);border-radius:4px">
+        <button class="btn" onclick="loadPeers(true)">刷新</button>
       </div>
       <div id="pr-kind-desc" style="font-size:12px;color:var(--text2);margin-bottom:8px"></div>
-      <div style="overflow-x:auto"><table style="white-space:nowrap">
+      <div id="pr-wrap" class="loadable" style="overflow-x:auto"><table style="white-space:nowrap">
         <thead><tr><th>对端 IP</th><th>域名 / 节点</th><th>归属</th><th>类型</th><th>协议:端口</th><th>↓ 下载</th><th>↑ 上传</th><th>连接</th><th>最后</th></tr></thead>
         <tbody id="pr-tbody"><tr><td colspan="9" style="color:var(--text2)">加载中…</td></tr></tbody>
       </table></div>
-      <div id="pr-more" style="margin-top:10px;display:none"><button class="btn" onclick="peerLimit+=20;loadPeers()">显示更多</button> <span id="pr-more-info" style="font-size:12px;color:var(--text2);margin-left:8px"></span></div>
+      <div id="pr-more" style="margin-top:10px;display:none"><button class="btn" onclick="peerMore()">显示更多</button> <span id="pr-more-info" style="font-size:12px;color:var(--text2);margin-left:8px"></span></div>
     </div>
   </div>
 
@@ -5317,7 +5377,7 @@ function switchTab(name){
   document.getElementById('tab-'+name).classList.add('active');
   if(name==='connect')loadConnect();
   if(name==='status'){loadStatus();startStatsPolling();}else{stopStatsPolling();}
-  if(name==='traffic'){loadTraffic();loadPeers();}
+  if(name==='traffic'){loadTraffic();loadPeers(true);}
   if(name==='inbounds'){loadInbounds();loadTestUrls();}
   if(name==='outbounds'){loadOutbounds();loadObTestUrls();}
   if(name==='routing')loadRouting();
@@ -5472,23 +5532,37 @@ const PEER_KIND_DESC={
   direct:'不经代理、直接连到公网 IP 的流量（含核心直连出口和局域网设备 NAT 出去的流量）。',
   internal:'连到内网 / 私有地址的流量。',
   inbound:'对方主动连到本机的连接，如访问面板、SSH。'};
+let peerData=null, peerDataHours=0, peerMeta={}, peerSeq=0;
 function setPeerKind(k){
   peerKind=k; peerLimit=10;
   document.querySelectorAll('#pr-kind button').forEach(b=>b.classList.toggle('on',b.dataset.k===k));
-  loadPeers();
+  renderPeers();
 }
 function setPeerRange(h){
   peerHours=h; peerLimit=10;
   document.querySelectorAll('#pr-range button').forEach(b=>b.classList.toggle('on',+b.dataset.h===h));
-  loadPeers();
+  loadPeers(true);
 }
-async function loadPeers(){
-  const kind=peerKind, q=document.getElementById('pr-q').value.trim();
-  document.getElementById('pr-kind-desc').textContent=PEER_KIND_DESC[kind]||'';
-  const d=await api('/api/traffic/peers?hours='+peerHours+'&kind='+encodeURIComponent(kind)+'&q='+encodeURIComponent(q)+'&limit='+peerLimit);
-  const tb=document.getElementById('pr-tbody'), st=document.getElementById('pr-status');
-  if(!d||!d.ok){tb.innerHTML='<tr><td colspan="9" style="color:var(--red)">'+escapeHtml((d&&d.error)||'加载失败')+'</td></tr>';return;}
-  const s=d.status||{};
+function peerMore(){peerLimit+=20;renderPeers();}
+function peerSearch(){peerLimit=10;renderPeers();}
+// One request per time range (all kinds, no whois); tabs, search and paging are local.
+async function loadPeers(force){
+  if(!force&&peerData&&peerDataHours===peerHours){renderPeers();return;}
+  const seq=++peerSeq, wrap=document.getElementById('pr-wrap');
+  wrap.classList.add('is-loading');
+  const d=await api('/api/traffic/peers?hours='+peerHours+'&limit=2000&enrich=0');
+  if(seq!==peerSeq)return;
+  wrap.classList.remove('is-loading');
+  if(!d||!d.ok){
+    document.getElementById('pr-tbody').innerHTML='<tr><td colspan="9" style="color:var(--red)">'+escapeHtml((d&&d.error)||'加载失败')+'</td></tr>';
+    return;
+  }
+  peerData=d; peerDataHours=peerHours;
+  renderPeerHeader(d);
+  renderPeers();
+}
+function renderPeerHeader(d){
+  const s=d.status||{}, st=document.getElementById('pr-status');
   let msg=[];
   if(!s.enabled)msg.push('<span style="color:var(--yellow)">已通过 PEER_STATS=0 关闭</span>');
   else if(s.acct===false)msg.push('<span style="color:var(--yellow)">宿主机未开启 net.netfilter.nf_conntrack_acct，开启后新连接才有字节计数：sysctl -w net.netfilter.nf_conntrack_acct=1</span>');
@@ -5497,23 +5571,50 @@ async function loadPeers(){
   st.innerHTML=msg.join('；');
   const t=d.totals||{}, g=k=>t[k]||{rx:0,tx:0,peers:0};
   document.getElementById('pr-sum').innerHTML='线上合计 ↓ <b>'+fmtBytes((d.wire||{}).rx||0)+'</b> ↑ <b>'+fmtBytes((d.wire||{}).tx||0)+'</b>'+
-    '　代理节点 '+fmtBytes(g('node').rx+g('node').tx)+'　直连 '+fmtBytes(g('direct').rx+g('direct').tx)+'　内网 '+fmtBytes(g('internal').rx+g('internal').tx)+'　入站 '+fmtBytes(g('inbound').rx+g('inbound').tx)+
-    '';
+    '　代理节点 '+fmtBytes(g('node').rx+g('node').tx)+'　直连 '+fmtBytes(g('direct').rx+g('direct').tx)+'　内网 '+fmtBytes(g('internal').rx+g('internal').tx)+'　入站 '+fmtBytes(g('inbound').rx+g('inbound').tx);
   document.querySelectorAll('#pr-kind button').forEach(b=>{b.querySelector('span').textContent=g(b.dataset.k).peers?'('+g(b.dataset.k).peers+')':'';});
+}
+function peerMetaCell(ip){
+  const m=peerMeta[ip];
+  if(m===undefined)return '<span class="muted">…</span>';
+  if(!m)return '-';
+  return 'AS'+escapeHtml(m.asn||'')+' '+escapeHtml(m.country||'')+'<div style="font-size:11px;color:var(--text2);max-width:220px;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(m.as_name||'')+'</div>';
+}
+function renderPeers(){
+  const kind=peerKind, q=document.getElementById('pr-q').value.trim().toLowerCase();
+  document.getElementById('pr-kind-desc').textContent=PEER_KIND_DESC[kind]||'';
+  const tb=document.getElementById('pr-tbody');
+  if(!peerData){tb.innerHTML='<tr><td colspan="9" style="color:var(--text2)">加载中…</td></tr>';return;}
+  let rows=(peerData.rows||[]).filter(r=>r.kind===kind);
+  if(q)rows=rows.filter(r=>r.ip.toLowerCase().includes(q)||(r.domains||[]).some(x=>x.toLowerCase().includes(q))||(r.node||'').toLowerCase().includes(q));
+  const matched=rows.length; rows=rows.slice(0,peerLimit);
   const kindTag=r=>{
     const c={core:'var(--accent)',node:'#722ed1',direct:'var(--green)',internal:'var(--text3)',inbound:'var(--yellow)'}[r.kind]||'var(--text3)';
     let l=r.label; if(r.kind==='core')l+=r.route==='direct'?' → 直连':r.route==='block'?' → 拦截':' → '+(r.outbound||'代理');
     return '<span style="color:'+c+'">'+escapeHtml(l)+'</span>';
   };
-  tb.innerHTML=(d.rows||[]).length?d.rows.map(r=>{
+  tb.innerHTML=rows.length?rows.map(r=>{
     const name=r.kind==='node'?('节点 '+escapeHtml(r.node||'')):escapeHtml((r.domains||[]).join(', ')||'-');
-    const meta=r.meta?('AS'+escapeHtml(r.meta.asn||'')+' '+escapeHtml(r.meta.country||'')+'<div style="font-size:11px;color:var(--text2);max-width:220px;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(r.meta.as_name||'')+'</div>'):'-';
     const last=r.last_seen?new Date(r.last_seen*1000).toLocaleString('zh-CN',{hour12:false,month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'-';
-    return '<tr><td>'+escapeHtml(r.ip)+'</td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis">'+name+'</td><td>'+meta+'</td><td>'+kindTag(r)+'</td><td>'+escapeHtml((r.proto||'')+':'+(r.port||''))+'</td><td>'+fmtBytes(r.rx)+'</td><td>'+fmtBytes(r.tx)+'</td><td>'+r.conns+'</td><td style="font-size:12px;color:var(--text2)">'+last+'</td></tr>';
-  }).join(''):'<tr><td colspan="9" style="color:var(--text2)">暂无数据（每分钟全量读取一次，新连接关闭时实时计入）</td></tr>';
+    const metaTd=isPrivateIp(r.ip)?'<td>-</td>':'<td data-meta-ip="'+escapeHtml(r.ip)+'">'+peerMetaCell(r.ip)+'</td>';
+    return '<tr><td>'+escapeHtml(r.ip)+'</td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis">'+name+'</td>'+metaTd+'<td>'+kindTag(r)+'</td><td>'+escapeHtml((r.proto||'')+':'+(r.port||''))+'</td><td>'+fmtBytes(r.rx)+'</td><td>'+fmtBytes(r.tx)+'</td><td>'+r.conns+'</td><td style="font-size:12px;color:var(--text2)">'+last+'</td></tr>';
+  }).join(''):'<tr><td colspan="9" style="color:var(--text2)">'+(q?'没有匹配的记录':'暂无数据（每分钟全量读取一次，新连接关闭时实时计入）')+'</td></tr>';
   const more=document.getElementById('pr-more');
-  more.style.display=d.matched>d.rows.length?'':'none';
-  document.getElementById('pr-more-info').textContent='已显示 '+d.rows.length+' / '+d.matched;
+  more.style.display=matched>rows.length?'':'none';
+  document.getElementById('pr-more-info').textContent='已显示 '+rows.length+' / '+matched;
+  fetchPeerMeta(rows.map(r=>r.ip).filter(ip=>!isPrivateIp(ip)&&peerMeta[ip]===undefined));
+}
+async function fetchPeerMeta(ips){
+  if(!ips.length)return;
+  const d=await api('/api/ip-meta?ips='+encodeURIComponent(ips.join(',')));
+  const meta=(d&&d.meta)||{};
+  ips.forEach(ip=>{peerMeta[ip]=meta[ip]||null;});
+  document.querySelectorAll('#pr-tbody td[data-meta-ip]').forEach(td=>{
+    const ip=td.dataset.metaIp; if(ips.includes(ip))td.innerHTML=peerMetaCell(ip);
+  });
+}
+function isPrivateIp(ip){
+  return /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|0\.|::1$|fe80:|fc|fd)/i.test(ip);
 }
 
 function startStatsPolling(){
@@ -7265,5 +7366,8 @@ if __name__ == "__main__":
     if PEER_STATS_ENABLED:
         _peer_stats_start()
         print(f"  Peer traffic (conntrack): acct={_conntrack_acct_enabled()} keep {PEER_KEEP_DAYS}d")
+    if os.environ.get("IP_ASN_DB", "1") != "0":
+        _asn_db.start()
+        print(f"  IP ASN db: {IP_ASN_PATH} (weekly refresh)")
 
     app.run(host=args.host, port=args.port, debug=False)
