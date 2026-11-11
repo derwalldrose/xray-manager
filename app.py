@@ -662,8 +662,12 @@ def _reconcile_connect_state():
 
 
 def _reconcile_loop():
+    # First pass soon after start: on boot Xray may not be RUNNING yet when the
+    # startup reconcile runs, so rules would otherwise wait a full interval.
+    delay = min(10, RECONCILE_INTERVAL)
     while True:
-        time.sleep(RECONCILE_INTERVAL)
+        time.sleep(delay)
+        delay = RECONCILE_INTERVAL
         try:
             _reconcile_connect_state()
         except Exception as e:  # keep the loop alive
