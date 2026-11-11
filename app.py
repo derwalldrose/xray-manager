@@ -25,6 +25,8 @@ import ipaddress
 import re
 import os
 import subprocess
+import threading
+import functools
 import time
 import shlex
 import random
@@ -121,6 +123,37 @@ SVC_NAME = DEFAULT_SVC_NAME
 AUTH_TOKEN = DEFAULT_TOKEN  # may be overridden by --token or token file
 TEST_URLS_FILE = DEFAULT_TEST_URLS_FILE
 PANEL_STARTED_AT = time.time()
+# Serializes every code path that mutates iptables / resolv.conf / connect state,
+# including the background reconcile loop.
+_STATE_LOCK = threading.RLock()
+RECONCILE_INTERVAL = int(os.environ.get("RECONCILE_INTERVAL", "60") or 0)
+
+
+def _serialized(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _STATE_LOCK:
+            return fn(*args, **kwargs)
+    return wrapper
+
+
+def _valid_port(value, default):
+    try:
+        port = int(value if value not in (None, "") else default)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid port: {value!r}")
+    if not 1 <= port <= 65535:
+        raise ValueError(f"invalid port: {value!r}")
+    return port
+
+
+def _normalize_ipv4_cidr(value):
+    """Return a canonical IPv4 CIDR string, or None (never passes raw input to a shell)."""
+    try:
+        net = ipaddress.ip_network(str(value).strip(), strict=False)
+    except ValueError:
+        return None
+    return str(net) if net.version == 4 else None
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -413,17 +446,79 @@ def _dns_inbound_settings():
     return dict(DNS_INBOUND_SETTINGS)
 
 
+DEFAULT_DNS_SERVERS = ["223.5.5.5", "119.29.29.29"]
+# Written by older versions. Xray parses "udp:IP:53" as a *domain* and the query
+# fails; the iptables bypass extractor did not recognise it either.
+LEGACY_DEFAULT_DNS_SERVERS = ["udp:223.5.5.5:53", "udp:119.29.29.29:53"]
+TP_DEFAULT_DNS_HOSTS = {
+    "domain:googleapis.cn": "googleapis.com",
+    "geosite:category-ads-all": "127.0.0.1",
+    "domain:evil.com": "127.0.0.1",
+}
+
 DEFAULT_DNS_CONFIG = {
-    "servers": [
-        "udp:223.5.5.5:53",
-        "udp:119.29.29.29:53",
-    ],
+    "servers": list(DEFAULT_DNS_SERVERS),
     "tag": "dns",
     "hosts": {
         "domain:googleapis.cn": "googleapis.com",
         "geosite:category-ads-all": "127.0.0.1",
     },
 }
+
+
+def _dns_server_ip(server):
+    """Literal IP of an Xray dns.servers entry, or None for domains/DoH hostnames.
+
+    Accepts 1.2.3.4, 1.2.3.4:53, udp:1.2.3.4:53, tcp://1.2.3.4:53,
+    https://1.2.3.4/dns-query, [2001:db8::1]:53 and {"address": ...}.
+    """
+    if isinstance(server, dict):
+        server = server.get("address", "")
+    if not isinstance(server, str):
+        return None
+    text = server.strip()
+    if "://" in text:
+        host = urlparse(text).hostname or ""
+    else:
+        if text[:4].lower() in ("udp:", "tcp:"):
+            text = text[4:]
+        host = text
+        if host.startswith("[") and "]" in host:
+            host = host[1:host.index("]")]
+        elif host.count(":") == 1:
+            host = host.split(":", 1)[0]
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return None
+
+
+def _normalize_dns_server(server):
+    """Rewrite the legacy "udp:IP[:port]" form into a form Xray understands."""
+    if not isinstance(server, str) or server[:4].lower() != "udp:" or "://" in server:
+        return server
+    ip = _dns_server_ip(server)
+    if not ip:
+        return server
+    rest = server[4:].strip()
+    port = 53
+    if rest.startswith("[") and "]:" in rest:
+        port_s = rest.rsplit("]:", 1)[1]
+    elif rest.count(":") == 1:
+        port_s = rest.split(":", 1)[1]
+    else:
+        port_s = ""
+    if port_s.isdigit():
+        port = int(port_s)
+    return ip if port == 53 else {"address": ip, "port": port}
+
+
+def _normalize_dns_config(dns_cfg):
+    dns_cfg = dict(dns_cfg or {})
+    servers = dns_cfg.get("servers")
+    if isinstance(servers, list):
+        dns_cfg["servers"] = [_normalize_dns_server(s) for s in servers]
+    return dns_cfg
 
 
 def _dns_state_load():
@@ -482,6 +577,7 @@ def _quic_block_rule():
     return {"type": "field", "network": "udp", "port": 443, "outboundTag": "block"}
 
 
+@_serialized
 def _reconcile_connect_state():
     """Reconcile actual system state with connect-mode.json.
     Returns the corrected state dict with actual_* fields.
@@ -505,8 +601,12 @@ def _reconcile_connect_state():
             print("[reconcile] DNS hijack missing, applying...")
         _dns_hijack_apply()
         if tp_expected and not tp_has_rules:
-            tp_port = state.get("transparent_port", 12345)
+            tp_port = state.get("transparent_port", DEFAULT_TRANSPARENT_PORT)
             print(f"[reconcile] iptables missing, applying (port {tp_port})...")
+            _iptables_setup_redirect(tp_port)
+        elif tp_expected and not _tp_iptables_in_sync(
+                tp_port := state.get("transparent_port", DEFAULT_TRANSPARENT_PORT)):
+            print(f"[reconcile] iptables out of date (DNS/bypass/port changed), rebuilding (port {tp_port})...")
             _iptables_setup_redirect(tp_port)
         if not tp_expected and tp_has_rules:
             print("[reconcile] Stale iptables, cleaning...")
@@ -542,10 +642,11 @@ def _reconcile_connect_state():
 
     # Case 3: inactive → ensure iptables/DNS are clean (but keep config as-is)
     elif not active_expected:
-        if dns_active:
+        standalone_tp = _tp_state_read().get("enabled") and _tp_has_dokodemo_inbound()
+        if dns_active and not standalone_tp:
             print("[reconcile] Stale DNS hijack, restoring...")
             _dns_hijack_restore()
-        if tp_has_rules:
+        if tp_has_rules and not standalone_tp:
             print("[reconcile] Stale iptables, cleaning...")
             _iptables_cleanup()
 
@@ -558,6 +659,15 @@ def _reconcile_connect_state():
     state["dns_actual"] = _dns_hijack_is_active()
     state["transparent_actual"] = _tp_has_iptables_rules()
     return state
+
+
+def _reconcile_loop():
+    while True:
+        time.sleep(RECONCILE_INTERVAL)
+        try:
+            _reconcile_connect_state()
+        except Exception as e:  # keep the loop alive
+            print(f"[reconcile] error: {e}", flush=True)
 
 
 def _extract_node_info(ob):
@@ -709,7 +819,7 @@ def _build_connect_config(selected_tags, strategy, transparent, ports):
 
     # --- DNS (use user-saved override, otherwise default) ---
     saved_dns = _dns_state_load()
-    cfg["dns"] = dict(saved_dns) if saved_dns else dict(DEFAULT_DNS_CONFIG)
+    cfg["dns"] = _normalize_dns_config(saved_dns if saved_dns else DEFAULT_DNS_CONFIG)
 
     _ensure_access_log_config(cfg)
     return cfg, None
@@ -721,7 +831,7 @@ def _tp_load_custom_bypass():
         with open(CUSTOM_BYPASS_FILE) as f:
             data = json.load(f)
         if isinstance(data, list):
-            return [c.strip() for c in data if c.strip()]
+            return [c for c in (_normalize_ipv4_cidr(x) for x in data) if c]
     except Exception:
         pass
     return []
@@ -733,8 +843,8 @@ def _tp_save_custom_bypass(cidrs):
     clean = []
     seen = set()
     for c in cidrs:
-        c = c.strip()
-        if c and c not in seen and ((":" not in c and "/" in c) or c.count(".") == 3):
+        c = _normalize_ipv4_cidr(c)
+        if c and c not in seen:
             clean.append(c)
             seen.add(c)
     Path(CUSTOM_BYPASS_FILE).parent.mkdir(parents=True, exist_ok=True)
@@ -769,10 +879,9 @@ def _extract_dns_bypass_cidrs_from_config():
         elif isinstance(vals, str):
             add_ip(vals)
     for server in (dns.get("servers") or []):
-        if isinstance(server, str):
-            add_ip(server)
-        elif isinstance(server, dict):
-            add_ip(server.get("address", ""))
+        ip = _dns_server_ip(server)
+        if ip:
+            add_ip(ip)
     return out
 
 
@@ -781,7 +890,8 @@ def _tp_get_all_bypass_cidrs():
     all_cidrs = list(_BYPASS_CIDRS)
     seen = set(all_cidrs)
     for c in _extract_dns_bypass_cidrs_from_config() + _tp_load_custom_bypass():
-        if c not in seen and ":" not in c:
+        c = _normalize_ipv4_cidr(c)
+        if c and c not in seen:
             all_cidrs.append(c)
             seen.add(c)
     return all_cidrs
@@ -811,7 +921,7 @@ def _iptables_cleanup():
         f"iptables -t nat -X {ch}_OUT 2>/dev/null",
         f"iptables -t nat -F {ch}_PRE 2>/dev/null",
         f"iptables -t nat -D PREROUTING -p tcp -j {ch}_PRE 2>/dev/null",
-        f"iptables -t nat -D PREROUTING -p udp --dport 53 -j {ch}_PRE 2>/dev/null",
+        f"iptables -t nat -D PREROUTING -p udp -m udp --dport 53 -j {ch}_PRE 2>/dev/null",
         f"iptables -t nat -X {ch}_PRE 2>/dev/null",
         f"iptables -t nat -F {ch}_RULE 2>/dev/null",
         f"iptables -t nat -X {ch}_RULE 2>/dev/null",
@@ -907,6 +1017,13 @@ def _dns_hijack_apply():
     startup restoration, etc.) — which would make restore() a no-op and
     leave the host with a broken 127.0.0.1:53 after Xray stops.
     """
+    desired = ("# Xray DNS hijack (xray-manager transparent proxy)\n"
+               "nameserver 127.0.0.1\nnameserver 223.5.5.5\nnameserver 119.29.29.29\n")
+    try:
+        if Path("/etc/resolv.conf").read_text() == desired:
+            return True
+    except Exception:
+        pass
     if not _dns_hijack_is_active():
         _dns_hijack_backup()
     with open("/etc/resolv.conf", "w") as f:
@@ -1007,23 +1124,86 @@ def _ensure_dns_inbound_in_config():
         print("[dns-config] Added missing dokodemo/dns inbound to config")
 
 
-def _iptables_setup_redirect(port, bypass_cidrs=None):
+def _iptables_rule_specs(port, bypass_cidrs):
+    """Exact XRAY_MGR_RULE lines as printed by `iptables -t nat -S` (used for setup and drift checks)."""
+    ch = f"{CHAIN_PREFIX}_RULE"
+    specs = [f"-A {ch} -d {cidr} -j RETURN" for cidr in bypass_cidrs]
+    specs.append(f"-A {ch} -m mark --mark 0x80/0x80 -j RETURN")
+    specs.append(f"-A {ch} -p tcp -j REDIRECT --to-ports {port}")
+    # UDP 53 from LAN/Docker bridges -> Xray's DNS inbound (0.0.0.0:53), which forwards
+    # to mainland UDP DNS. REDIRECT targets the receiving interface address; the old
+    # "DNAT --to-destination 127.0.0.1:53" is dropped as a martian for any non-local
+    # source unless route_localnet=1, which broke DNS for every bridge container.
+    specs.append(f"-A {ch} -p udp -m udp --dport 53 -j REDIRECT --to-ports 53")
+    return specs
+
+
+def _iptables_hook_specs():
     ch = CHAIN_PREFIX
+    return [
+        f"PREROUTING -p tcp -j {ch}_PRE",
+        f"PREROUTING -p udp -m udp --dport 53 -j {ch}_PRE",
+        f"OUTPUT -p tcp -j {ch}_OUT",
+        f"{ch}_PRE -j {ch}_RULE",
+        f"{ch}_OUT -j {ch}_RULE",
+    ]
+
+
+def _tp_iptables_in_sync(port, bypass_cidrs=None):
+    """True when the live rules equal what _iptables_setup_redirect would install now.
+
+    Existence alone is not enough: DNS servers, hosts or custom bypass entries may
+    have changed since the rules were built.
+    """
     if bypass_cidrs is None:
         bypass_cidrs = _tp_get_all_bypass_cidrs()
+    out, _, rc = _run(f"iptables -t nat -S {CHAIN_PREFIX}_RULE", timeout=5)
+    if rc != 0:
+        return False
+    actual = [line.strip() for line in out.splitlines() if line.startswith("-A ")]
+    if actual != _iptables_rule_specs(port, bypass_cidrs):
+        return False
+    for spec in _iptables_hook_specs():
+        _, _, rc = _run(f"iptables -t nat -C {spec}", timeout=5)
+        if rc != 0:
+            return False
+    return True
+
+
+def _active_tp_port():
+    conn = _connect_state_read()
+    if conn.get("active") and conn.get("transparent_enabled"):
+        return conn.get("transparent_port", DEFAULT_TRANSPARENT_PORT)
+    return _tp_state_read().get("port", DEFAULT_TRANSPARENT_PORT)
+
+
+def _tp_rebuild_if_active():
+    """Rebuild transparent-proxy rules (new bypass list) if they are installed. Returns (rebuilt, error)."""
+    if not _tp_has_iptables_rules():
+        return False, ""
+    ok, msg = _iptables_setup_redirect(_active_tp_port())
+    return ok, "" if ok else msg
+
+
+def _iptables_setup_redirect(port, bypass_cidrs=None):
+    """(Re)build all XRAY_MGR rules. Idempotent: always starts from a clean slate."""
+    ch = CHAIN_PREFIX
+    try:
+        port = _valid_port(port, DEFAULT_TRANSPARENT_PORT)
+    except ValueError as e:
+        return False, str(e)
+    if bypass_cidrs is None:
+        bypass_cidrs = _tp_get_all_bypass_cidrs()
+    bypass_cidrs = [c for c in (_normalize_ipv4_cidr(x) for x in bypass_cidrs) if c]
+    _iptables_cleanup()
     setup = [
         f"iptables -t nat -N {ch}_OUT",
         f"iptables -t nat -N {ch}_PRE",
         f"iptables -t nat -N {ch}_RULE",
     ]
-    for cidr in bypass_cidrs:
-        setup.append(f"iptables -t nat -A {ch}_RULE -d {cidr} -j RETURN")
-    setup.append(f"iptables -t nat -A {ch}_RULE -m mark --mark 0x80/0x80 -j RETURN")
-    setup.append(f"iptables -t nat -A {ch}_RULE -p tcp -j REDIRECT --to-ports {port}")
-    # UDP 53 goes directly to Xray's DNS inbound, which forwards to mainland UDP DNS.
-    setup.append(f"iptables -t nat -A {ch}_RULE -p udp --dport 53 -j DNAT --to-destination 127.0.0.1:53")
+    setup.extend(f"iptables -t nat {spec}" for spec in _iptables_rule_specs(port, bypass_cidrs))
     setup.append(f"iptables -t nat -I PREROUTING -p tcp -j {ch}_PRE")
-    setup.append(f"iptables -t nat -I PREROUTING -p udp --dport 53 -j {ch}_PRE")
+    setup.append(f"iptables -t nat -I PREROUTING -p udp -m udp --dport 53 -j {ch}_PRE")
     setup.append(f"iptables -t nat -I OUTPUT -p tcp -j {ch}_OUT")
     setup.append(f"iptables -t nat -A {ch}_PRE -j {ch}_RULE")
     setup.append(f"iptables -t nat -A {ch}_OUT -j {ch}_RULE")
@@ -1037,7 +1217,10 @@ def _iptables_setup_redirect(port, bypass_cidrs=None):
         for _line in _out.splitlines():
             parts = _line.split()
             if len(parts) >= 4 and "/" in parts[3]:
-                _cidr = parts[3]
+                try:
+                    _cidr = str(ipaddress.ip_interface(parts[3]).network)
+                except ValueError:
+                    continue
                 _net = _cidr.split("/")[0]
                 # Skip loopback and docker subnets
                 if _net.startswith("127.") or _net.startswith("172."):
@@ -1120,13 +1303,17 @@ def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
         dump = json.dumps(r)
         is_geo = any(k in dump for k in geo_keys)
         is_udp_direct = r.get("network") == "udp" and r.get("outboundTag") == "direct"
+        # Catch-all "udp -> direct" must stay LAST (re-added below); placing it with the
+        # geo rules (before the transparent rule) sent all transparent UDP direct.
+        match_keys = ("ip", "domain", "port", "sourcePort", "source", "inboundTag", "protocol", "user", "attrs")
+        is_udp_fallback = is_udp_direct and not any(k in r for k in match_keys)
         is_dns = r.get("inboundTag") == ["dns"]
         is_tp_dns = r.get("inboundTag") == ["transparent"] and r.get("port") == 53 and r.get("network") == "udp"
         is_quic_block = r.get("network") == "udp" and r.get("port") == 443
         is_tp = r.get("inboundTag") == ["transparent"]
-        if is_dns or is_tp_dns or is_quic_block:
+        if is_dns or is_tp_dns or is_quic_block or is_udp_fallback:
             continue
-        if is_geo or is_udp_direct:
+        if is_geo or (is_udp_direct and not is_udp_fallback):
             geo_rules.append(r)
         elif is_tp:
             tp_rule = r
@@ -1181,19 +1368,11 @@ def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
 
     # -- DNS config --
     cfg.setdefault("dns", {})
-    default_servers = [
-        "udp:223.5.5.5:53",
-        "udp:119.29.29.29:53",
-    ]
-    default_hosts = {
-        "domain:googleapis.cn": "googleapis.com",
-        "geosite:category-ads-all": "127.0.0.1",
-        "domain:evil.com": "127.0.0.1",
-    }
     if not cfg["dns"].get("servers"):
-        cfg["dns"]["servers"] = default_servers
+        cfg["dns"]["servers"] = list(DEFAULT_DNS_SERVERS)
     if not cfg["dns"].get("hosts"):
-        cfg["dns"]["hosts"] = default_hosts
+        cfg["dns"]["hosts"] = dict(TP_DEFAULT_DNS_HOSTS)
+    cfg["dns"] = _normalize_dns_config(cfg["dns"])
 
     return cfg, None
 
@@ -1236,16 +1415,8 @@ def _tp_remove_dokodemo_from_config():
                 settings.pop("domainStrategy", None)
     # Remove dns config added by transparent proxy
     dns = cfg.get("dns", {})
-    default_servers = [
-        "udp:223.5.5.5:53",
-        "udp:119.29.29.29:53",
-    ]
-    default_hosts = {
-        "domain:googleapis.cn": "googleapis.com",
-        "geosite:category-ads-all": "127.0.0.1",
-        "domain:evil.com": "127.0.0.1",
-    }
-    if dns.get("servers") == default_servers and (not dns.get("hosts") or dns.get("hosts") == default_hosts):
+    if (dns.get("servers") in (DEFAULT_DNS_SERVERS, LEGACY_DEFAULT_DNS_SERVERS)
+            and (not dns.get("hosts") or dns.get("hosts") == TP_DEFAULT_DNS_HOSTS)):
         cfg.pop("dns", None)
     return cfg, None
 
@@ -1523,7 +1694,7 @@ def _parse_vmess_link(link):
     # Add padding if needed
     b64 += "=" * (-len(b64) % 4)
     try:
-        data = json.loads(base64.b64decode(b64).decode("utf-8"))
+        data = json.loads(_b64.b64decode(b64).decode("utf-8"))
     except Exception as e:
         raise ValueError(f"invalid vmess base64: {e}")
 
@@ -1775,6 +1946,7 @@ def api_dns_get():
 
 
 @app.route("/api/dns", methods=["POST"])
+@_serialized
 def api_dns_post():
     data = request.json or {}
     dns = data.get("dns")
@@ -1783,22 +1955,20 @@ def api_dns_post():
     cfg, err = _parse_config()
     if err:
         return jsonify({"error": err}), 500
+    dns = _normalize_dns_config(dns)
     cfg["dns"] = dns
-    _dns_state_save(dns)
     backup, test = _save_config_object(cfg)
     if not test["ok"]:
         return jsonify({"error": "config test failed, rolled back", "detail": test["output"]}), 400
-    restart = _restart_xray() if test["ok"] else {}
+    _dns_state_save(dns)
+    restart = _restart_xray()
     # Rebuild iptables bypass if transparent proxy is active (picks up new DNS IPs)
-    iptables_rebuilt = False
-    out, _, rc = _run("iptables -t nat -L " + CHAIN_PREFIX + "_RULE -n 2>/dev/null")
-    if rc == 0 and CHAIN_PREFIX in out:
-        tp_state = _tp_state_read()
-        tp_port = tp_state.get("port", DEFAULT_TRANSPARENT_PORT)
-        _iptables_cleanup()
-        _iptables_setup_redirect(tp_port)
-        iptables_rebuilt = True
-    return jsonify({"ok": True, "backup": backup, "test": test, "restart": restart, "iptables_rebuilt": iptables_rebuilt})
+    iptables_rebuilt, rebuild_error = _tp_rebuild_if_active()
+    result = {"ok": not rebuild_error, "backup": backup, "test": test, "restart": restart,
+              "iptables_rebuilt": iptables_rebuilt}
+    if rebuild_error:
+        result["error"] = "iptables rebuild failed: " + rebuild_error
+    return jsonify(result), (500 if rebuild_error else 200)
 
 
 @app.route("/api/dns/hosts")
@@ -1819,6 +1989,7 @@ def api_dns_hosts_get():
 
 
 @app.route("/api/dns/hosts", methods=["POST"])
+@_serialized
 def api_dns_hosts_post():
     data = request.json or {}
     text = data.get("text", "").strip()
@@ -1842,24 +2013,21 @@ def api_dns_hosts_post():
     cfg, err = _parse_config()
     if err:
         return jsonify({"error": err}), 500
-    cfg.setdefault("dns", {})
+    cfg["dns"] = _normalize_dns_config(cfg.get("dns"))
     cfg["dns"]["hosts"] = hosts
-    _dns_state_save(cfg["dns"])
     backup, test = _save_config_object(cfg)
     if not test["ok"]:
         return jsonify({"error": "config test failed, rolled back", "detail": test["output"]}), 400
-    restart = _restart_xray() if test["ok"] else {}
+    _dns_state_save(cfg["dns"])
+    restart = _restart_xray()
     # If transparent proxy iptables rules are active, rebuild them to pick up
     # new DNS hosts IPs in the bypass list.
-    iptables_rebuilt = False
-    out, _, rc = _run("iptables -t nat -L " + CHAIN_PREFIX + "_RULE -n 2>/dev/null")
-    if rc == 0 and CHAIN_PREFIX in out:
-        tp_state = _tp_state_read()
-        tp_port = tp_state.get("port", DEFAULT_TRANSPARENT_PORT)
-        _iptables_cleanup()
-        _iptables_setup_redirect(tp_port)
-        iptables_rebuilt = True
-    return jsonify({"ok": True, "hosts": hosts, "backup": backup, "test": test, "restart": restart, "iptables_rebuilt": iptables_rebuilt})
+    iptables_rebuilt, rebuild_error = _tp_rebuild_if_active()
+    result = {"ok": not rebuild_error, "hosts": hosts, "backup": backup, "test": test,
+              "restart": restart, "iptables_rebuilt": iptables_rebuilt}
+    if rebuild_error:
+        result["error"] = "iptables rebuild failed: " + rebuild_error
+    return jsonify(result), (500 if rebuild_error else 200)
 
 
 @app.route("/api/geo/update", methods=["POST"])
@@ -1947,6 +2115,7 @@ def api_config_get():
 
 
 @app.route("/api/config", methods=["POST"])
+@_serialized
 def api_config_post():
     data = request.json
     if not data or "config" not in data:
@@ -1995,6 +2164,7 @@ def api_inbounds():
 
 
 @app.route("/api/inbounds", methods=["POST"])
+@_serialized
 def api_inbounds_post():
     """Update inbounds list in config."""
     data = request.json
@@ -2010,7 +2180,7 @@ def api_inbounds_post():
         cfg["routing"] = data["routing"]
     new_raw = json.dumps(cfg, ensure_ascii=False, indent=2)
 
-    _backup_config()
+    backup = _backup_config()
 
     with open(XRAY_CFG, "w") as f:
         f.write(new_raw + "\n")
@@ -2038,6 +2208,7 @@ def api_outbounds():
 
 
 @app.route("/api/outbounds", methods=["POST"])
+@_serialized
 def api_outbounds_post():
     data = request.json
     if not data or "outbounds" not in data:
@@ -2087,6 +2258,7 @@ def api_routing():
 
 
 @app.route("/api/routing", methods=["POST"])
+@_serialized
 def api_routing_post():
     data = request.json
     if not data or "routing" not in data:
@@ -2099,7 +2271,7 @@ def api_routing_post():
     cfg["routing"] = data["routing"]
     new_raw = json.dumps(cfg, ensure_ascii=False, indent=2)
 
-    _backup_config()
+    backup = _backup_config()
 
     with open(XRAY_CFG, "w") as f:
         f.write(new_raw + "\n")
@@ -2310,25 +2482,21 @@ def api_transparent_bypass_get():
 
 
 @app.route("/api/transparent/bypass", methods=["POST"])
+@_serialized
 def api_transparent_bypass_post():
     data = request.json or {}
     cidrs = data.get("custom", [])
     if not isinstance(cidrs, list):
         return jsonify({"error": "custom must be a list of CIDR strings"}), 400
+    invalid = [c for c in cidrs if not _normalize_ipv4_cidr(c)]
+    if invalid:
+        return jsonify({"error": "invalid IPv4 CIDR: " + ", ".join(map(str, invalid[:5]))}), 400
     saved = _tp_save_custom_bypass(cidrs)
     # If transparent proxy is currently active, rebuild iptables rules
-    state = _tp_state_read()
-    iptables_on = False
-    out, _, rc = _run("iptables -t nat -L " + CHAIN_PREFIX + "_RULE -n 2>/dev/null")
-    if rc == 0 and CHAIN_PREFIX in out:
-        iptables_on = True
-    if iptables_on:
-        port = state.get("port", DEFAULT_TRANSPARENT_PORT)
-        _iptables_cleanup()
-        ok, msg = _iptables_setup_redirect(port)
-        if not ok:
-            return jsonify({"error": "iptables rebuild failed: " + msg, "custom": saved}), 400
-    return jsonify({"ok": True, "custom": saved, "reloaded": iptables_on})
+    reloaded, rebuild_error = _tp_rebuild_if_active()
+    if rebuild_error:
+        return jsonify({"error": "iptables rebuild failed: " + rebuild_error, "custom": saved}), 400
+    return jsonify({"ok": True, "custom": saved, "reloaded": reloaded})
 
 
 @app.route("/api/transparent/status")
@@ -2341,9 +2509,13 @@ def api_transparent_status():
 
 
 @app.route("/api/transparent/enable", methods=["POST"])
+@_serialized
 def api_transparent_enable():
     data = request.json or {}
-    port = int(data.get("port", DEFAULT_TRANSPARENT_PORT))
+    try:
+        port = _valid_port(data.get("port"), DEFAULT_TRANSPARENT_PORT)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     proxy_tag = data.get("proxy_tag")
     _iptables_cleanup()
     backed_up = _iptables_save()
@@ -2367,7 +2539,9 @@ def api_transparent_enable():
     if not ok:
         if backed_up:
             _iptables_restore()
-        _tp_remove_dokodemo_from_config()
+        rollback_cfg, _ = _tp_remove_dokodemo_from_config()
+        if rollback_cfg:
+            _save_config_object(rollback_cfg)
         return jsonify({"error": msg}), 400
     restart = _restart_xray()
     _dns_hijack_apply()
@@ -2376,6 +2550,7 @@ def api_transparent_enable():
 
 
 @app.route("/api/transparent/disable", methods=["POST"])
+@_serialized
 def api_transparent_disable():
     _iptables_cleanup()
     cfg, err = _tp_remove_dokodemo_from_config()
@@ -2388,6 +2563,7 @@ def api_transparent_disable():
 
 
 @app.route("/api/transparent/restore-iptables", methods=["POST"])
+@_serialized
 def api_transparent_restore():
     _iptables_cleanup()
     ok = _iptables_restore()
@@ -2409,6 +2585,7 @@ def api_balancer_get():
 
 
 @app.route("/api/transparent/balancer", methods=["POST"])
+@_serialized
 def api_balancer_set():
     data = request.json or {}
     enabled = bool(data.get("enabled", False))
@@ -2454,13 +2631,21 @@ def api_connect_status():
 
 
 @app.route("/api/connect/start", methods=["POST"])
+@_serialized
 def api_connect_start():
     """One-click start: apply selected nodes, routing, optional transparent proxy."""
     data = request.json or {}
     tags = data.get("tags", [])
     strategy = data.get("strategy", "roundRobin")
     transparent = bool(data.get("transparent", False))
-    ports = data.get("ports", {"socks": 10810, "http": 10818, "transparent": 12345})
+    raw_ports = data.get("ports") or {}
+    if not isinstance(raw_ports, dict):
+        return jsonify({"error": "ports must be an object"}), 400
+    try:
+        ports = {key: _valid_port(raw_ports.get(key), default)
+                 for key, default in (("socks", 10810), ("http", 10818), ("transparent", 12345))}
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     if not tags:
         return jsonify({"error": "请至少选择一个节点"}), 400
@@ -2532,6 +2717,7 @@ def api_connect_start():
 
 
 @app.route("/api/connect/stop", methods=["POST"])
+@_serialized
 def api_connect_stop():
     """Stop connect mode: clean up iptables, restore DNS, remove connect routing rules."""
     state = _connect_state_read()
@@ -3221,19 +3407,21 @@ def api_logs_clear():
 def api_backups():
     cfg_dir = Path(XRAY_CFG).parent
     cfg_name = Path(XRAY_CFG).name
-    backups = sorted(
-        [str(p) for p in cfg_dir.glob(f"{cfg_name}.bak.*")],
-        reverse=True,
-    )[:20]
+    found = list(cfg_dir.glob(f"{cfg_name}.bak.*")) + list(Path(f"{BASE_DIR}/backup").glob("config-*.json.bak"))
+    backups = [str(p) for p in sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)][:20]
     return jsonify({"backups": backups})
 
 
 @app.route("/api/restore", methods=["POST"])
+@_serialized
 def api_restore():
     data = request.json
     if not data or "path" not in data:
         return jsonify({"error": "missing 'path' field"}), 400
-    path = data["path"]
+    path = os.path.realpath(str(data["path"]))
+    allowed_dirs = {os.path.realpath(str(Path(XRAY_CFG).parent)), os.path.realpath(f"{BASE_DIR}/backup")}
+    if os.path.dirname(path) not in allowed_dirs:
+        return jsonify({"error": "path must be a backup under config/ or backup/"}), 400
     if not os.path.isfile(path):
         return jsonify({"error": "backup not found"}), 404
     with open(path, "r") as f:
@@ -3254,8 +3442,13 @@ def api_restore():
 
     with open(XRAY_CFG, "w") as f:
         f.write(content)
+    test = _test_config()
+    if not test["ok"]:
+        with open(XRAY_CFG, "w") as f:
+            f.write(raw)
+        return jsonify({"error": "backup failed config test, not restored", "detail": test["output"]}), 400
 
-    return jsonify({"ok": True, "restored_from": path})
+    return jsonify({"ok": True, "restored_from": path, "test": test})
 
 
 # ---------------------------------------------------------------------------
@@ -5747,18 +5940,19 @@ if __name__ == "__main__":
     parser.add_argument("--xray-config", default=DEFAULT_XRAY_CFG)
     parser.add_argument("--xray-binary", default=DEFAULT_XRAY_BIN)
     parser.add_argument("--service", default=DEFAULT_SVC_NAME)
-    parser.add_argument("--token", default=DEFAULT_TOKEN)
+    parser.add_argument("--token", default=None,
+                        help="auth token; default: state/token file, else 123456; empty string disables auth")
     parser.add_argument("--test-urls-file", default=DEFAULT_TEST_URLS_FILE)
     args = parser.parse_args()
 
     XRAY_CFG = args.xray_config
     XRAY_BIN = args.xray_binary
     SVC_NAME = args.service
-    AUTH_TOKEN = args.token
+    AUTH_TOKEN = args.token if args.token is not None else DEFAULT_TOKEN
     TEST_URLS_FILE = args.test_urls_file
 
     # Load token from file if exists (overrides default, but --token overrides file)
-    if not args.token:
+    if args.token is None:
         try:
             with open(f"{BASE_DIR}/state/token") as f:
                 saved = f.read().strip()
@@ -5780,6 +5974,10 @@ if __name__ == "__main__":
     _init_dirs()
 
     # Cleanup stale transparent proxy iptables rules on startup
-    _tp_startup_cleanup()
+    with _STATE_LOCK:
+        _tp_startup_cleanup()
+    if RECONCILE_INTERVAL > 0:
+        threading.Thread(target=_reconcile_loop, name="reconcile", daemon=True).start()
+        print(f"  Reconcile: every {RECONCILE_INTERVAL}s")
 
     app.run(host=args.host, port=args.port, debug=False)
