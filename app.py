@@ -67,10 +67,12 @@ TRANSPARENT_STATE_FILE = f"{BASE_DIR}/state/transparent-state.json"
 IPTABLES_BACKUP_FILE = f"{BASE_DIR}/backup/iptables-backup.rules"
 RESOLV_BACKUP_FILE = f"{BASE_DIR}/backup/resolv.conf.bak"
 CHAIN_PREFIX = "XRAY_MGR"
+QUIC_REJECT_PORT = 9  # udp "discard": nothing listens there, so the kernel replies port-unreachable
 CUSTOM_BYPASS_FILE = f"{BASE_DIR}/state/transparent-bypass.json"
 BALANCER_CONFIG_FILE = f"{BASE_DIR}/state/balancer-config.json"
 CONNECT_STATE_FILE = f"{BASE_DIR}/state/connect-mode.json"
 DNS_STATE_FILE = f"{BASE_DIR}/state/dns-config.json"
+CUSTOM_RULES_FILE = f"{BASE_DIR}/state/custom-rules.json"
 TOKEN_FILE = f"{BASE_DIR}/state/token"
 GEOIP_PATH = f"{BASE_DIR}/data/geoip.dat"
 GEOSITE_PATH = f"{BASE_DIR}/data/geosite.dat"
@@ -674,6 +676,137 @@ def _reconcile_loop():
             print(f"[reconcile] error: {e}", flush=True)
 
 
+# ---------------------------------------------------------------------------
+# User routing rules (direct / proxy / block), kept across connect-mode rebuilds
+# ---------------------------------------------------------------------------
+USER_RULE_PREFIX = "user:"
+PROXY_TARGET = "__proxy__"   # resolved to the active node / balancer when applied
+_RULE_MATCH_KEYS = ("domain", "ip", "port", "network", "sourceIP", "protocol", "inboundTag")
+_RULE_LIST_KEYS = ("domain", "ip", "sourceIP", "protocol", "inboundTag")
+
+
+def _normalize_user_rule(rule):
+    """Validate one user rule. Bare domains become "domain:x"; returns (rule, error)."""
+    if not isinstance(rule, dict):
+        return None, "rule must be an object"
+    out = {"type": "field"}
+    for key in _RULE_LIST_KEYS:
+        vals = rule.get(key)
+        if vals in (None, "", []):
+            continue
+        if isinstance(vals, str):
+            vals = [v for v in re.split(r"[,\s]+", vals) if v]
+        if not isinstance(vals, list) or not all(isinstance(v, str) and v.strip() for v in vals):
+            return None, f"{key} must be a list of strings"
+        vals = [v.strip() for v in vals]
+        if key == "domain":
+            vals = [v if ":" in v else f"domain:{v}" for v in vals]
+        if key in ("ip", "sourceIP"):
+            for v in vals:
+                if not v.startswith(("geoip:", "ext:")):
+                    try:
+                        ipaddress.ip_network(v.lstrip("!"), strict=False)
+                    except ValueError:
+                        return None, f"invalid IP/CIDR: {v}"
+        out[key] = vals
+    for key in ("port", "network"):
+        val = rule.get(key)
+        if val not in (None, ""):
+            val = str(val).strip()
+            if key == "port" and not re.fullmatch(r"\d{1,5}(-\d{1,5})?(,\d{1,5}(-\d{1,5})?)*", val):
+                return None, f"invalid port: {val}"
+            if key == "network" and val not in ("tcp", "udp", "tcp,udp"):
+                return None, f"invalid network: {val}"
+            out[key] = val
+    if not any(k in out for k in _RULE_MATCH_KEYS):
+        return None, "rule needs at least one match condition"
+    target = rule.get("balancerTag") or rule.get("outboundTag") or ""
+    if not isinstance(target, str) or not target:
+        return None, "rule needs an outbound (direct / block / proxy / node tag)"
+    if rule.get("balancerTag"):
+        out["balancerTag"] = target
+    else:
+        out["outboundTag"] = target
+    remark = str(rule.get("remark") or "")[:80]
+    if remark:
+        out["remark"] = remark
+    return out, None
+
+
+def _custom_rules_load():
+    try:
+        with open(CUSTOM_RULES_FILE) as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    rules = []
+    for r in data if isinstance(data, list) else []:
+        norm, err = _normalize_user_rule(r)
+        if norm:
+            rules.append(norm)
+    return rules
+
+
+def _custom_rules_save(rules):
+    Path(CUSTOM_RULES_FILE).parent.mkdir(parents=True, exist_ok=True)
+    tmp = CUSTOM_RULES_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(rules, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, CUSTOM_RULES_FILE)
+
+
+def _is_managed_head_rule(r):
+    return r.get("inboundTag") == ["dns"] or (r.get("network") == "udp" and r.get("port") == 443 and r.get("outboundTag") == "block")
+
+
+def _current_proxy_target(cfg):
+    """Where "proxy" rules go: whatever the transparent/socks inbound uses now."""
+    rules = cfg.get("routing", {}).get("rules", [])
+    for tag in ("transparent", "socks-in", "http-in"):
+        for r in rules:
+            if r.get("inboundTag") == [tag] and (r.get("balancerTag") or r.get("outboundTag")):
+                return ("balancerTag", r["balancerTag"]) if r.get("balancerTag") else ("outboundTag", r["outboundTag"])
+    for ob in cfg.get("outbounds", []):
+        if ob.get("protocol") not in ("freedom", "blackhole", "dns") and ob.get("tag"):
+            return "outboundTag", ob["tag"]
+    return "outboundTag", "direct"
+
+
+def _apply_custom_rules(cfg, rules=None):
+    """Insert user rules right after the managed DNS/QUIC head rules (before geo
+    direct and the inbound catch-all rules, which would otherwise shadow them)."""
+    if rules is None:
+        rules = _custom_rules_load()
+    routing = cfg.setdefault("routing", {})
+    existing = [r for r in routing.get("rules", []) if not str(r.get("ruleTag", "")).startswith(USER_RULE_PREFIX)]
+    routing["rules"] = existing
+    known = {ob.get("tag") for ob in cfg.get("outbounds", [])}
+    balancers = {b.get("tag") for b in routing.get("balancers", [])}
+    proxy_key, proxy_tag = _current_proxy_target(cfg)
+    materialized = []
+    for i, rule in enumerate(rules, 1):
+        r = {k: v for k, v in rule.items() if k != "remark"}
+        target = r.pop("balancerTag", None) or r.pop("outboundTag", None)
+        if target == PROXY_TARGET:
+            r[proxy_key] = proxy_tag
+        elif target in balancers:
+            r["balancerTag"] = target
+        elif target in known or target in ("direct", "block"):
+            r["outboundTag"] = target
+        else:
+            continue  # node was deleted; keep the rule stored but skip it
+        r["ruleTag"] = f"{USER_RULE_PREFIX}{i}"
+        materialized.append(r)
+    idx = 0
+    while idx < len(existing) and _is_managed_head_rule(existing[idx]):
+        idx += 1
+    routing["rules"] = existing[:idx] + materialized + existing[idx:]
+    if materialized and not any(ob.get("tag") == "block" for ob in cfg.get("outbounds", [])) and \
+            any(r.get("outboundTag") == "block" for r in materialized):
+        cfg.setdefault("outbounds", []).append({"tag": "block", "protocol": "blackhole"})
+    return cfg
+
+
 def _extract_node_info(ob):
     """Extract display info from an outbound."""
     tag = ob.get("tag", "")
@@ -825,6 +958,7 @@ def _build_connect_config(selected_tags, strategy, transparent, ports):
     saved_dns = _dns_state_load()
     cfg["dns"] = _normalize_dns_config(saved_dns if saved_dns else DEFAULT_DNS_CONFIG)
 
+    _apply_custom_rules(cfg)
     _ensure_access_log_config(cfg)
     return cfg, None
 
@@ -926,23 +1060,139 @@ def _iptables_cleanup():
         f"iptables -t nat -F {ch}_PRE 2>/dev/null",
         f"iptables -t nat -D PREROUTING -p tcp -j {ch}_PRE 2>/dev/null",
         f"iptables -t nat -D PREROUTING -p udp -m udp --dport 53 -j {ch}_PRE 2>/dev/null",
+        f"iptables -t nat -D PREROUTING -p udp -m udp --dport 443 -j {ch}_PRE 2>/dev/null",
         f"iptables -t nat -X {ch}_PRE 2>/dev/null",
         f"iptables -t nat -F {ch}_RULE 2>/dev/null",
         f"iptables -t nat -X {ch}_RULE 2>/dev/null",
     ]
     for cmd in cmds:
         _run(cmd, timeout=5)
-    # Clean up LAN gateway rules (FORWARD ACCEPT + MASQUERADE)
+    _gateway_cleanup()
+
+
+GATEWAY_COMMENT = "xray-mgr-gw"
+# Interfaces that are never a home LAN (container/VPN bridges); their subnets are
+# not masqueraded. Matching by name instead of the old "skip 172.*" so a LAN on
+# 172.16.0.0/12 still works.
+_NON_LAN_IFACE_PREFIXES = ("lo", "docker", "br-", "veth", "virbr", "cni", "flannel", "cali", "tun", "wg", "tailscale", "zt")
+
+
+def _lan_interfaces():
+    """[(iface, ip, cidr)] for LAN-facing IPv4 interfaces."""
+    out, _, rc = _run("ip -4 -o addr show", timeout=5)
+    found = []
+    if rc != 0:
+        return found
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or parts[2] != "inet":
+            continue
+        iface = parts[1].split("@", 1)[0]
+        if iface.startswith(_NON_LAN_IFACE_PREFIXES):
+            continue
+        try:
+            itf = ipaddress.ip_interface(parts[3])
+        except ValueError:
+            continue
+        if itf.network.is_loopback or itf.network.prefixlen == 32:
+            continue
+        found.append((iface, str(itf.ip), str(itf.network)))
+    return found
+
+
+def _lan_cidrs():
+    """IPv4 subnets allowed to use this host as gateway."""
+    cidrs = []
+    for _, _, cidr in _lan_interfaces():
+        if cidr not in cidrs:
+            cidrs.append(cidr)
+    return cidrs or ["192.168.0.0/16"]
+
+
+def _nft_forward_backend():
+    """Docker on nf_tables hosts often sets FORWARD policy DROP there; legacy ACCEPT
+    rules alone cannot override it, so forwarded phone traffic must also be accepted
+    in DOCKER-USER (or FORWARD) of the nft backend. Returns (binary, chain) or None."""
+    out, _, rc = _run("iptables-nft -S FORWARD 2>/dev/null", timeout=5)
+    if rc != 0 or not out.strip():
+        return None
+    if "-N DOCKER-USER" in _run("iptables-nft -S DOCKER-USER 2>/dev/null", timeout=5)[0]:
+        return "iptables-nft", "DOCKER-USER"
+    if "-P FORWARD DROP" in out:
+        return "iptables-nft", "FORWARD"
+    return None
+
+
+def _gateway_rules():
+    """(binary, table, "-A/-I ..." spec) for LAN-gateway mode, all tagged with a comment."""
+    c = f'-m comment --comment {GATEWAY_COMMENT}'
+    lans = _lan_cidrs()
+    rules = []
+    for cidr in lans:
+        rules.append(("iptables", "nat", f"-A POSTROUTING -s {cidr} ! -o lo {c} -j MASQUERADE"))
+    for cidr in lans:
+        rules.append(("iptables", "filter", f"-A FORWARD -s {cidr} {c} -j ACCEPT"))
+        rules.append(("iptables", "filter", f"-A FORWARD -d {cidr} -m conntrack --ctstate RELATED,ESTABLISHED {c} -j ACCEPT"))
+    nft = _nft_forward_backend()
+    if nft:
+        binary, chain = nft
+        for cidr in lans:
+            rules.append((binary, "filter", f"-I {chain} -s {cidr} {c} -j ACCEPT"))
+            rules.append((binary, "filter", f"-I {chain} -d {cidr} -m conntrack --ctstate RELATED,ESTABLISHED {c} -j ACCEPT"))
+    return rules
+
+
+def _gateway_cleanup():
+    for binary in ("iptables", "iptables-nft"):
+        for table in ("nat", "filter"):
+            out, _, rc = _run(f"{binary} -t {table} -S 2>/dev/null", timeout=5)
+            if rc != 0:
+                continue
+            for line in out.splitlines():
+                if line.startswith("-A ") and GATEWAY_COMMENT in line:
+                    _run(f"{binary} -t {table} -D " + line[3:], timeout=5)
+    # Rules written by versions before the comment tag.
     _run("iptables -D FORWARD -j ACCEPT 2>/dev/null", timeout=5)
-    # Remove MASQUERADE rules we added (for detected subnets)
-    try:
-        import subprocess as _sp
-        _out = _sp.check_output(["iptables-legacy", "-t", "nat", "-S", "POSTROUTING"], text=True, timeout=5)
-        for _line in _out.splitlines():
-            if "MASQUERADE" in _line and "! -o lo" in _line:
-                _run(_line.replace("-A", "-D"), timeout=5)
-    except Exception:
-        pass
+    out, _, _ = _run("iptables -t nat -S POSTROUTING 2>/dev/null", timeout=5)
+    for line in out.splitlines():
+        if line.startswith("-A ") and "MASQUERADE" in line and "! -o lo" in line and "--comment" not in line:
+            _run("iptables -t nat -D " + line[3:], timeout=5)
+
+
+def _gateway_in_sync():
+    want = {}
+    for binary, table, spec in _gateway_rules():
+        want.setdefault((binary, table), []).append(spec.split(" ", 1)[1])
+    for (binary, table), specs in want.items():
+        out, _, rc = _run(f"{binary} -t {table} -S 2>/dev/null", timeout=5)
+        if rc != 0:
+            return False
+        have = sorted(line[3:] for line in out.splitlines() if line.startswith("-A ") and GATEWAY_COMMENT in line)
+        if have != sorted(specs):
+            return False
+    return True
+
+
+def _gateway_status():
+    """Checks for using this host as a phone's gateway (shown in the UI)."""
+    def sysctl(key):
+        try:
+            return Path("/proc/sys/" + key.replace(".", "/")).read_text().strip()
+        except Exception:
+            return ""
+    nft_out, _, nft_rc = _run("iptables-nft -S FORWARD 2>/dev/null", timeout=5)
+    conn = _connect_state_read()
+    return {
+        "lan": [{"iface": i, "ip": ip, "cidr": c} for i, ip, c in _lan_interfaces()],
+        "lan_cidrs": _lan_cidrs(),
+        "transparent": bool(conn.get("active") and conn.get("transparent_enabled")) or bool(_tp_state_read().get("enabled")),
+        "dns_inbound": any(ib.get("tag") == "dns" and ib.get("port") == 53 for ib in (_parse_config()[0] or {}).get("inbounds", [])),
+        "ip_forward": sysctl("net.ipv4.ip_forward") == "1",
+        "send_redirects": sysctl("net.ipv4.conf.all.send_redirects"),
+        "send_redirects_ifaces": {i: sysctl(f"net.ipv4.conf.{i}.send_redirects") for i, _, _ in _lan_interfaces()},
+        "nft_forward_drop": nft_rc == 0 and "-P FORWARD DROP" in nft_out,
+        "rules_in_sync": _tp_has_iptables_rules() and _gateway_in_sync(),
+    }
 
 
 def _tp_has_iptables_rules():
@@ -1138,6 +1388,13 @@ def _iptables_rule_specs(port, bypass_cidrs):
     # "DNAT --to-destination 127.0.0.1:53" is dropped as a martian for any non-local
     # source unless route_localnet=1, which broke DNS for every bridge container.
     specs.append(f"-A {ch} -p udp -m udp --dport 53 -j REDIRECT --to-ports 53")
+    # QUIC (udp/443) is not proxied (only TCP is). Send it to a closed local port so the
+    # box answers "port unreachable" at once and browsers fall back to TCP, which is
+    # proxied. A FORWARD REJECT does not work reliably: the packet is first routed back
+    # out the LAN port, the ICMP redirect emitted there shares the per-host ICMP rate
+    # limit, and the REJECT's error was suppressed (seen on kernel 4.18). Bypassed
+    # destinations (LAN, DNS servers, custom bypass) RETURN above and keep working.
+    specs.append(f"-A {ch} -p udp -m udp --dport 443 -j REDIRECT --to-ports {QUIC_REJECT_PORT}")
     return specs
 
 
@@ -1146,6 +1403,7 @@ def _iptables_hook_specs():
     return [
         f"PREROUTING -p tcp -j {ch}_PRE",
         f"PREROUTING -p udp -m udp --dport 53 -j {ch}_PRE",
+        f"PREROUTING -p udp -m udp --dport 443 -j {ch}_PRE",
         f"OUTPUT -p tcp -j {ch}_OUT",
         f"{ch}_PRE -j {ch}_RULE",
         f"{ch}_OUT -j {ch}_RULE",
@@ -1170,7 +1428,7 @@ def _tp_iptables_in_sync(port, bypass_cidrs=None):
         _, _, rc = _run(f"iptables -t nat -C {spec}", timeout=5)
         if rc != 0:
             return False
-    return True
+    return _gateway_in_sync()
 
 
 def _active_tp_port():
@@ -1207,33 +1465,13 @@ def _iptables_setup_redirect(port, bypass_cidrs=None):
     setup.extend(f"iptables -t nat {spec}" for spec in _iptables_rule_specs(port, bypass_cidrs))
     setup.append(f"iptables -t nat -I PREROUTING -p tcp -j {ch}_PRE")
     setup.append(f"iptables -t nat -I PREROUTING -p udp -m udp --dport 53 -j {ch}_PRE")
+    setup.append(f"iptables -t nat -I PREROUTING -p udp -m udp --dport 443 -j {ch}_PRE")
     setup.append(f"iptables -t nat -I OUTPUT -p tcp -j {ch}_OUT")
     setup.append(f"iptables -t nat -A {ch}_PRE -j {ch}_RULE")
     setup.append(f"iptables -t nat -A {ch}_OUT -j {ch}_RULE")
-    # LAN gateway support: FORWARD + MASQUERADE
-    setup.append("iptables -C FORWARD -j ACCEPT 2>/dev/null || iptables -I FORWARD -j ACCEPT")
-    # Auto-detect local subnets for MASQUERADE
-    import subprocess as _sp
-    try:
-        _out = _sp.check_output(["ip", "-4", "-o", "addr", "show"], text=True, timeout=5)
-        _seen = set()
-        for _line in _out.splitlines():
-            parts = _line.split()
-            if len(parts) >= 4 and "/" in parts[3]:
-                try:
-                    _cidr = str(ipaddress.ip_interface(parts[3]).network)
-                except ValueError:
-                    continue
-                _net = _cidr.split("/")[0]
-                # Skip loopback and docker subnets
-                if _net.startswith("127.") or _net.startswith("172."):
-                    continue
-                if _cidr not in _seen:
-                    _seen.add(_cidr)
-                    setup.append(f"iptables -t nat -C POSTROUTING -s {_cidr} ! -o lo -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s {_cidr} ! -o lo -j MASQUERADE")
-    except Exception:
-        # Fallback: broad LAN range
-        setup.append("iptables -t nat -C POSTROUTING -s 192.168.0.0/16 ! -o lo -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 192.168.0.0/16 ! -o lo -j MASQUERADE")
+    # LAN gateway support (phone sets its gateway to this host): see _gateway_rules().
+    for backend, table, spec in _gateway_rules():
+        setup.append(f"{backend} -t {table} {spec}")
     for cmd in setup:
         out, err, rc = _run(cmd, timeout=5)
         if rc != 0:
@@ -1303,6 +1541,8 @@ def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
     tp_rule = None
     other_rules = []
     for r in old_rules:
+        if str(r.get("ruleTag", "")).startswith(USER_RULE_PREFIX):
+            continue  # re-inserted by _apply_custom_rules
         dump = json.dumps(r)
         is_geo = any(k in dump for k in geo_keys)
         is_udp_direct = r.get("network") == "udp" and r.get("outboundTag") == "direct"
@@ -1377,6 +1617,7 @@ def _tp_add_dokodemo_to_config(port, balancer_cfg=None):
         cfg["dns"]["hosts"] = dict(TP_DEFAULT_DNS_HOSTS)
     cfg["dns"] = _normalize_dns_config(cfg["dns"])
 
+    _apply_custom_rules(cfg)
     return cfg, None
 
 
@@ -1622,48 +1863,103 @@ def _bool_param(qs, *names, default=False):
     return default
 
 
+def _share_qs(query):
+    """parse_qs that keeps a literal "+" (ECH values look like "cloudflare-ech.com+https://...")."""
+    return parse_qs(query.replace("+", "%2B"), keep_blank_values=False)
+
+
 def _apply_stream_settings(outbound, qs, address, default_network="tcp"):
-    """Apply common stream/transport settings (tls, ws, grpc, etc.) from query params."""
-    network = qs.get("type", qs.get("network", [default_network]))[0] or default_network
-    security = qs.get("security", ["none"])[0] or "none"
+    """Apply transport/security settings from share-link query params.
+
+    Follows the Xray share-link conventions: type=tcp|raw|ws|grpc|xhttp|httpupgrade|kcp,
+    security=none|tls|reality, sni, fp, alpn, ech, pbk/sid/spx/pqv, host, path,
+    mode (xhttp mode / grpc multi), extra (xhttp JSON), serviceName, authority,
+    headerType, seed.
+    """
+    def q(*names, default=""):
+        for name in names:
+            if qs.get(name) and qs[name][0] != "":
+                return qs[name][0]
+        return default
+
+    network = q("type", "network", default=default_network) or default_network
+    if network == "h2":
+        network = "http"
+    security = q("security", default="none") or "none"
     stream = {"network": network, "security": security}
 
     if security == "tls":
-        tls = {
-            "serverName": qs.get("sni", qs.get("serverName", [address]))[0],
-            "allowInsecure": _bool_param(qs, "allowInsecure", "insecure", default=False),
-        }
-        fp = qs.get("fp", qs.get("fingerprint", [""]))[0]
-        if fp:
-            tls["fingerprint"] = fp
-        alpn = qs.get("alpn", [""])[0]
-        if alpn:
-            tls["alpn"] = [x for x in alpn.split(",") if x]
-        ech = qs.get("ech", [""])[0]
-        if ech:
-            tls["echConfigList"] = ech
-            tls["echForceQuery"] = "full"
+        # Xray 26.x removed allowInsecure=true (the whole config then fails to load, taking
+        # every node down); certificate pinning via pinnedPeerCertSha256 replaces it.
+        tls = {"serverName": q("sni", "serverName", "peer", default=address), "allowInsecure": False}
+        if q("fp", "fingerprint"):
+            tls["fingerprint"] = q("fp", "fingerprint")
+        if q("alpn"):
+            tls["alpn"] = [x for x in q("alpn").split(",") if x]
+        if q("ech"):
+            tls["echConfigList"] = q("ech")
+            tls["echForceQuery"] = q("echForceQuery", default="full")
+        if q("pcs", "pinnedPeerCertSha256"):
+            tls["pinnedPeerCertSha256"] = q("pcs", "pinnedPeerCertSha256")
         stream["tlsSettings"] = tls
     elif security == "reality":
         reality = {
-            "serverName": qs.get("sni", [address])[0],
-            "fingerprint": qs.get("fp", ["chrome"])[0],
-            "publicKey": qs.get("pbk", [""])[0],
-            "shortId": qs.get("sid", [""])[0],
-            "spiderX": qs.get("spx", [""])[0],
+            "serverName": q("sni", "serverName", default=address),
+            "fingerprint": q("fp", default="chrome"),
+            "publicKey": q("pbk", "publicKey"),
+            "shortId": q("sid", "shortId"),
+            "spiderX": q("spx", "spiderX"),
+            "mldsa65Verify": q("pqv"),
         }
         stream["realitySettings"] = {k: v for k, v in reality.items() if v}
 
+    host, path = q("host"), q("path")
     if network == "ws":
-        ws = {"path": qs.get("path", ["/"])[0]}
-        host = qs.get("host", [""])[0]
+        ws = {"path": path or "/"}
         if host:
-            ws["headers"] = {"Host": host}
+            ws["host"] = host
         stream["wsSettings"] = ws
+    elif network == "httpupgrade":
+        hu = {"path": path or "/"}
+        if host:
+            hu["host"] = host
+        stream["httpupgradeSettings"] = hu
     elif network == "grpc":
-        stream["grpcSettings"] = {"serviceName": qs.get("serviceName", [""])[0]}
+        grpc = {"serviceName": q("serviceName", default=path)}
+        if q("mode") == "multi":
+            grpc["multiMode"] = True
+        if q("authority"):
+            grpc["authority"] = q("authority")
+        stream["grpcSettings"] = grpc
     elif network == "xhttp":
-        stream["xhttpSettings"] = {"path": qs.get("path", ["/"])[0]}
+        xh = {"path": path or "/"}
+        if host:
+            xh["host"] = host
+        if q("mode"):
+            xh["mode"] = q("mode")
+        if q("extra"):
+            try:
+                extra = json.loads(q("extra"))
+            except ValueError:
+                raise ValueError("xhttp extra must be JSON")
+            if isinstance(extra, dict) and extra:
+                xh["extra"] = extra
+        stream["xhttpSettings"] = xh
+    elif network == "http":
+        h = {"path": path or "/"}
+        if host:
+            h["host"] = [x for x in host.split(",") if x]
+        stream["httpSettings"] = h
+    elif network == "kcp":
+        kcp = {"header": {"type": q("headerType", default="none")}}
+        if q("seed"):
+            kcp["seed"] = q("seed")
+        stream["kcpSettings"] = kcp
+    elif network in ("tcp", "raw") and q("headerType") == "http":
+        req = {"path": [path or "/"]}
+        if host:
+            req["headers"] = {"Host": [x for x in host.split(",") if x]}
+        stream["tcpSettings"] = {"header": {"type": "http", "request": req}}
 
     outbound["streamSettings"] = stream
 
@@ -1675,7 +1971,7 @@ def _parse_vless_link(link):
         raise ValueError("missing UUID in vless link")
     address = parsed.hostname
     port = parsed.port or 443
-    qs = parse_qs(parsed.query)
+    qs = _share_qs(parsed.query)
     tag = unquote(parsed.fragment or "") or f"vless-{address}-{port}"
 
     outbound = {
@@ -1715,7 +2011,7 @@ def _parse_vmess_link(link):
         "settings": {"vnext": [{"address": address, "port": port, "users": [{"id": uuid, "alterId": aid, "security": data.get("scy", "auto") or "auto"}]}]},
     }
 
-    stream = {"network": net, "security": data.get("tls", "") or ""}
+    stream = {"network": net, "security": data.get("tls", "") or "none"}
     if stream["security"] == "tls":
         tls = {"serverName": data.get("sni", address)}
         fp = data.get("fp", "")
@@ -1724,17 +2020,27 @@ def _parse_vmess_link(link):
         alpn = data.get("alpn", "")
         if alpn:
             tls["alpn"] = [x for x in str(alpn).split(",") if x]
-        insecure = data.get("insecure", "0")
-        if str(insecure) in ("1", "true"):
-            tls["allowInsecure"] = True
+        # allowInsecure=true is rejected by Xray 26.x; ignore the share-link flag.
         stream["tlsSettings"] = tls
 
     if net == "ws":
         ws = {"path": data.get("path", "/") or "/"}
         host = data.get("host", "")
         if host:
-            ws["headers"] = {"Host": host}
+            ws["host"] = host
         stream["wsSettings"] = ws
+    elif net in ("xhttp", "httpupgrade"):
+        settings = {"path": data.get("path", "/") or "/"}
+        if data.get("host"):
+            settings["host"] = data["host"]
+        if net == "xhttp" and data.get("mode"):
+            settings["mode"] = data["mode"]
+        if net == "xhttp" and data.get("extra"):
+            extra = data["extra"]
+            if isinstance(extra, str):
+                extra = json.loads(extra)
+            settings["extra"] = extra
+        stream[f"{net}Settings"] = settings
     elif net == "grpc":
         stream["grpcSettings"] = {"serviceName": data.get("path", "") or ""}
     elif net == "h2" or net == "http":
@@ -1764,14 +2070,13 @@ def _parse_ss_link(link):
     userinfo = parsed.username or ""
     if ":" not in userinfo:
         # Base64 encoded (standard or URL-safe)
-        padded = userinfo + "=" * (-len(userinfo) % 4)
+        std = unquote(userinfo).replace("-", "+").replace("_", "/")
+        padded = std + "=" * (-len(std) % 4)
         decoded = None
-        for decoder in (_b64.b64decode, _b64.urlsafe_b64decode):
-            try:
-                decoded = decoder(padded).decode("utf-8")
-                break
-            except Exception:
-                continue
+        try:
+            decoded = _b64.b64decode(padded, validate=True).decode("utf-8")
+        except Exception:
+            decoded = None
         if not decoded or ":" not in decoded:
             raise ValueError("cannot decode ss userinfo")
         method, password = decoded.split(":", 1)
@@ -1794,9 +2099,9 @@ def _parse_ss_link(link):
     if plugin_match:
         plugin_str = unquote(plugin_match.group(1))
         remaining = raw_query[:plugin_match.start()] + raw_query[plugin_match.end():]
-        qs = parse_qs(remaining)
+        qs = _share_qs(remaining)
     else:
-        qs = parse_qs(raw_query)
+        qs = _share_qs(raw_query)
 
     outbound = {
         "tag": tag, "protocol": "shadowsocks",
@@ -1805,7 +2110,7 @@ def _parse_ss_link(link):
 
     # Parse plugin (v2ray-plugin / obfs-local)
     if plugin_str:
-        parts = plugin_str.split(";")
+        parts = [x.replace("\\;", ";") for x in re.split(r"(?<!\\);", plugin_str)]  # SIP003 escapes ";" as "\\;"
         plugin_name = parts[0]
         plugin_args = {k: v for k, v in (p.split("=", 1) if "=" in p else (p, "") for p in parts[1:]) if k}
 
@@ -1818,12 +2123,12 @@ def _parse_ss_link(link):
                 # Unescape v2ray-plugin escapes: \= -> =, \, -> , , \\ -> \
                 path = path.replace("\\=", "=").replace("\\,", ",").replace("\\\\", "\\")
                 if host:
-                    ws["headers"] = {"Host": host}
+                    ws["host"] = host
                 ws["path"] = path
-                stream = {"network": "ws", "wsSettings": ws}
+                stream = {"network": "ws", "security": "none", "wsSettings": ws}
                 if "tls" in plugin_args:
                     stream["security"] = "tls"
-                    tls = {"serverName": host or address}
+                    tls = {"serverName": plugin_args.get("sni") or host or address}
                     stream["tlsSettings"] = tls
                 outbound["streamSettings"] = stream
         elif plugin_name in ("obfs-local", "simple-obfs"):
@@ -1834,6 +2139,9 @@ def _parse_ss_link(link):
                     "network": "raw",
                     "tcpSettings": {"header": {"type": "http", "request": {"headers": {"Host": [obfs_host]}}}},
                 }
+    elif qs.get("type") or qs.get("security"):
+        # Xray-style SIP002 extension: ss://...?type=ws&host=...&path=...&security=tls
+        _apply_stream_settings(outbound, qs, address)
 
     return outbound
 
@@ -1846,7 +2154,7 @@ def _parse_trojan_link(link):
         raise ValueError("missing password in trojan link")
     address = parsed.hostname
     port = parsed.port or 443
-    qs = parse_qs(parsed.query)
+    qs = _share_qs(parsed.query)
     tag = unquote(parsed.fragment or "") or f"trojan-{address}-{port}"
 
     outbound = {
@@ -2293,6 +2601,36 @@ def api_routing_post():
     return jsonify({"ok": True, "test": test, "restart": restart})
 
 
+@app.route("/api/routing/custom")
+def api_routing_custom_get():
+    return jsonify({"rules": _custom_rules_load(), "proxy_target": PROXY_TARGET})
+
+
+@app.route("/api/routing/custom", methods=["POST"])
+@_serialized
+def api_routing_custom_post():
+    data = request.json or {}
+    raw = data.get("rules")
+    if not isinstance(raw, list):
+        return jsonify({"error": "rules must be a list"}), 400
+    rules = []
+    for i, r in enumerate(raw, 1):
+        norm, err = _normalize_user_rule(r)
+        if err:
+            return jsonify({"error": f"第 {i} 条规则: {err}"}), 400
+        rules.append(norm)
+    cfg, err = _parse_config()
+    if err:
+        return jsonify({"error": err}), 500
+    _apply_custom_rules(cfg, rules)
+    backup, test = _save_config_object(cfg)
+    if not test["ok"]:
+        return jsonify({"error": "config test failed, rolled back", "detail": test["output"]}), 400
+    _custom_rules_save(rules)
+    restart = _restart_xray()
+    return jsonify({"ok": True, "rules": rules, "test": test, "restart": restart})
+
+
 @app.route("/api/test-urls")
 def api_test_urls_get():
     return jsonify({"urls": _load_test_urls(), "defaults": DEFAULT_TEST_URLS})
@@ -2500,6 +2838,11 @@ def api_transparent_bypass_post():
     if rebuild_error:
         return jsonify({"error": "iptables rebuild failed: " + rebuild_error, "custom": saved}), 400
     return jsonify({"ok": True, "custom": saved, "reloaded": reloaded})
+
+
+@app.route("/api/gateway/status")
+def api_gateway_status():
+    return jsonify(_gateway_status())
 
 
 @app.route("/api/transparent/status")
@@ -3544,111 +3887,213 @@ HTML = r"""<!DOCTYPE html>
 <title>Xray Manager</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;--text:#c9d1d9;--text2:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--yellow:#d29922;--orange:#db6d28}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
+:root{
+  --bg:#f5f7fa;--bg2:#ffffff;--bg3:#f2f3f5;--border:#e5e6eb;--border2:#c9cdd4;
+  --text:#1d2129;--text2:#86909c;--text3:#4e5969;
+  --accent:#165dff;--accent-hover:#4080ff;--accent-soft:#e8f3ff;
+  --green:#00b42a;--green-soft:#e8ffea;--red:#f53f3f;--red-soft:#ffece8;
+  --yellow:#ff7d00;--yellow-soft:#fff7e8;--orange:#f77234;
+  --sidebar:#1d2129;--sidebar-text:#c9cdd4;
+  --radius:6px;--shadow:0 1px 2px rgba(0,0,0,.04),0 2px 8px rgba(29,33,41,.04);
+  --mono:'JetBrains Mono','SF Mono',SFMono-Regular,Menlo,Consolas,monospace;
+}
+html,body{height:100%}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei','Noto Sans CJK SC','Source Han Sans SC','WenQuanYi Micro Hei',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.57;font-size:14px;-webkit-font-smoothing:antialiased}
 a{color:var(--accent);text-decoration:none}
-.header{background:var(--bg2);border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
-.header h1{font-size:18px;font-weight:600;display:flex;align-items:center;gap:8px}
-.header h1 svg{width:22px;height:22px}
-.header .version{color:var(--text2);font-size:12px;background:var(--bg3);padding:2px 8px;border-radius:10px}
-.container{max-width:1200px;margin:0 auto;padding:20px}
-.tabs{display:flex;gap:4px;margin-bottom:20px;border-bottom:1px solid var(--border);padding-bottom:0}
-.tab{padding:8px 16px;cursor:pointer;border-bottom:2px solid transparent;color:var(--text2);font-size:14px;transition:all .2s}
-.tab:hover{color:var(--text)}
-.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
-.tab-content{display:none}
+input,select,textarea,button{font:inherit}
+input:not([type=checkbox]):not([type=radio]),select,textarea{background:var(--bg2)!important;color:var(--text)!important;border:1px solid var(--border)!important;border-radius:4px!important;transition:border-color .15s,box-shadow .15s;outline:none}
+input:not([type=checkbox]):not([type=radio]):hover,select:hover,textarea:hover{border-color:var(--border2)!important}
+input:not([type=checkbox]):not([type=radio]):focus,select:focus,textarea:focus{border-color:var(--accent)!important;box-shadow:0 0 0 2px var(--accent-soft)}
+input[type=checkbox],input[type=radio]{accent-color:var(--accent);width:14px;height:14px;vertical-align:middle}
+input[readonly],textarea[readonly]{background:var(--bg3)!important;color:var(--text3)!important}
+
+/* ---------- top bar ---------- */
+.header{background:var(--bg2);border-bottom:1px solid var(--border);height:56px;padding:0 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.header h1{font-size:16px;font-weight:600;display:flex;align-items:center;gap:10px;letter-spacing:.2px}
+.header h1 svg{width:28px;height:28px;padding:5px;border-radius:6px;background:var(--accent);color:#fff;stroke:#fff}
+.header .version{color:var(--text3);font-size:12px;background:var(--bg3);padding:2px 10px;border-radius:10px;font-family:var(--mono)}
+#header-stats{background:var(--bg3);padding:3px 10px;border-radius:4px;color:var(--text3)!important}
+
+/* ---------- layout: sidebar + content ---------- */
+.container{display:grid;grid-template-columns:200px minmax(0,1fr);gap:0;min-height:calc(100vh - 56px);background:linear-gradient(to right,var(--bg2) 199px,var(--border) 199px,var(--border) 200px,transparent 200px)}
+.tabs{grid-column:1;grid-row:1 / span 40;background:var(--bg2);border-right:1px solid var(--border);padding:12px 8px;display:flex;flex-direction:column;gap:2px;position:sticky;top:56px;height:calc(100vh - 56px);overflow-y:auto}
+.tabs .tab{display:flex;align-items:center;gap:10px;padding:9px 14px;border-radius:4px;color:var(--text3);font-size:14px;cursor:pointer;border:none;transition:background .15s,color .15s;user-select:none}
+.tabs .tab svg{width:16px;height:16px;flex-shrink:0;stroke:currentColor;fill:none;stroke-width:1.8}
+.tabs .tab:hover{background:var(--bg3);color:var(--text)}
+.tabs .tab.active{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.tabs .nav-group{font-size:12px;color:var(--text2);padding:14px 14px 6px;letter-spacing:.5px}
+.tabs .nav-group:first-child{padding-top:4px}
+.tab-content{display:none;grid-column:2;padding:20px 24px 40px;min-width:0}
 .tab-content.active{display:block}
-.card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px}
-.card h2{font-size:15px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+
+/* modal-internal tab strips keep a horizontal underline style */
+.modal .tab{display:inline-block;padding:8px 16px;cursor:pointer;border-bottom:2px solid transparent;color:var(--text3);font-size:14px;transition:all .15s}
+.modal .tab:hover{color:var(--text)}
+.modal .tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:500}
+
+/* ---------- cards ---------- */
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:20px 24px;margin-bottom:16px;box-shadow:var(--shadow)}
+.card h2{font-size:16px;font-weight:600;margin:-4px 0 16px;display:flex;align-items:center;gap:8px;color:var(--text)}
+.card h2::before{content:"";width:3px;height:14px;border-radius:2px;background:var(--accent);display:inline-block}
 .card h2 .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
-.dot.on{background:var(--green)}
-.dot.off{background:var(--red)}
+.card > p:first-of-type{color:var(--text2)!important}
+.dot.on{background:var(--green);box-shadow:0 0 0 3px var(--green-soft)}
+.dot.off{background:var(--red);box-shadow:0 0 0 3px var(--red-soft)}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
-.stat{background:var(--bg3);padding:12px;border-radius:6px}
-.stat .label{color:var(--text2);font-size:12px;margin-bottom:4px}
-.stat .value{font-size:18px;font-weight:600;font-family:'SF Mono',SFMono-Regular,consolas,monospace}
-.btn{padding:6px 14px;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--text);cursor:pointer;font-size:13px;transition:all .15s}
-.btn:hover{background:var(--border)}
+.stat{background:var(--bg2);border:1px solid var(--border);padding:14px 16px;border-radius:var(--radius)}
+.stat .label{color:var(--text2);font-size:12px;margin-bottom:6px}
+.stat .value{font-size:20px;font-weight:600;font-family:var(--mono);color:var(--text)}
+
+/* ---------- buttons ---------- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;height:32px;padding:0 15px;border-radius:4px;border:1px solid var(--border2);background:var(--bg2);color:var(--text);cursor:pointer;font-size:14px;line-height:1;white-space:nowrap;transition:all .15s}
+.btn:hover{color:var(--accent);border-color:var(--accent)}
+.btn:active{background:var(--accent-soft)}
+.btn:disabled{cursor:not-allowed;opacity:.45;color:var(--text2);border-color:var(--border)}
 .btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-.btn.primary:hover{opacity:.85}
-.btn.danger{background:var(--red);color:#fff;border-color:var(--red)}
-.btn.danger:hover{opacity:.85}
+.btn.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover);color:#fff}
+.btn.danger{background:var(--bg2);color:var(--red);border-color:#fbaca3}
+.btn.danger:hover{background:var(--red);color:#fff;border-color:var(--red)}
 .btn.success{background:var(--green);color:#fff;border-color:var(--green)}
+.btn.success:hover{background:#23c343;border-color:#23c343;color:#fff}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--accent)}
+.btn.ghost:hover{background:var(--accent-soft)}
+.btn.sm,.ob-actions .btn{height:24px;padding:0 8px;font-size:12px;border-radius:3px}
 .btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
-.conn-node-list{max-height:420px;overflow-y:auto;border:1px solid var(--border);border-radius:6px}
-.conn-node{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .15s;font-size:13px}
+
+/* ---------- connect page ---------- */
+.conn-node-list{max-height:440px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2)}
+.conn-node{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .15s;font-size:13px}
 .conn-node:last-child{border-bottom:none}
 .conn-node:hover{background:var(--bg3)}
-.conn-node.selected{background:rgba(56,139,253,.1);border-left:3px solid var(--accent)}
+.conn-node.selected{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
 .conn-node .cb{flex-shrink:0}
-.conn-node .tag-col{min-width:120px;font-weight:500;font-family:monospace}
-.conn-node .proto-col{min-width:70px;color:var(--text2);font-size:12px}
-.conn-node .addr-col{flex:1;color:var(--text2);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.conn-node .latency-col{min-width:70px;text-align:right;font-family:monospace;font-size:12px}
-.conn-ctrl{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
-.conn-ctrl .card-inner{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px}
-.conn-status-bar{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-top:12px;font-size:13px}
+.conn-node .tag-col{min-width:140px;font-weight:500;font-family:var(--mono);color:var(--text)}
+.conn-node .proto-col{min-width:96px;color:var(--text3);font-size:12px}
+.conn-node .addr-col{flex:1;min-width:0;color:var(--text2);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono)}
+.conn-node .latency-col{min-width:70px;text-align:right;font-family:var(--mono);font-size:12px}
+.conn-ctrl{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:16px}
+.conn-ctrl .card-inner{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px}
+.conn-ctrl .card-inner > label:first-child{font-weight:500;color:var(--text)!important;font-size:13px!important}
+.conn-status-bar{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);margin-top:14px;font-size:13px}
 .conn-status-bar .indicator{width:10px;height:10px;border-radius:50%;flex-shrink:0}
-.conn-status-bar .indicator.on{background:var(--green);box-shadow:0 0 6px var(--green)}
-.conn-status-bar .indicator.off{background:var(--text2)}
-textarea.config-editor{width:100%;min-height:500px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:'SF Mono',SFMono-Regular,consolas,monospace;font-size:13px;resize:vertical;tab-size:2;white-space:pre;overflow:auto}
-table{width:100%;border-collapse:collapse}
-th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px}
-th{color:var(--text2);font-weight:500;font-size:12px;text-transform:uppercase}
-td{font-family:'SF Mono',SFMono-Regular,consolas,monospace;font-size:12px}
-.ob-addr{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-tr.ob-system td{opacity:.6;border-bottom-style:dashed}
-tr.ob-system:hover td{opacity:.8;background:var(--bg)}
-.tag{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:500}
-.tag.us{background:rgba(56,139,253,.15);color:#58a6ff}
-.tag.kr{background:rgba(63,185,80,.15);color:#3fb950}
-.tag.jp{background:rgba(210,153,34,.15);color:#d29922}
-.tag.hk{background:rgba(219,109,40,.15);color:#db6d28}
-.tag.default{background:var(--bg3);color:var(--text2)}
-.log-box{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:'SF Mono',SFMono-Regular,consolas,monospace;font-size:11px;line-height:1.6;max-height:500px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:var(--text2)}
-.toast{position:fixed;top:20px;right:20px;padding:10px 18px;border-radius:6px;font-size:13px;z-index:999;animation:slideIn .3s;max-width:400px}
-.toast.ok{background:var(--green);color:#fff}
-.toast.err{background:var(--red);color:#fff}
-@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
-.edit-row{display:grid;grid-template-columns:130px 1fr;gap:8px;align-items:center;margin-bottom:8px}
-.edit-row label{color:var(--text2);font-size:13px;text-align:right;padding-right:4px;white-space:nowrap}
+.conn-status-bar .indicator.on{background:var(--green);box-shadow:0 0 0 4px var(--green-soft)}
+.conn-status-bar .indicator.off{background:var(--border2)}
+
+/* ---------- gateway panel ---------- */
+.gw-panel{border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-bottom:10px;background:var(--bg2)}
+.gw-setup{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13px;margin:6px 0 10px}
+.gw-setup b{font-family:var(--mono);color:var(--text)}
+.gw-setup span{color:var(--text2)}
+.gw-checks{display:flex;flex-wrap:wrap;gap:6px}
+.check{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:2px 8px;border-radius:10px;background:var(--bg3);color:var(--text3)}
+.check::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--border2)}
+.check.ok{background:var(--green-soft);color:#009a29}.check.ok::before{background:var(--green)}
+.check.warn{background:var(--yellow-soft);color:#d25f00}.check.warn::before{background:var(--yellow)}
+.check.bad{background:var(--red-soft);color:#cb2634}.check.bad::before{background:var(--red)}
+
+/* ---------- editors / tables ---------- */
+textarea.config-editor{width:100%;min-height:500px;background:#fafbfc!important;color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;font-family:var(--mono);font-size:12.5px;line-height:1.6;resize:vertical;tab-size:2;white-space:pre;overflow:auto}
+table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle}
+th{background:var(--bg3);color:var(--text3);font-weight:500;font-size:13px;white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:#f7f8fa}
+td{font-family:var(--mono);font-size:12.5px;color:var(--text)}
+.ob-addr{max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+tr.ob-system td{color:var(--text2)}
+.tag{display:inline-block;padding:0 8px;line-height:22px;border-radius:3px;font-size:12px;font-weight:500;font-family:inherit;white-space:nowrap}
+.tag.us{background:var(--accent-soft);color:var(--accent)}
+.tag.kr{background:var(--green-soft);color:#009a29}
+.tag.jp{background:var(--yellow-soft);color:#d25f00}
+.tag.hk{background:#fff3e8;color:#e65b1c}
+.tag.red{background:var(--red-soft);color:#cb2634}
+.tag.default{background:var(--bg3);color:var(--text3)}
+.log-box{background:#fafbfc;border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;font-family:var(--mono);font-size:12px;line-height:1.65;max-height:500px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:var(--text3)}
+
+/* ---------- feedback ---------- */
+.toast{position:fixed;top:68px;left:50%;transform:translateX(-50%);padding:10px 16px;border-radius:4px;font-size:14px;z-index:999;animation:slideIn .2s;max-width:480px;background:var(--bg2);color:var(--text);box-shadow:0 4px 12px rgba(0,0,0,.12);border:1px solid var(--border);display:flex;align-items:center;gap:8px}
+.toast::before{content:"";width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.toast.ok::before{background:var(--green)}
+.toast.err::before{background:var(--red)}
+.toast.err{border-color:#fbaca3}
+@keyframes slideIn{from{transform:translate(-50%,-8px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
+
+/* ---------- forms ---------- */
+.edit-row{display:grid;grid-template-columns:120px 1fr;gap:10px;align-items:center;margin-bottom:10px}
+.edit-row label{color:var(--text3);font-size:13px;text-align:right;white-space:nowrap}
 .edit-row input,.edit-row select{width:100%}
-.edit-row input,.edit-row select,.edit-row textarea{padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;font-family:monospace}
-.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:none;align-items:center;justify-content:center}
+.edit-row input,.edit-row select,.edit-row textarea{height:32px;padding:0 10px;font-size:13px}
+.form-section{border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px 4px;margin-bottom:12px}
+.form-section > h4{font-size:13px;font-weight:600;color:var(--text);margin:-2px 0 12px}
+.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}
+.field{display:flex;flex-direction:column;gap:4px;margin-bottom:12px;min-width:0}
+.field.full{grid-column:1 / -1}
+.field > label{font-size:12px;color:var(--text3)}
+.field > label em{font-style:normal;color:var(--text2);margin-left:4px}
+.field input:not([type=checkbox]),.field select{height:32px;padding:0 10px;font-size:13px;width:100%}
+.field textarea{padding:8px 10px;font-family:var(--mono);font-size:12px;min-height:72px;width:100%;resize:vertical}
+.field .hint{font-size:12px;color:var(--text2)}
+.field.inline{flex-direction:row;align-items:center;gap:8px}
+.hidden{display:none!important}
+
+/* ---------- routing ---------- */
+.rule-builder{display:grid;grid-template-columns:180px minmax(0,1fr) 220px;gap:12px;align-items:start}
+.rule-builder textarea{min-height:76px;padding:8px 10px;font-family:var(--mono);font-size:12px;width:100%;resize:vertical}
+.rule-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;align-items:center}
+.chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:12px}
+.chips > span{font-size:12px;color:var(--text2);margin-right:2px}
+.chip{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 10px;border-radius:13px;border:1px solid var(--border);background:var(--bg2);color:var(--text3);cursor:pointer;font-size:12px;transition:all .15s}
+.chip:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.chip .x{color:var(--text2);margin-left:2px}
+.chip .x:hover{color:var(--red)}
+.match-vals{display:flex;flex-wrap:wrap;gap:4px}
+.match-vals code{font-family:var(--mono);font-size:12px;background:var(--bg3);padding:0 6px;border-radius:3px;line-height:20px}
+.dirty-flag{color:var(--yellow);font-size:12px}
+.empty{padding:28px;text-align:center;color:var(--text2);font-size:13px}
+
+.modal-overlay{position:fixed;inset:0;background:rgba(29,33,41,.45);z-index:200;display:none;align-items:center;justify-content:center}
 .modal-overlay.show{display:flex}
-.modal{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:20px;width:90%;max-width:900px;max-height:85vh;overflow-y:auto}
-.modal h3{margin-bottom:16px;font-size:16px}
+.modal{background:var(--bg2);border-radius:8px;padding:20px 24px;width:92%;max-width:880px;max-height:88vh;overflow-y:auto;box-shadow:0 12px 32px rgba(0,0,0,.18)}
+.modal h3{margin-bottom:16px;font-size:16px;font-weight:600}
 .modal-footer{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid var(--border)}
 .modal-footer .btn-group{margin-top:0}
 .ob-actions{display:flex;gap:4px;flex-wrap:nowrap;align-items:center;white-space:nowrap}
-.ob-actions .btn{padding:3px 8px;font-size:11px;line-height:1.4;border-radius:4px;flex-shrink:0}
-.backup-item{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;font-family:monospace}
-.status-pill{display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;font-weight:600}
-.status-pill.active{background:rgba(63,185,80,.15);color:var(--green)}
-.status-pill.inactive{background:rgba(248,81,73,.15);color:var(--red)}
-@media(max-width:768px){
-  .header{padding:10px 14px}
+.backup-item{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;font-family:var(--mono)}
+.status-pill{display:inline-block;padding:0 10px;line-height:22px;border-radius:11px;font-size:12px;font-weight:500}
+.status-pill.active{background:var(--green-soft);color:#009a29}
+.status-pill.inactive{background:var(--red-soft);color:#cb2634}
+details > summary{cursor:pointer;color:var(--text3)!important}
+::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-thumb{background:#d9dbe0;border-radius:4px}::-webkit-scrollbar-track{background:transparent}
+
+@media(max-width:900px){
+  .header{padding:0 14px;height:52px}
   .header h1{font-size:15px}
-  .container{padding:10px}
-  .tabs{overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .header .version,#header-stats{display:none}
+  .header h1{white-space:nowrap}
+  .container{display:block;background:none}
+  .tab-content div[style*="justify-content:space-between"]{flex-wrap:wrap;gap:8px}
+  .tab-content div[style*="display:flex;gap:6px"]{flex-wrap:wrap}
+  .tab-content span[id$="selected-count"]{white-space:nowrap}
+  .conn-node{flex-wrap:wrap;gap:6px 10px}
+  .conn-node .addr-col{flex-basis:100%;order:5}
+  .conn-node .ob-actions{flex-wrap:wrap}
+  .tabs{position:sticky;top:52px;z-index:90;height:auto;flex-direction:row;overflow-x:auto;border-right:none;border-bottom:1px solid var(--border);padding:6px 8px;scrollbar-width:none}
   .tabs::-webkit-scrollbar{display:none}
-  .tab{padding:8px 10px;font-size:13px;white-space:nowrap}
-  .card{padding:12px}
-  .card h2{font-size:14px}
+  .tabs .nav-group{display:none}
+  .tabs .tab{padding:6px 12px;white-space:nowrap;font-size:13px}
+  .tabs .tab svg{display:none}
+  .tab-content{padding:12px}
+  .card{padding:14px}
   .grid{grid-template-columns:repeat(2,1fr);gap:8px}
-  .stat .value{font-size:14px}
-  .btn-group{gap:4px}
-  .btn{padding:5px 10px;font-size:12px}
-  table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
-  th,td{padding:6px 8px;font-size:11px}
-  .modal{width:95%;padding:14px;max-height:90vh}
-  .modal h3{font-size:14px}
-  .edit-row{grid-template-columns:100px 1fr}
+  .stat .value{font-size:15px}
+  .form-grid,.rule-builder{grid-template-columns:1fr}
+  table{display:block;overflow-x:auto}
+  th,td{padding:8px 10px;font-size:12px}
+  .modal{width:96%;padding:14px;max-height:92vh}
+  .edit-row{grid-template-columns:96px 1fr}
   textarea.config-editor{min-height:300px;font-size:11px}
-  .log-box{font-size:10px;max-height:300px}
-  .toast{top:10px;right:10px;left:10px;max-width:none;font-size:12px}
-  #ob-test-url-select,#ob-test-url-custom,#ob-speed-url{min-width:100%!important;flex:1}
-  .header .version{display:none}
+  .toast{left:12px;right:12px;transform:none;max-width:none}
+  #ob-test-url-select,#ob-test-url-custom,#ob-speed-url,#conn-test-url-select,#conn-test-url-custom,#conn-speed-url,#conn-import-links{min-width:100%!important;flex:1}
 }
 </style>
 </head>
@@ -3681,22 +4126,24 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
 
 <div class="container">
   <div class="tabs">
-    <div class="tab active" onclick="switchTab('connect')">连接</div>
-    <div class="tab" onclick="switchTab('status')">状态</div>
-    <div class="tab" onclick="switchTab('inbounds')">入站</div>
-    <div class="tab" onclick="switchTab('outbounds')">出站</div>
-    <div class="tab" onclick="switchTab('routing')">路由</div>
-    <div class="tab" onclick="switchTab('config')">配置</div>
-    <div class="tab" onclick="switchTab('dns')">DNS</div>
-    <div class="tab" onclick="switchTab('logs')">日志</div>
-    <div class="tab" onclick="switchTab('system')">系统</div>
-    <div class="tab" onclick="switchTab('backups')">备份</div>
+    <div class="nav-group">代理</div>
+    <div class="tab active" data-tab="connect" onclick="switchTab('connect')"><svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>连接</div>
+    <div class="tab" data-tab="outbounds" onclick="switchTab('outbounds')"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/></svg>节点</div>
+    <div class="tab" data-tab="routing" onclick="switchTab('routing')"><svg viewBox="0 0 24 24"><path d="M6 3v12a3 3 0 0 0 3 3h9M15 15l3 3-3 3M6 3l3 3M6 3 3 6"/></svg>路由规则</div>
+    <div class="tab" data-tab="inbounds" onclick="switchTab('inbounds')"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>入站</div>
+    <div class="tab" data-tab="dns" onclick="switchTab('dns')"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>DNS</div>
+    <div class="nav-group">运维</div>
+    <div class="tab" data-tab="status" onclick="switchTab('status')"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>状态</div>
+    <div class="tab" data-tab="logs" onclick="switchTab('logs')"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM9 8h6M9 12h6M9 16h4"/></svg>日志与访问</div>
+    <div class="tab" data-tab="config" onclick="switchTab('config')"><svg viewBox="0 0 24 24"><path d="M8 6 3 12l5 6M16 6l5 6-5 6"/></svg>配置文件</div>
+    <div class="tab" data-tab="system" onclick="switchTab('system')"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>系统</div>
+    <div class="tab" data-tab="backups" onclick="switchTab('backups')"><svg viewBox="0 0 24 24"><path d="M4 7h16v13H4zM8 3h8v4H8zM9 13h6"/></svg>备份</div>
   </div>
 
   <!-- Connect Mode -->
   <div class="tab-content active" id="tab-connect">
     <div class="card">
-      <h2>🔌 连接模式</h2>
+      <h2>连接模式</h2>
       <p style="color:var(--text2);font-size:12px;margin-bottom:12px">选择出站节点 → 一键启动代理。支持多节点负载均衡和可选透明代理。</p>
 
       <!-- Node List -->
@@ -3746,12 +4193,10 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
             <input type="checkbox" id="conn-transparent" onchange="connToggleTp()"> <span style="font-size:13px">启用 iptables REDIRECT (局域网/本机全走代理)</span>
           </label>
           <div id="conn-tp-details" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;padding:8px;background:var(--bg);border-radius:4px;border:1px solid var(--border)">
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                <input type="checkbox" id="tp-ip-forward" onchange="tpToggleForward(this.checked)">
-                <span style="font-size:12px">IP 转发 (ip_forward)</span>
-              </label>
-              <span id="tp-forward-status" style="font-size:11px;color:var(--text2)"></span>
+            <div class="gw-panel" id="gw-panel">
+              <div style="font-size:13px;font-weight:500">局域网网关</div>
+              <div class="hint" style="font-size:12px;color:var(--text2)">手机、电视等设备手动设置 IP，把网关指向本机即可全局代理。</div>
+              <div id="gw-body" style="font-size:12px;color:var(--text2);margin-top:6px">检测中...</div>
             </div>
             <details style="margin-bottom:8px">
               <summary style="cursor:pointer;color:var(--text2);font-size:12px;margin-bottom:6px">绕过 IP/CIDR 配置</summary>
@@ -3791,8 +4236,8 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
 
       <!-- Action Buttons -->
       <div class="btn-group" style="margin-top:16px">
-        <button class="btn success" onclick="connStart()" id="btn-conn-start">▶ 启动连接</button>
-        <button class="btn danger" onclick="connStop()" id="btn-conn-stop">■ 断开连接</button>
+        <button class="btn success" onclick="connStart()" id="btn-conn-start">启动连接</button>
+        <button class="btn danger" onclick="connStop()" id="btn-conn-stop">断开连接</button>
       </div>
 
       <!-- Status Bar -->
@@ -3893,52 +4338,78 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
   <!-- Routing -->
   <div class="tab-content" id="tab-routing">
     <div class="card">
-      <h2>路由规则</h2>
-      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">规则从上到下匹配，命中即停止。支持域名/IP/入站/网络条件，可指定出口为直连、阻止、代理节点或负载均衡。</p>
-
-      <!-- Add Rule Form -->
-      <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:12px">
-        <div style="display:grid;grid-template-columns:120px 1fr 160px auto;gap:8px;align-items:end">
-          <div>
-            <label style="color:var(--text2);font-size:11px;display:block;margin-bottom:3px">条件类型</label>
-            <select id="rt-cond-type" style="width:100%;padding:5px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
-              <option value="domain">域名</option>
-              <option value="ip">IP/CIDR</option>
-              <option value="inbound">入站 Tag</option>
-              <option value="network">网络 (tcp/udp)</option>
-            </select>
-          </div>
-          <div>
-            <label style="color:var(--text2);font-size:11px;display:block;margin-bottom:3px">匹配值 (逗号分隔)</label>
-            <input id="rt-cond-value" placeholder="domain:example.com, geosite:cn" style="width:100%;padding:5px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:12px">
-          </div>
-          <div>
-            <label style="color:var(--text2);font-size:11px;display:block;margin-bottom:3px">出口</label>
-            <select id="rt-outbound" style="width:100%;padding:5px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px"></select>
-          </div>
-          <div>
-            <button class="btn primary" onclick="routingAddRule()">添加</button>
-          </div>
+      <h2>添加规则</h2>
+      <p style="font-size:13px;margin-bottom:14px">自定义规则排在系统规则之前，优先匹配；重新连接、切换节点或开关透明代理后仍然保留。“走代理”默认跟随当前连接的节点或负载均衡。</p>
+      <div class="rule-builder">
+        <div class="field">
+          <label>匹配类型</label>
+          <select id="rt-cond-type" onchange="routingTypeHint()">
+            <option value="domain">域名（含子域名）</option>
+            <option value="full">完整域名</option>
+            <option value="keyword">域名关键词</option>
+            <option value="geosite">域名集 geosite</option>
+            <option value="ip">IP / CIDR</option>
+            <option value="geoip">IP 集 geoip</option>
+            <option value="port">目标端口</option>
+            <option value="sourceIP">来源设备 IP</option>
+          </select>
         </div>
-        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-          <span style="color:var(--text2);font-size:11px">快捷:</span>
-          <button class="btn" onclick="routingQuickDomain()" style="font-size:11px;padding:2px 8px">域名直连</button>
-          <button class="btn" onclick="routingQuickBlock()" style="font-size:11px;padding:2px 8px">域名阻止</button>
-          <button class="btn" onclick="routingQuickIP()" style="font-size:11px;padding:2px 8px">IP 直连</button>
-          <button class="btn" onclick="routingQuickProxy()" style="font-size:11px;padding:2px 8px">域名走代理</button>
+        <div class="field">
+          <label>匹配值<em id="rt-hint">每行或逗号分隔，如 openai.com</em></label>
+          <textarea id="rt-cond-value" spellcheck="false" placeholder="openai.com&#10;chatgpt.com"></textarea>
+        </div>
+        <div class="field">
+          <label>代理节点<em>“走代理”时使用</em></label>
+          <select id="rt-outbound"></select>
+          <label style="margin-top:8px">备注</label>
+          <input id="rt-remark" placeholder="可选">
         </div>
       </div>
+      <div class="rule-actions">
+        <button class="btn" onclick="routingAdd('direct')">直连</button>
+        <button class="btn primary" onclick="routingAdd('proxy')">走代理</button>
+        <button class="btn danger" onclick="routingAdd('block')">阻断</button>
+        <button class="btn" id="rt-bypass-btn" onclick="routingAddBypass()" title="IP/CIDR 在 iptables 层直接放行，不经过 Xray（局域网服务、游戏、内网段）">透明代理绕过</button>
+      </div>
+      <div class="chips">
+        <span>常用：</span>
+        <button class="chip" onclick="routingPreset('ads')">广告拦截</button>
+        <button class="chip" onclick="routingPreset('ai')">OpenAI / Claude / Gemini 走代理</button>
+        <button class="chip" onclick="routingPreset('kiro')">Kiro / AWS 走代理</button>
+        <button class="chip" onclick="routingPreset('google')">Google / YouTube 走代理</button>
+        <button class="chip" onclick="routingPreset('github')">GitHub 走代理</button>
+        <button class="chip" onclick="routingPreset('apple')">Apple 服务直连</button>
+        <button class="chip" onclick="routingPreset('bt')">BT 下载直连</button>
+      </div>
+    </div>
 
-      <!-- Rules Table -->
+    <div class="card">
+      <h2>自定义规则 <span class="dirty-flag" id="rt-dirty" style="display:none">有未保存的修改</span></h2>
       <table>
-        <thead><tr><th style="width:30px">#</th><th style="width:80px">条件</th><th>匹配值</th><th style="width:100px">出口</th><th style="width:80px">操作</th></tr></thead>
+        <thead><tr><th style="width:44px">#</th><th style="width:110px">类型</th><th>匹配值</th><th style="width:150px">动作</th><th style="width:140px">备注</th><th style="width:170px">操作</th></tr></thead>
+        <tbody id="rt-custom-tbody"></tbody>
+      </table>
+      <div class="btn-group">
+        <button class="btn primary" onclick="routingSaveCustom()">保存并生效</button>
+        <button class="btn" onclick="loadRouting()">放弃修改</button>
+        <span style="font-size:12px;color:var(--text2)">保存会重启 Xray，已有连接会断开重连</span>
+      </div>
+      <div class="log-box" id="routing-output" style="display:none;margin-top:10px;max-height:150px"></div>
+    </div>
+
+    <div class="card">
+      <h2>透明代理绕过</h2>
+      <p style="font-size:13px;margin-bottom:10px">这些目标 IP 不进入 Xray，直接由本机转发。私有网段、保留地址和 DNS 服务器已默认绕过。</p>
+      <div class="chips" id="rt-bypass-list" style="margin-top:0"></div>
+    </div>
+
+    <div class="card">
+      <h2>系统规则</h2>
+      <p style="font-size:13px;margin-bottom:10px">由连接模式自动生成（DNS、QUIC 阻断、国内直连、入站默认出口），只读；如需调整请在“配置文件”中编辑。</p>
+      <table>
+        <thead><tr><th style="width:44px">#</th><th style="width:110px">条件</th><th>匹配值</th><th style="width:180px">出口</th></tr></thead>
         <tbody id="routing-tbody"></tbody>
       </table>
-      <div class="btn-group" style="margin-top:8px">
-        <button class="btn primary" onclick="routingSave()">保存路由规则</button>
-        <button class="btn" onclick="loadRouting()">重新加载</button>
-      </div>
-      <div class="log-box" id="routing-output" style="display:none;margin-top:8px;max-height:150px"></div>
     </div>
   </div>
 
@@ -4000,7 +4471,7 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
       <h2>DNS Hosts</h2>
       <p style="color:var(--text2);font-size:12px;margin-bottom:12px">自定义域名解析，类似 /etc/hosts。每行一条：<code>域名 IP</code>。支持 <code>#</code> 注释。可选前缀：<code>domain:</code>、<code>geosite:</code>、<code>full:</code></p>
       <div style="padding:8px 12px;background:var(--bg);border:1px solid var(--info);border-radius:4px;margin-bottom:12px;font-size:11px;color:var(--text2)">
-        💡 Hosts 中的 IP 会<strong>自动加入 iptables bypass</strong>，避免透明代理拦截 DoH/DNS 服务器连接。保存后如透明代理正在运行，iptables 规则会自动重建。
+        Hosts 中的 IP 会<strong>自动加入 iptables bypass</strong>，避免透明代理拦截 DoH/DNS 服务器连接。保存后如透明代理正在运行，iptables 规则会自动重建。
       </div>
       <textarea id="dns-hosts-editor" style="width:100%;min-height:180px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:8px;font-family:monospace;font-size:12px;resize:vertical" placeholder="googleapis.cn 203.208.41.96&#10;domain:google.com 8.8.8.8&#10;full:ads.example.com 127.0.0.1&#10;# 这是注释"></textarea>
       <div class="btn-group" style="margin-top:8px"><button class="btn primary" onclick="saveDnsHosts()">保存 Hosts</button></div>
@@ -4113,31 +4584,69 @@ tr.ob-system:hover td{opacity:.8;background:var(--bg)}
     </div>
     <div id="mob-pane-link">
       <textarea class="config-editor" id="vless-link" spellcheck="false" style="min-height:120px" placeholder="vless:// vmess:// ss:// trojan:// ..."></textarea>
-      <p style="color:var(--text2);font-size:12px;margin-top:8px">支持 vless:// vmess:// ss:// trojan://，可粘贴多行批量添加。</p>
+      <p style="color:var(--text2);font-size:12px;margin-top:8px">支持 vless / vmess / ss / trojan，含 REALITY、XHTTP（mode、extra）、gRPC、HTTPUpgrade、ECH，可粘贴多行批量添加。</p>
       <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text2);margin-top:6px;cursor:pointer"><input type="checkbox" id="modal-tfo"> TCP Fast Open</label>
       <div class="btn-group" style="margin-top:12px">
         <button class="btn primary" onclick="parseAndAddVless()">解析并新增</button>
       </div>
     </div>
     <div id="mob-pane-form" style="display:none">
-      <div class="edit-row"><label>Tag</label><input id="of-tag" autocomplete="off"></div>
-      <div class="edit-row"><label>协议</label><select id="of-protocol"><option value="vless">vless</option><option value="vmess">vmess</option><option value="shadowsocks">shadowsocks</option><option value="trojan">trojan</option></select></div>
-      <div class="edit-row"><label>地址</label><input id="of-address"></div>
-      <div class="edit-row"><label>端口</label><input id="of-port" type="number"></div>
-      <div class="edit-row"><label>用户ID/密码</label><input id="of-id"></div>
-      <div class="edit-row"><label>加密/方法</label><input id="of-security" placeholder="vless:none vmess:auto ss:aes-128-gcm"></div>
-      <div class="edit-row"><label>flow</label><input id="of-flow" placeholder="可选，仅 vless/trojan 常见"></div>
-      <div class="edit-row"><label>network</label><select id="of-network"><option value="tcp">tcp</option><option value="ws">ws</option><option value="grpc">grpc</option><option value="xhttp">xhttp</option></select></div>
-      <div class="edit-row"><label>security</label><select id="of-tls-mode"><option value="none">none</option><option value="tls">tls</option><option value="reality">reality</option></select></div>
-      <div class="edit-row"><label>SNI</label><input id="of-sni"></div>
-      <div class="edit-row"><label>Host</label><input id="of-host"></div>
-      <div class="edit-row"><label>Path</label><input id="of-path"></div>
-      <div class="edit-row"><label>Fingerprint</label><input id="of-fp" placeholder="random/chrome"></div>
-      <div class="edit-row"><label>ALPN</label><input id="of-alpn" placeholder="h3 或 h2,http/1.1"></div>
-      <div class="edit-row"><label>allowInsecure</label><select id="of-insecure"><option value="false">false</option><option value="true">true</option></select></div>
-      <div class="edit-row"><label>ECH</label><input id="of-ech" placeholder="cloudflare-ech.com+https://dns.alidns.com/dns-query"></div>
-      <div class="edit-row"><label>mux</label><select id="of-mux"><option value="off">off</option><option value="on">on</option></select></div>
-      <div class="btn-group" style="margin-top:12px"><button class="btn primary" onclick="saveFormOutbound()">从表单生成并保存到编辑区</button></div>
+      <div class="form-section">
+        <h4>基本信息</h4>
+        <div class="form-grid">
+          <div class="field"><label>名称 (tag)</label><input id="of-tag" autocomplete="off" placeholder="us-xhttp-01"></div>
+          <div class="field"><label>协议</label><select id="of-protocol" onchange="ofRefresh()"><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="trojan">Trojan</option><option value="shadowsocks">Shadowsocks</option></select></div>
+          <div class="field"><label>服务器地址<em>域名 / IP / TXT 端点</em></label><input id="of-address" placeholder="example.com"></div>
+          <div class="field"><label>端口</label><input id="of-port" type="number" min="1" max="65535" placeholder="443"></div>
+        </div>
+      </div>
+      <div class="form-section">
+        <h4>认证</h4>
+        <div class="form-grid">
+          <div class="field"><label id="of-id-label">UUID</label><input id="of-id" autocomplete="off"></div>
+          <div class="field" data-proto="vless vmess shadowsocks"><label id="of-security-label">加密</label><input id="of-security" list="of-security-list"><datalist id="of-security-list"></datalist></div>
+          <div class="field" data-proto="vless"><label>流控 (flow)</label><select id="of-flow"><option value="">无</option><option value="xtls-rprx-vision">xtls-rprx-vision</option><option value="xtls-rprx-vision-udp443">xtls-rprx-vision-udp443</option></select></div>
+        </div>
+      </div>
+      <div class="form-section">
+        <h4>传输</h4>
+        <div class="form-grid">
+          <div class="field"><label>传输方式 (network)</label><select id="of-network" onchange="ofRefresh()"><option value="tcp">TCP / RAW</option><option value="ws">WebSocket</option><option value="xhttp">XHTTP</option><option value="grpc">gRPC</option><option value="httpupgrade">HTTPUpgrade</option></select></div>
+          <div class="field" data-net="ws xhttp httpupgrade"><label>Host<em>伪装域名</em></label><input id="of-host"></div>
+          <div class="field" data-net="ws xhttp httpupgrade grpc"><label id="of-path-label">Path</label><input id="of-path" placeholder="/"></div>
+          <div class="field" data-net="xhttp"><label>XHTTP 模式</label><select id="of-xhttp-mode"><option value="">auto (默认)</option><option value="packet-up">packet-up</option><option value="stream-up">stream-up</option><option value="stream-one">stream-one</option></select></div>
+          <div class="field" data-net="grpc"><label>gRPC 模式</label><select id="of-grpc-multi"><option value="false">gun (默认)</option><option value="true">multi</option></select></div>
+          <div class="field full" data-net="xhttp"><label>XHTTP extra<em>JSON，可选：xPadding*、xmux、headers 等</em></label><textarea id="of-xhttp-extra" spellcheck="false" placeholder='{"xmux":{"maxConnections":3}}'></textarea></div>
+        </div>
+      </div>
+      <div class="form-section">
+        <h4>传输层安全</h4>
+        <div class="form-grid">
+          <div class="field"><label>安全 (security)</label><select id="of-tls-mode" onchange="ofRefresh()"><option value="none">无</option><option value="tls">TLS</option><option value="reality">REALITY</option></select></div>
+          <div class="field" data-sec="tls reality"><label>SNI (serverName)</label><input id="of-sni"></div>
+          <div class="field" data-sec="tls reality"><label>指纹 (fingerprint)</label><select id="of-fp"><option value="">不设置</option><option>chrome</option><option>firefox</option><option>safari</option><option>ios</option><option>android</option><option>edge</option><option>360</option><option>qq</option><option>random</option><option>randomized</option></select></div>
+          <div class="field" data-sec="tls"><label>ALPN</label><input id="of-alpn" list="of-alpn-list" placeholder="h2,http/1.1"><datalist id="of-alpn-list"><option value="h2"><option value="http/1.1"><option value="h2,http/1.1"><option value="h3"></datalist></div>
+          <div class="field" data-sec="tls"><label>证书指纹 (pinnedPeerCertSha256)<em>自签证书时填，替代已移除的 allowInsecure</em></label><input id="of-pcs" placeholder="SHA256 十六进制，多个用逗号分隔"></div>
+          <div class="field" data-sec="tls"><label>ECH 强制查询</label><select id="of-ech-force"><option value="full">full</option><option value="half">half</option><option value="none">none</option></select></div>
+          <div class="field full" data-sec="tls"><label>ECH (echConfigList)<em>Base64 配置，或 "域名+DoH 地址" 动态查询</em></label><input id="of-ech" placeholder="cloudflare-ech.com+https://dns.alidns.com/dns-query"></div>
+          <div class="field full" data-sec="reality"><label>公钥 (publicKey / pbk)</label><input id="of-pbk" autocomplete="off"></div>
+          <div class="field" data-sec="reality"><label>shortId (sid)</label><input id="of-sid" autocomplete="off"></div>
+          <div class="field" data-sec="reality"><label>spiderX (spx)</label><input id="of-spx" placeholder="/"></div>
+        </div>
+      </div>
+      <div class="form-section">
+        <h4>高级</h4>
+        <div class="form-grid">
+          <div class="field"><label>多路复用 (mux)</label><select id="of-mux" onchange="ofRefresh()"><option value="off">关闭</option><option value="on">开启</option></select></div>
+          <div class="field" id="of-mux-conc-field"><label>mux 并发</label><input id="of-mux-conc" type="number" placeholder="8"></div>
+          <div class="field inline"><input type="checkbox" id="of-tfo"><label for="of-tfo" style="font-size:13px;color:var(--text)">TCP Fast Open</label></div>
+        </div>
+        <p class="hint" style="font-size:12px;color:var(--text2);margin-bottom:10px">表单未覆盖的字段（sockopt、_delay、xmux 以外的自定义项等）保存时原样保留。</p>
+      </div>
+      <div class="btn-group" style="margin-top:4px">
+        <button class="btn primary" onclick="saveFormOutboundDirect()">保存节点</button>
+        <button class="btn" onclick="saveFormOutbound()">生成 JSON 预览</button>
+      </div>
     </div>
     <div id="mob-pane-json" style="display:none">
       <textarea class="config-editor" id="eo-json" spellcheck="false" style="min-height:300px"></textarea>
@@ -4258,9 +4767,7 @@ async function api(path, opts={}){
 }
 
 function switchTab(name){
-  document.querySelectorAll('.tab').forEach((t,i)=>{
-    t.classList.toggle('active',t.textContent.trim()===({connect:'连接',status:'状态',inbounds:'入站',outbounds:'出站',routing:'路由',config:'配置',dns:'DNS',logs:'日志',system:'系统',backups:'备份'}[name]));
-  });
+  document.querySelectorAll('.tabs .tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
   if(name==='connect')loadConnect();
@@ -4487,7 +4994,7 @@ async function loadOutboundSelector(selected){
   const rd=await api('/api/routing');
   if(rd&&rd.routing&&rd.routing.balancers){
     rd.routing.balancers.forEach(b=>{
-      opts+=`<option value="bal:${b.tag}">⚖ ${b.tag} (${(b.selector||[]).join(', ')})</option>`;
+      opts+=`<option value="bal:${b.tag}">${b.tag} (${(b.selector||[]).join(', ')})</option>`;
     });
   }
   sel.innerHTML=opts;
@@ -4721,102 +5228,274 @@ async function loadOutbounds(){
   renderOutbounds();
 }
 
-function outboundToForm(ob){
-  const p=ob.protocol||'vless';
-  document.getElementById('of-tag').value=ob.tag||'';
-  document.getElementById('of-protocol').value=p;
-  let address='', port='', ident='', sec='';
-  try{
-    if(p==='shadowsocks'){
-      const s=ob.settings.servers[0]; address=s.address||''; port=s.port||''; ident=s.password||''; sec=s.method||'';
-    }else if(p==='trojan'){
-      const s=ob.settings.servers[0]; address=s.address||''; port=s.port||''; ident=s.password||'';
-    }else{
-      const v=ob.settings.vnext[0]; const u=v.users[0]||{}; address=v.address||''; port=v.port||''; ident=u.id||''; sec=u.security||u.encryption||''; document.getElementById('of-flow').value=u.flow||'';
-    }
-  }catch(e){}
-  document.getElementById('of-address').value=address;
-  document.getElementById('of-port').value=port;
-  document.getElementById('of-id').value=ident;
-  document.getElementById('of-security').value=sec;
-  const ss=ob.streamSettings||{};
-  document.getElementById('of-network').value=ss.network||'tcp';
-  document.getElementById('of-tls-mode').value=ss.security||'none';
-  const tls=ss.tlsSettings||ss.realitySettings||{};
-  document.getElementById('of-sni').value=tls.serverName||'';
-  document.getElementById('of-fp').value=tls.fingerprint||'';
-  document.getElementById('of-alpn').value=Array.isArray(tls.alpn)?tls.alpn.join(','):'';
-  document.getElementById('of-insecure').value=(tls.allowInsecure?'true':'false');
-  document.getElementById('of-ech').value=tls.echConfigList||'';
-  const ws=ss.wsSettings||{};
-  document.getElementById('of-host').value=ws.host || (ws.headers&&ws.headers.Host) || '';
-  document.getElementById('of-path').value=ws.path||'';
-  const mux=ob.mux||{};
-  document.getElementById('of-mux').value=(mux.enabled?'on':'off');
+// ==== node-form:begin ====
+const OF_NET_KEYS={tcp:['tcpSettings','rawSettings'],raw:['tcpSettings','rawSettings'],ws:['wsSettings'],grpc:['grpcSettings'],xhttp:['xhttpSettings','splithttpSettings'],httpupgrade:['httpupgradeSettings'],kcp:['kcpSettings'],http:['httpSettings'],h2:['httpSettings']};
+const OF_ALL_NET_KEYS=['tcpSettings','rawSettings','wsSettings','grpcSettings','xhttpSettings','splithttpSettings','httpupgradeSettings','kcpSettings','httpSettings'];
+const OF_SS_METHODS=['aes-128-gcm','aes-256-gcm','chacha20-ietf-poly1305','xchacha20-ietf-poly1305','2022-blake3-aes-128-gcm','2022-blake3-aes-256-gcm','2022-blake3-chacha20-poly1305','none'];
+let editingOutboundBase=null;
+function ofEl(id){return document.getElementById(id);}
+function ofv(id){const e=ofEl(id);if(!e)return '';return e.type==='checkbox'?!!e.checked:String(e.value??'').trim();}
+function ofset(id,v){const e=ofEl(id);if(!e)return;if(e.type==='checkbox'){e.checked=!!v;return;}
+  const val=(v===undefined||v===null)?'':String(v);
+  // keep values the select does not list (e.g. kcp, randomizednoalpn) instead of silently dropping them
+  if(e.tagName==='SELECT'&&val!==''&&![...e.options].some(o=>o.value===val)){const o=document.createElement('option');o.value=val;o.textContent=val;o.dataset.extra='1';e.appendChild(o);}
+  e.value=val;}
+function ofClone(o){return o===undefined?undefined:JSON.parse(JSON.stringify(o));}
+function ofSetOrDel(obj,key,val){if(val===''||val===undefined||val===null||(Array.isArray(val)&&!val.length))delete obj[key];else obj[key]=val;}
+
+function ofRefresh(){
+  const proto=ofv('of-protocol'),net=ofv('of-network'),sec=ofv('of-tls-mode');
+  if(!document.querySelectorAll)return;
+  document.querySelectorAll('#mob-pane-form [data-proto],#mob-pane-form [data-net],#mob-pane-form [data-sec]').forEach(el=>{
+    const ok=(!el.dataset.proto||el.dataset.proto.split(' ').includes(proto))&&(!el.dataset.net||el.dataset.net.split(' ').includes(net))&&(!el.dataset.sec||el.dataset.sec.split(' ').includes(sec));
+    el.classList.toggle('hidden',!ok);
+  });
+  const idLabel={vless:'UUID',vmess:'UUID',trojan:'密码',shadowsocks:'密码'}[proto]||'UUID';
+  ofEl('of-id-label').textContent=idLabel;
+  ofEl('of-security-label').textContent={vless:'加密 (encryption)',vmess:'加密 (security)',shadowsocks:'加密方法 (method)'}[proto]||'加密';
+  const list={vless:['none'],vmess:['auto','aes-128-gcm','chacha20-poly1305','none','zero'],shadowsocks:OF_SS_METHODS}[proto]||[];
+  ofEl('of-security-list').innerHTML=list.map(x=>`<option value="${x}">`).join('');
+  ofEl('of-path-label').textContent=net==='grpc'?'serviceName':'Path';
+  ofEl('of-mux-conc-field').classList.toggle('hidden',ofv('of-mux')!=='on');
 }
 
-function formToOutbound(){
-  const protocol=document.getElementById('of-protocol').value;
-  const tag=document.getElementById('of-tag').value.trim()||'new-node';
-  const address=document.getElementById('of-address').value.trim();
-  const port=parseInt(document.getElementById('of-port').value||'0');
-  const ident=document.getElementById('of-id').value.trim();
-  const sec=document.getElementById('of-security').value.trim();
-  const flow=document.getElementById('of-flow').value.trim();
-  const network=document.getElementById('of-network').value;
-  const tlsMode=document.getElementById('of-tls-mode').value;
-  const sni=document.getElementById('of-sni').value.trim();
-  const host=document.getElementById('of-host').value.trim();
-  const path=document.getElementById('of-path').value.trim()||'/';
-  const fp=document.getElementById('of-fp').value.trim();
-  const alpn=document.getElementById('of-alpn').value.trim();
-  const allowInsecure=document.getElementById('of-insecure').value==='true';
-  const ech=document.getElementById('of-ech').value.trim();
-  const muxOn=document.getElementById('of-mux').value==='on';
-  let ob={tag, protocol};
-  if(protocol==='shadowsocks'){
-    ob.settings={servers:[{address, port, method:sec||'aes-128-gcm', password:ident, ota:false, level:1}]};
-  }else if(protocol==='trojan'){
-    ob.settings={servers:[{address, port, password:ident}]};
-  }else if(protocol==='vmess'){
-    ob.settings={vnext:[{address, port, users:[{id:ident, alterId:0, security:sec||'auto'}]}]};
-  }else {
-    const user={id:ident, encryption:sec||'none'}; if(flow) user.flow=flow;
-    ob.settings={vnext:[{address, port, users:[user]}]};
+function outboundToForm(ob){
+  ob=ob||{};
+  const p=ob.protocol||'vless';
+  ofset('of-tag',ob.tag||'');
+  ofset('of-protocol',p);
+  let address='',port='',ident='',sec='',flow='';
+  try{
+    if(p==='shadowsocks'||p==='trojan'){
+      const s=(ob.settings&&ob.settings.servers&&ob.settings.servers[0])||{};
+      address=s.address||'';port=s.port||'';ident=s.password||'';sec=p==='shadowsocks'?(s.method||''):'';flow=s.flow||'';
+    }else{
+      const v=(ob.settings&&ob.settings.vnext&&ob.settings.vnext[0])||{};const u=(v.users&&v.users[0])||{};
+      address=v.address||'';port=v.port||'';ident=u.id||'';sec=p==='vmess'?(u.security||''):(u.encryption||'');flow=u.flow||'';
+    }
+  }catch(e){}
+  ofset('of-address',address);ofset('of-port',port);ofset('of-id',ident);ofset('of-security',sec);ofset('of-flow',flow);
+  const ss=ob.streamSettings||{};
+  let net=ss.network||'tcp'; if(net==='raw')net='tcp'; if(net==='splithttp')net='xhttp';
+  ofset('of-network',net);
+  ofset('of-tls-mode',ss.security||'none');
+  const tls=ss.tlsSettings||{},rl=ss.realitySettings||{};
+  const t=ss.security==='reality'?rl:tls;
+  ofset('of-sni',t.serverName||'');
+  ofset('of-fp',t.fingerprint||'');
+  ofset('of-alpn',Array.isArray(tls.alpn)?tls.alpn.join(','):'');
+  ofset('of-pcs',tls.pinnedPeerCertSha256||'');
+  ofset('of-ech',tls.echConfigList||'');
+  ofset('of-ech-force',tls.echForceQuery||'full');
+  ofset('of-pbk',rl.publicKey||'');ofset('of-sid',rl.shortId||'');ofset('of-spx',rl.spiderX||'');
+  let host='',path='',mode='',extra='',multi='false';
+  if(net==='ws'){const w=ss.wsSettings||{};host=w.host||(w.headers&&w.headers.Host)||'';path=w.path||'';}
+  else if(net==='httpupgrade'){const h=ss.httpupgradeSettings||{};host=h.host||'';path=h.path||'';}
+  else if(net==='xhttp'){const x=ss.xhttpSettings||ss.splithttpSettings||{};host=x.host||'';path=x.path||'';mode=x.mode||'';extra=x.extra&&Object.keys(x.extra).length?JSON.stringify(x.extra,null,2):'';}
+  else if(net==='grpc'){const g=ss.grpcSettings||{};path=g.serviceName||'';multi=g.multiMode?'true':'false';}
+  ofset('of-host',host);ofset('of-path',path);ofset('of-xhttp-mode',mode==='auto'?'':mode);ofset('of-xhttp-extra',extra);ofset('of-grpc-multi',multi);
+  const mux=ob.mux||{};
+  ofset('of-mux',mux.enabled?'on':'off');ofset('of-mux-conc',mux.enabled&&mux.concurrency!==undefined?mux.concurrency:'');
+  ofset('of-tfo',!!(ss.sockopt&&ss.sockopt.tcpFastOpen));
+  ofRefresh();
+}
+
+// Builds the outbound from the form on top of `base` (the node being edited), so
+// every field the form does not know about is preserved unchanged.
+function formToOutbound(base){
+  const protocol=ofv('of-protocol');
+  const sameProto=!!(base&&base.protocol===protocol);
+  const ob=sameProto?ofClone(base):(base?Object.fromEntries(Object.entries(ofClone(base)).filter(([k])=>!['settings','protocol'].includes(k))):{});
+  ob.tag=ofv('of-tag')||'new-node';
+  ob.protocol=protocol;
+  const address=ofv('of-address');
+  const port=parseInt(ofv('of-port')||'0',10);
+  if(!address)throw new Error('请填写服务器地址');
+  if(!(port>=1&&port<=65535))throw new Error('端口无效');
+  const ident=ofv('of-id'),sec=ofv('of-security'),flow=ofv('of-flow');
+  const settings=sameProto&&ob.settings?ob.settings:{};
+  if(protocol==='shadowsocks'||protocol==='trojan'){
+    const servers=Array.isArray(settings.servers)&&settings.servers.length?settings.servers:[{}];
+    const s=servers[0];s.address=address;s.port=port;s.password=ident;
+    if(protocol==='shadowsocks'){s.method=sec||'aes-128-gcm';if(!sameProto){s.ota=false;s.level=1;}}
+    else ofSetOrDel(s,'flow',flow);
+    settings.servers=servers;delete settings.vnext;
+  }else{
+    const vnext=Array.isArray(settings.vnext)&&settings.vnext.length?settings.vnext:[{}];
+    const v=vnext[0];v.address=address;v.port=port;
+    const users=Array.isArray(v.users)&&v.users.length?v.users:[{}];const u=users[0];u.id=ident;
+    if(protocol==='vmess'){u.security=sec||'auto';if(u.alterId===undefined)u.alterId=0;delete u.encryption;delete u.flow;}
+    else{u.encryption=sec||'none';ofSetOrDel(u,'flow',flow);}
+    v.users=users;settings.vnext=vnext;delete settings.servers;
   }
-  ob.streamSettings={network, security:tlsMode};
-  if(tlsMode==='tls'){
-    ob.streamSettings.tlsSettings={serverName:sni||host||address, allowInsecure};
-    if(fp) ob.streamSettings.tlsSettings.fingerprint=fp;
-    if(alpn) ob.streamSettings.tlsSettings.alpn=alpn.split(',').map(s=>s.trim()).filter(Boolean);
-    if(ech){ ob.streamSettings.tlsSettings.echConfigList=ech; ob.streamSettings.tlsSettings.echForceQuery='full'; }
-  }else if(tlsMode==='reality'){
-    ob.streamSettings.realitySettings={serverName:sni||host||address};
-    if(fp) ob.streamSettings.realitySettings.fingerprint=fp;
+  ob.settings=settings;
+
+  const ss=ofClone(ob.streamSettings)||{};
+  const net=ofv('of-network');
+  const keepNet=(ss.network==='raw'&&net==='tcp')?'raw':(ss.network==='splithttp'&&net==='xhttp'?'splithttp':net);
+  ss.network=keepNet;
+  const own=OF_NET_KEYS[net]||[];
+  for(const k of OF_ALL_NET_KEYS){if(!own.includes(k))delete ss[k];}
+  const host=ofv('of-host'),path=ofv('of-path');
+  if(net==='ws'){
+    const w=ss.wsSettings||{};w.path=path||'/';ofSetOrDel(w,'host',host);
+    if(w.headers&&w.headers.Host!==undefined){delete w.headers.Host;}
+    ss.wsSettings=w;
+  }else if(net==='httpupgrade'){
+    const h=ss.httpupgradeSettings||{};h.path=path||'/';ofSetOrDel(h,'host',host);ss.httpupgradeSettings=h;
+  }else if(net==='xhttp'){
+    const key=ss.splithttpSettings&&!ss.xhttpSettings?'splithttpSettings':'xhttpSettings';
+    const x=ss[key]||{};x.path=path||'/';ofSetOrDel(x,'host',host);ofSetOrDel(x,'mode',ofv('of-xhttp-mode'));
+    const extraRaw=ofv('of-xhttp-extra');
+    if(extraRaw){let e;try{e=JSON.parse(extraRaw);}catch(err){throw new Error('XHTTP extra 不是合法 JSON: '+err.message);}
+      if(!e||typeof e!=='object'||Array.isArray(e))throw new Error('XHTTP extra 必须是 JSON 对象');x.extra=e;}
+    else delete x.extra;
+    ss[key]=x;
+  }else if(net==='grpc'){
+    const g=ss.grpcSettings||{};g.serviceName=path==='/'?'':path;
+    if(ofv('of-grpc-multi')==='true')g.multiMode=true;else delete g.multiMode;ss.grpcSettings=g;
   }
-  if(network==='ws'){
-    ob.streamSettings.wsSettings={host, path, headers:{}};
-  }else if(network==='grpc'){
-    ob.streamSettings.grpcSettings={serviceName:path==='/'?'':path};
-  }else if(network==='xhttp'){
-    ob.streamSettings.xhttpSettings={path};
-  }
-  if(muxOn) ob.mux={enabled:true, concurrency:8};
-  else if(protocol==='shadowsocks') ob.mux={enabled:false, concurrency:-1};
+  const mode=ofv('of-tls-mode');
+  ss.security=mode;
+  const sni=ofv('of-sni'),fp=ofv('of-fp');
+  if(mode==='tls'){
+    const t=ss.tlsSettings||{};
+    ofSetOrDel(t,'serverName',sni||host||(t.serverName?'':address));
+    ofSetOrDel(t,'fingerprint',fp);
+    ofSetOrDel(t,'alpn',ofv('of-alpn').split(',').map(s=>s.trim()).filter(Boolean));
+    ofSetOrDel(t,'pinnedPeerCertSha256',ofv('of-pcs'));
+    const ech=ofv('of-ech');
+    if(ech){t.echConfigList=ech;t.echForceQuery=ofv('of-ech-force')||'full';}else{delete t.echConfigList;delete t.echForceQuery;}
+    ss.tlsSettings=t;delete ss.realitySettings;
+  }else if(mode==='reality'){
+    const r=ss.realitySettings||{};
+    ofSetOrDel(r,'serverName',sni||address);ofSetOrDel(r,'fingerprint',fp||'chrome');
+    ofSetOrDel(r,'publicKey',ofv('of-pbk'));ofSetOrDel(r,'shortId',ofv('of-sid'));ofSetOrDel(r,'spiderX',ofv('of-spx'));
+    if(!r.publicKey)throw new Error('REALITY 需要公钥 (pbk)');
+    ss.realitySettings=r;delete ss.tlsSettings;
+  }else{delete ss.tlsSettings;delete ss.realitySettings;}
+  const sock=ss.sockopt||{};
+  if(ofv('of-tfo'))sock.tcpFastOpen=true;else delete sock.tcpFastOpen;
+  if(Object.keys(sock).length)ss.sockopt=sock;else delete ss.sockopt;
+  ob.streamSettings=ss;
+  if(ofv('of-mux')==='on'){
+    const c=parseInt(ofv('of-mux-conc')||'8',10);
+    ob.mux=Object.assign({},ob.mux||{},{enabled:true,concurrency:Number.isFinite(c)?c:8});
+  }else if(ob.mux){ob.mux=Object.assign({},ob.mux,{enabled:false});}
   return ob;
 }
 
+function _shareQuery(params){
+  return Object.entries(params).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>k+'='+encodeURIComponent(String(v))).join('&');
+}
+function _b64utf8(s){return btoa(unescape(encodeURIComponent(s)));}
+
+// Transport + security params shared by vless / trojan / ss(Xray style) links.
+function _streamShareParams(ss){
+  const p={};
+  const net0=ss.network||'tcp';
+  const net=net0==='raw'?'tcp':(net0==='splithttp'?'xhttp':net0);
+  const sec=ss.security||'none';
+  if(net!=='tcp')p.type=net;
+  if(sec!=='none')p.security=sec;
+  if(sec==='tls'){
+    const t=ss.tlsSettings||{};
+    p.sni=t.serverName;p.fp=t.fingerprint;
+    if(Array.isArray(t.alpn)&&t.alpn.length)p.alpn=t.alpn.join(',');
+
+    if(t.echConfigList){p.ech=t.echConfigList;if(t.echForceQuery&&t.echForceQuery!=='full')p.echForceQuery=t.echForceQuery;}
+    if(t.pinnedPeerCertSha256)p.pcs=t.pinnedPeerCertSha256;
+  }else if(sec==='reality'){
+    const r=ss.realitySettings||{};
+    p.sni=r.serverName;p.fp=r.fingerprint;p.pbk=r.publicKey;p.sid=r.shortId;p.spx=r.spiderX;p.pqv=r.mldsa65Verify;
+  }
+  if(net==='ws'){const w=ss.wsSettings||{};p.host=w.host||(w.headers&&w.headers.Host);p.path=w.path;}
+  else if(net==='httpupgrade'){const h=ss.httpupgradeSettings||{};p.host=h.host;p.path=h.path;}
+  else if(net==='xhttp'){const x=ss.xhttpSettings||ss.splithttpSettings||{};p.host=x.host;p.path=x.path;p.mode=x.mode;
+    if(x.extra&&Object.keys(x.extra).length)p.extra=JSON.stringify(x.extra);}
+  else if(net==='grpc'){const g=ss.grpcSettings||{};p.serviceName=g.serviceName;if(g.multiMode)p.mode='multi';p.authority=g.authority;}
+  else if(net==='tcp'){const h=((ss.tcpSettings||ss.rawSettings||{}).header)||{};
+    if(h.type==='http'){p.headerType='http';const rq=h.request||{};const hh=(rq.headers&&(rq.headers.Host||rq.headers.host))||[];
+      p.host=Array.isArray(hh)?hh.join(','):hh;p.path=Array.isArray(rq.path)?rq.path[0]:rq.path;}}
+  else if(net==='kcp'){const k=ss.kcpSettings||{};p.headerType=k.header&&k.header.type;p.seed=k.seed;}
+  return p;
+}
+
+function outboundToShareLink(ob){
+  const p=ob.protocol||'';
+  const ss=ob.streamSettings||{};
+  const frag='#'+encodeURIComponent(ob.tag||'');
+  try{
+    if(p==='vless'){
+      const v=ob.settings.vnext[0];const u=v.users[0];
+      const params=Object.assign({encryption:u.encryption||'none',flow:u.flow},_streamShareParams(ss));
+      return 'vless://'+encodeURIComponent(u.id)+'@'+v.address+':'+v.port+'?'+_shareQuery(params)+frag;
+    }
+    if(p==='trojan'){
+      const s=ob.settings.servers[0];
+      const params=Object.assign({flow:s.flow},_streamShareParams(ss));
+      const q=_shareQuery(params);
+      return 'trojan://'+encodeURIComponent(s.password)+'@'+s.address+':'+s.port+(q?'?'+q:'')+frag;
+    }
+    if(p==='vmess'){
+      const v=ob.settings.vnext[0];const u=v.users[0];
+      const sp=_streamShareParams(ss);
+      const obj={v:'2',ps:ob.tag||'',add:String(v.address),port:String(v.port),id:u.id,aid:String(u.alterId||0),scy:u.security||'auto',
+        net:sp.type||'tcp',type:sp.headerType||'none',host:sp.host||'',path:(sp.type==='grpc'?sp.serviceName:sp.path)||'',tls:sp.security||'',sni:sp.sni||''};
+      if(sp.fp)obj.fp=sp.fp;if(sp.alpn)obj.alpn=sp.alpn;
+      if(sp.mode&&sp.type==='xhttp')obj.mode=sp.mode;if(sp.extra)obj.extra=sp.extra;
+      return 'vmess://'+_b64utf8(JSON.stringify(obj));
+    }
+    if(p==='shadowsocks'){
+      const s=ob.settings.servers[0];
+      const user=_b64utf8(s.method+':'+s.password).replace(/=+$/,'');
+      const base='ss://'+user+'@'+s.address+':'+s.port;
+      const net=ss.network||'tcp';
+      if(net==='tcp'||net==='raw'){
+        return base+frag;
+      }
+      if(net==='ws'&&(ss.security||'none')!=='reality'){
+        // v2ray-plugin form: understood by v2rayN / Shadowrocket / Clash. SIP003: escape \ ; = in values.
+        const w=ss.wsSettings||{};const esc=x=>String(x).replace(/[\\;=]/g,c=>'\\'+c);
+        const parts=['v2ray-plugin','mode=websocket'];
+        const host=w.host||(w.headers&&w.headers.Host);
+        if(ss.security==='tls'){parts.push('tls');const sni=(ss.tlsSettings||{}).serverName;if(sni&&sni!==host)parts.push('sni='+esc(sni));}
+        if(host)parts.push('host='+esc(host));
+        if(w.path)parts.push('path='+esc(w.path));
+        return base+'/?plugin='+encodeURIComponent(parts.join(';'))+frag;
+      }
+      return base+'?'+_shareQuery(_streamShareParams(ss))+frag;
+    }
+  }catch(e){console.error('export error:',e);}
+  return null;
+}
+// ==== node-form:end ====
+
 function saveFormOutbound(){
   try{
-    const ob=formToOutbound();
+    const ob=formToOutbound(editingOutboundBase);
     document.getElementById('eo-json').value=JSON.stringify(ob,null,2);
     switchObModalTab('json');
-    toast('已根据表单生成 JSON');
-  }catch(e){ toast('表单生成失败: '+e.message,false); }
+    toast('已根据表单生成 JSON，确认后保存');
+  }catch(e){ toast('表单校验失败: '+e.message,false); }
+}
+
+function saveFormOutboundDirect(){
+  let ob;
+  try{ ob=formToOutbound(editingOutboundBase); }catch(e){ toast('表单校验失败: '+e.message,false); return; }
+  const dup=outboundsData.findIndex((x,i)=>x.tag===ob.tag&&i!==editingOutboundIdx);
+  if(dup>=0){toast('名称已存在: '+ob.tag,false);return;}
+  const oldTag=editingOutboundIdx>=0?outboundsData[editingOutboundIdx].tag:null;
+  if(editingOutboundIdx>=0) outboundsData[editingOutboundIdx]=ob; else outboundsData.push(ob);
+  closeModal('modal-outbound');
+  renderOutbounds();
+  saveOutbounds().then(()=>{ if(typeof loadConnect==='function'&&document.getElementById('tab-connect').classList.contains('active')) loadConnect(); });
+  if(oldTag&&oldTag!==ob.tag) toast('节点已改名，引用旧名称的路由规则需要同步修改',false);
 }
 
 function showAddOutboundModal(){
   editingOutboundIdx=-1;
+  editingOutboundBase=null;
   document.getElementById('modal-ob-title').textContent='新增节点';
   document.getElementById('vless-link').value='';
   document.getElementById('eo-json').value=JSON.stringify({tag:'new-proxy',protocol:'vless',settings:{vnext:[{address:'example.com',port:443,users:[{id:'UUID',encryption:'none'}]}]},streamSettings:{network:'ws',security:'tls',tlsSettings:{serverName:'example.com',allowInsecure:false},wsSettings:{host:'example.com',path:'/'}}}, null, 2);
@@ -4827,7 +5506,8 @@ function showAddOutboundModal(){
 
 function editOutbound(idx){
   editingOutboundIdx=idx;
-  document.getElementById('modal-ob-title').textContent='编辑出站 JSON';
+  document.getElementById('modal-ob-title').textContent='编辑节点 · '+(outboundsData[idx].tag||'');
+  editingOutboundBase=outboundsData[idx];
   document.getElementById('eo-json').value=JSON.stringify(outboundsData[idx], null, 2);
   outboundToForm(outboundsData[idx]);
   switchObModalTab('form');
@@ -4837,6 +5517,10 @@ function editOutbound(idx){
 function switchObModalTab(tab){
   const isLink=tab==='link';
   const isForm=tab==='form';
+  if(isForm){
+    // keep the form in sync with hand edits made in the JSON tab
+    try{ const ob=JSON.parse(document.getElementById('eo-json').value); if(ob&&typeof ob==='object'){ editingOutboundBase=ob; outboundToForm(ob);} }catch(e){}
+  }
   document.getElementById('mob-tab-link').className='tab'+(isLink?' active':'');
   document.getElementById('mob-tab-form').className='tab'+(isForm?' active':'');
   document.getElementById('mob-tab-json').className='tab'+((!isLink&&!isForm)?' active':'');
@@ -4883,111 +5567,6 @@ async function parseAndAddVless(){
 async function saveOutbounds(){
   const d=await api('/api/outbounds',{method:'POST',body:JSON.stringify({outbounds:outboundsData})});
   if(d&&d.ok)toast('出站已保存'+(d.restart&&d.restart.success?'，Xray 已重启':''));
-}
-
-// --- Export: outbound config -> share link ---
-function outboundToShareLink(ob){
-  const p=ob.protocol||'';
-  const ss=ob.streamSettings||{};
-  const net=ss.network||'tcp';
-  const sec=ss.security||'none';
-  try{
-    if(p==='vless'){
-      const v=ob.settings.vnext[0]; const u=v.users[0];
-      let link='vless://'+encodeURIComponent(u.id)+'@'+v.address+':'+v.port;
-      const params=[];
-      if(u.encryption&&u.encryption!=='none') params.push('encryption='+u.encryption);
-      if(u.flow) params.push('flow='+u.flow);
-      if(sec&&sec!=='none') params.push('security='+sec);
-      if(sec==='tls'){
-        const tls=ss.tlsSettings||{};
-        if(tls.serverName) params.push('sni='+tls.serverName);
-        if(tls.fingerprint) params.push('fp='+tls.fingerprint);
-        if(tls.alpn&&tls.alpn.length) params.push('alpn='+tls.alpn.join(','));
-        if(tls.allowInsecure) params.push('allowInsecure=1');
-        if(tls.echConfigList) params.push('ech='+tls.echConfigList);
-      }else if(sec==='reality'){
-        const r=ss.realitySettings||{};
-        if(r.serverName) params.push('sni='+r.serverName);
-        if(r.fingerprint) params.push('fp='+r.fingerprint);
-        if(r.publicKey) params.push('pbk='+r.publicKey);
-        if(r.shortId) params.push('sid='+r.shortId);
-        if(r.spiderX) params.push('spx='+r.spiderX);
-      }
-      if(net&&net!=='tcp') params.push('type='+net);
-      if(net==='ws'){
-        const ws=ss.wsSettings||{};
-        if(ws.path) params.push('path='+encodeURIComponent(ws.path));
-        if(ws.headers&&ws.headers.Host) params.push('host='+ws.headers.Host);
-      }else if(net==='grpc'){
-        const g=ss.grpcSettings||{};
-        if(g.serviceName) params.push('serviceName='+g.serviceName);
-      }else if(net==='xhttp'){
-        const x=ss.xhttpSettings||{};
-        if(x.path) params.push('path='+encodeURIComponent(x.path));
-      }
-      if(params.length) link+='?'+params.join('&');
-      link+='#'+encodeURIComponent(ob.tag||'');
-      return link;
-    }
-    if(p==='vmess'){
-      const v=ob.settings.vnext[0]; const u=v.users[0];
-      const obj={
-        v:'2', ps:ob.tag||'', add:v.address, port:String(v.port),
-        id:u.id, aid:String(u.alterId||0), scy:u.security||'auto',
-        net:net, type:'none', host:'', path:'', tls:sec||'none', sni:''
-      };
-      if(ss.tlsSettings){
-        if(ss.tlsSettings.serverName) obj.sni=ss.tlsSettings.serverName;
-        if(ss.tlsSettings.fingerprint) obj.fp=ss.tlsSettings.fingerprint;
-        if(ss.tlsSettings.alpn) obj.alpn=ss.tlsSettings.alpn.join(',');
-        if(ss.tlsSettings.allowInsecure) obj.insecure='1';
-      }
-      if(net==='ws'){
-        const ws=ss.wsSettings||{};
-        obj.path=ws.path||'/';
-        if(ws.headers&&ws.headers.Host) obj.host=ws.headers.Host;
-      }else if(net==='grpc'){
-        const g=ss.grpcSettings||{};
-        obj.path=g.serviceName||'';
-      }else if(net==='h2'||net==='http'){
-        const h=ss.httpSettings||{};
-        obj.path=h.path||'/';
-        if(h.host&&h.host.length) obj.host=h.host[0];
-      }
-      const jsonStr=JSON.stringify(obj);
-      return 'vmess://'+btoa(jsonStr);
-    }
-    if(p==='shadowsocks'){
-      const s=ob.settings.servers[0];
-      const mp=s.method+':'+s.password;
-      return 'ss://'+btoa(mp)+'@'+s.address+':'+s.port+'#'+encodeURIComponent(ob.tag||'');
-    }
-    if(p==='trojan'){
-      const s=ob.settings.servers[0];
-      let link='trojan://'+encodeURIComponent(s.password)+'@'+s.address+':'+s.port;
-      const params=[];
-      if(sec&&sec!=='none'&&sec!=='tls') params.push('security='+sec);
-      if(ss.tlsSettings){
-        if(ss.tlsSettings.serverName) params.push('sni='+ss.tlsSettings.serverName);
-        if(ss.tlsSettings.fingerprint) params.push('fp='+ss.tlsSettings.fingerprint);
-        if(ss.tlsSettings.allowInsecure) params.push('allowInsecure=1');
-      }
-      if(net&&net!=='tcp') params.push('type='+net);
-      if(net==='ws'){
-        const ws=ss.wsSettings||{};
-        if(ws.path) params.push('path='+encodeURIComponent(ws.path));
-        if(ws.headers&&ws.headers.Host) params.push('host='+ws.headers.Host);
-      }else if(net==='grpc'){
-        const g=ss.grpcSettings||{};
-        if(g.serviceName) params.push('serviceName='+g.serviceName);
-      }
-      if(params.length) link+='?'+params.join('&');
-      link+='#'+encodeURIComponent(ob.tag||'');
-      return link;
-    }
-  }catch(e){console.error('export error:',e);}
-  return null;
 }
 
 function exportOutbound(idx){
@@ -5040,137 +5619,181 @@ async function quickImportLinks(){
   else toast('已解析但保存失败，请手动点保存',false);
 }
 
-async function loadRouting(){
-  const d=await api('/api/routing');
-  if(!d)return;
-  routingData=d.routing||{};
-  routingRenderRules();
-  routingLoadOutbounds();
+let routingCustom=[];
+let routingProxyTarget='__proxy__';
+let routingBypass=[];
+const RT_TYPE_LABEL={domain:'域名',full:'完整域名',keyword:'关键词',geosite:'域名集',regexp:'正则',ip:'IP',geoip:'IP 集',port:'端口',sourceIP:'来源 IP',network:'网络',protocol:'协议',inboundTag:'入站'};
+const RT_HINTS={domain:'每行或逗号分隔，如 openai.com',full:'精确匹配，如 api.openai.com',keyword:'包含即匹配，如 google',geosite:'如 openai、google、category-ads-all、cn',ip:'如 1.2.3.4、10.0.0.0/8',geoip:'如 cn、private、telegram',port:'如 443、8000-9000',sourceIP:'局域网设备，如 192.168.1.23'};
+const RT_PRESETS={
+  ads:{type:'geosite',vals:['category-ads-all'],act:'block',remark:'广告拦截'},
+  ai:{type:'geosite',vals:['openai','anthropic','google-gemini'],act:'proxy',remark:'AI 服务'},
+  kiro:{type:'domain',vals:['kiro.dev','amazonaws.com','aws.dev','awsstatic.com'],act:'proxy',remark:'Kiro / AWS'},
+  google:{type:'geosite',vals:['google','youtube'],act:'proxy',remark:'Google / YouTube'},
+  github:{type:'geosite',vals:['github'],act:'proxy',remark:'GitHub'},
+  apple:{type:'geosite',vals:['apple-cn'],act:'direct',remark:'Apple 国内服务'},
+  bt:{type:'protocol',vals:['bittorrent'],act:'direct',remark:'BT 下载'},
+};
+
+function routingTypeHint(){
+  const t=document.getElementById('rt-cond-type').value;
+  document.getElementById('rt-hint').textContent=RT_HINTS[t]||'';
+  document.getElementById('rt-bypass-btn').disabled=!['ip','sourceIP'].includes(t)||t==='sourceIP';
+}
+
+function rtSplit(s){return String(s||'').split(/[\s,，;；]+/).map(x=>x.trim()).filter(Boolean);}
+
+// UI type + values -> Xray rule match fields
+function rtBuildMatch(type,vals){
+  const m={};
+  if(type==='domain')m.domain=vals.map(v=>/^(domain|full|keyword|regexp|geosite|ext):/.test(v)?v:'domain:'+v.replace(/^\*?\./,''));
+  else if(type==='full')m.domain=vals.map(v=>v.startsWith('full:')?v:'full:'+v);
+  else if(type==='keyword')m.domain=vals.map(v=>v.startsWith('keyword:')?v:'keyword:'+v);
+  else if(type==='geosite')m.domain=vals.map(v=>v.startsWith('geosite:')?v:'geosite:'+v);
+  else if(type==='ip')m.ip=vals;
+  else if(type==='geoip')m.ip=vals.map(v=>v.startsWith('geoip:')?v:'geoip:'+v);
+  else if(type==='port')m.port=vals.join(',');
+  else if(type==='sourceIP')m.sourceIP=vals;
+  else if(type==='protocol')m.protocol=vals;
+  return m;
+}
+
+function rtDescribe(r){
+  const out=[];
+  for(const [k,label] of [['domain',null],['ip',null],['sourceIP','来源 IP'],['port','端口'],['network','网络'],['protocol','协议'],['inboundTag','入站']]){
+    if(r[k]===undefined)continue;
+    const vals=Array.isArray(r[k])?r[k]:[r[k]];
+    let type=label;
+    if(k==='domain'){const p=String(vals[0]).split(':')[0];type=RT_TYPE_LABEL[p]||'域名';}
+    if(k==='ip'){type=String(vals[0]).startsWith('geoip:')?'IP 集':'IP';}
+    out.push({type,vals});
+  }
+  return out;
+}
+
+function rtTargetLabel(r){
+  const t=r.balancerTag||r.outboundTag||'';
+  if(t===routingProxyTarget)return '<span class="tag us">走代理（当前节点）</span>';
+  if(t==='direct')return '<span class="tag kr">直连</span>';
+  if(t==='block')return '<span class="tag red">阻断</span>';
+  return `<span class="tag us">代理 · ${escapeHtml(t)}</span>`;
+}
+
+function routingRenderCustom(){
+  const tb=document.getElementById('rt-custom-tbody');
+  if(!routingCustom.length){tb.innerHTML='<tr><td colspan="6" class="empty">暂无自定义规则，可在上方添加或点常用模板</td></tr>';return;}
+  tb.innerHTML=routingCustom.map((r,i)=>{
+    const d=rtDescribe(r);
+    const type=d.map(x=>`<span class="tag default">${x.type}</span>`).join(' ');
+    const vals=d.map(x=>x.vals.map(v=>`<code>${escapeHtml(String(v).replace(/^(domain|full|keyword|geosite|geoip):/,''))}</code>`).join('')).join('');
+    return `<tr>
+      <td style="color:var(--text2)">${i+1}</td><td>${type}</td><td><div class="match-vals">${vals}</div></td>
+      <td>${rtTargetLabel(r)}</td><td style="font-family:inherit;color:var(--text3)">${escapeHtml(r.remark||'')}</td>
+      <td><div class="ob-actions">
+        <button class="btn sm" onclick="routingMove(${i},-1)" ${i===0?'disabled':''}>上移</button>
+        <button class="btn sm" onclick="routingMove(${i},1)" ${i>=routingCustom.length-1?'disabled':''}>下移</button>
+        <button class="btn sm danger" onclick="routingDelete(${i})">删除</button></div></td></tr>`;
+  }).join('');
 }
 
 function routingRenderRules(){
-  const rules=routingData.rules||[];
+  const rules=(routingData.rules||[]).filter(r=>!String(r.ruleTag||'').startsWith('user:'));
   const tb=document.getElementById('routing-tbody');
+  if(!rules.length){tb.innerHTML='<tr><td colspan="4" class="empty">尚未连接，暂无系统规则</td></tr>';return;}
   tb.innerHTML=rules.map((r,i)=>{
-    let condType='-',condVal='-';
-    if(r.inboundTag){condType='入站';condVal=r.inboundTag.join(', ');}
-    else if(r.domain){condType='域名';condVal=r.domain.join(', ');}
-    else if(r.ip){condType='IP';condVal=r.ip.join(', ');}
-    else if(r.network){condType='网络';condVal=r.network;}
-    const ob=r.outboundTag||r.balancerTag||'-';
-    const obColor=ob==='direct'?'tag jp':ob==='block'?'tag default':'tag us';
-    return `<tr>
-      <td style="color:var(--text2)">${i+1}</td>
-      <td><span class="tag default">${condType}</span></td>
-      <td style="font-size:11px;font-family:monospace;max-width:400px;word-break:break-all">${condVal}</td>
-      <td><span class="${obColor}">${ob}</span></td>
-      <td>
-        <button class="btn" onclick="routingMoveUp(${i})" ${i===0?'disabled':''} style="padding:3px 8px;font-size:11px">上移</button>
-        <button class="btn" onclick="routingMoveDown(${i})" ${i>=rules.length-1?'disabled':''} style="padding:3px 8px;font-size:11px">下移</button>
-        <button class="btn danger" onclick="routingDeleteRule(${i})" style="padding:3px 8px;font-size:11px">删除</button>
-      </td>
-    </tr>`;
+    const d=rtDescribe(r);
+    const type=d.length?d.map(x=>`<span class="tag default">${x.type}</span>`).join(' '):'<span class="tag default">全部</span>';
+    const vals=d.map(x=>x.vals.map(v=>`<code>${escapeHtml(v)}</code>`).join('')).join('');
+    const ob=r.outboundTag||(r.balancerTag?r.balancerTag+'（负载均衡）':'-');
+    const cls=ob==='direct'?'tag kr':ob==='block'?'tag red':'tag us';
+    return `<tr class="ob-system"><td>${i+1}</td><td>${type}</td><td><div class="match-vals">${vals}</div></td><td><span class="${cls}">${escapeHtml(ob)}</span></td></tr>`;
   }).join('');
+}
+
+function routingRenderBypass(){
+  const el=document.getElementById('rt-bypass-list');
+  el.innerHTML=routingBypass.length?routingBypass.map((c,i)=>`<span class="chip">${escapeHtml(c)}<span class="x" onclick="routingRemoveBypass(${i})" title="删除">✕</span></span>`).join(''):'<span>暂无自定义绕过</span>';
+}
+
+function routingSetDirty(on){document.getElementById('rt-dirty').style.display=on?'inline':'none';}
+
+async function loadRouting(){
+  const [d,c,b]=await Promise.all([api('/api/routing'),api('/api/routing/custom'),api('/api/transparent/bypass')]);
+  if(d)routingData=d.routing||{};
+  if(c){routingCustom=c.rules||[];routingProxyTarget=c.proxy_target||'__proxy__';}
+  if(b)routingBypass=b.custom||[];
+  routingRenderRules();routingRenderCustom();routingRenderBypass();routingSetDirty(false);routingTypeHint();
+  routingLoadOutbounds();
 }
 
 async function routingLoadOutbounds(){
   const d=await api('/api/outbounds');
   if(!d)return;
   const sel=document.getElementById('rt-outbound');
-  if(!sel)return;
-  const obs=(d.outbounds||[]).filter(ob=>!['_delay'].includes(ob.tag||''));
-  let opts='<option value="direct">direct (直连)</option><option value="block">block (阻止)</option>';
-  for(const ob of obs){
-    if(ob.protocol==='freedom'||ob.protocol==='blackhole'||ob.protocol==='dns')continue;
-    opts+=`<option value="${ob.tag}">${ob.tag} (${ob.protocol})</option>`;
+  let opts=`<option value="${routingProxyTarget}">当前连接的节点（推荐）</option>`;
+  for(const ob of (d.outbounds||[])){
+    if(['freedom','blackhole','dns'].includes(ob.protocol))continue;
+    opts+=`<option value="${escapeHtml(ob.tag)}">${escapeHtml(ob.tag)} (${ob.protocol})</option>`;
   }
-  // Add balancer if exists
-  const bal=(routingData.balancers||[]).map(b=>`<option value="bal:${b.tag}">${b.tag} (负载均衡)</option>`).join('');
-  if(bal)opts+=bal;
+  for(const b of (routingData.balancers||[]))opts+=`<option value="bal:${escapeHtml(b.tag)}">${escapeHtml(b.tag)}（负载均衡）</option>`;
   sel.innerHTML=opts;
 }
 
-function routingAddRule(){
-  const condType=document.getElementById('rt-cond-type').value;
-  const condValue=(document.getElementById('rt-cond-value').value||'').trim();
-  const outbound=document.getElementById('rt-outbound').value;
-  if(!condValue){toast('请输入匹配值',false);return;}
+function routingPushRule(match,act,remark){
+  const rule=Object.assign({type:'field'},match);
+  if(act==='direct'||act==='block')rule.outboundTag=act;
+  else{const t=document.getElementById('rt-outbound').value||routingProxyTarget;
+    if(t.startsWith('bal:'))rule.balancerTag=t.slice(4);else rule.outboundTag=t;}
+  if(remark)rule.remark=remark;
+  routingCustom.push(rule);
+  routingRenderCustom();routingSetDirty(true);
+}
 
-  const vals=condValue.split(',').map(s=>s.trim()).filter(Boolean);
-  const rule={type:'field'};
-
-  if(condType==='domain')rule.domain=vals;
-  else if(condType==='ip')rule.ip=vals;
-  else if(condType==='inbound')rule.inboundTag=vals;
-  else if(condType==='network')rule.network=vals[0];
-
-  if(outbound.startsWith('bal:')){
-    rule.balancerTag=outbound.slice(4);
-  }else{
-    rule.outboundTag=outbound;
+function routingAdd(act){
+  const type=document.getElementById('rt-cond-type').value;
+  const vals=rtSplit(document.getElementById('rt-cond-value').value);
+  if(!vals.length){toast('请填写匹配值',false);return;}
+  if(type==='ip'||type==='sourceIP'){
+    const bad=vals.filter(v=>!/^!?[0-9a-fA-F:.]+(\/\d{1,3})?$/.test(v));
+    if(bad.length){toast('IP 格式不正确: '+bad.join(', '),false);return;}
   }
-
-  if(!routingData.rules)routingData.rules=[];
-  routingData.rules.push(rule);
-  routingRenderRules();
-  document.getElementById('rt-cond-value').value='';
-  toast('已添加规则');
+  if(type==='port'&&!vals.every(v=>/^\d{1,5}(-\d{1,5})?$/.test(v))){toast('端口格式不正确',false);return;}
+  routingPushRule(rtBuildMatch(type,vals),act,document.getElementById('rt-remark').value.trim());
+  document.getElementById('rt-cond-value').value='';document.getElementById('rt-remark').value='';
+  toast('已添加，点击“保存并生效”应用');
 }
 
-function routingDeleteRule(idx){
-  routingData.rules.splice(idx,1);
-  routingRenderRules();
+function routingPreset(key){
+  const p=RT_PRESETS[key];if(!p)return;
+  routingPushRule(rtBuildMatch(p.type,p.vals),p.act,p.remark);
+  toast('已添加“'+p.remark+'”，点击“保存并生效”应用');
 }
 
-function routingMoveUp(idx){
-  if(idx<=0)return;
-  const r=routingData.rules;
-  [r[idx-1],r[idx]]=[r[idx],r[idx-1]];
-  routingRenderRules();
+function routingMove(i,delta){
+  const j=i+delta;if(j<0||j>=routingCustom.length)return;
+  [routingCustom[i],routingCustom[j]]=[routingCustom[j],routingCustom[i]];
+  routingRenderCustom();routingSetDirty(true);
 }
+function routingDelete(i){routingCustom.splice(i,1);routingRenderCustom();routingSetDirty(true);}
 
-function routingMoveDown(idx){
-  const r=routingData.rules;
-  if(idx>=r.length-1)return;
-  [r[idx],r[idx+1]]=[r[idx+1],r[idx]];
-  routingRenderRules();
-}
-
-async function routingSave(){
+async function routingSaveCustom(){
   const box=document.getElementById('routing-output');
-  box.style.display='block';
-  box.textContent='保存中...';
-  const d=await api('/api/routing',{method:'POST',body:JSON.stringify({routing:routingData})});
-  if(d&&d.ok){
-    box.textContent='✅ 保存成功'+(d.restart&&d.restart.success?'，Xray 已重启':'');
-    loadRouting();
-  }else{
-    box.textContent='❌ 失败: '+(d&&d.error||'unknown')+'\n'+(d&&d.detail||'');
-  }
+  box.style.display='block';box.textContent='保存中...';
+  const d=await api('/api/routing/custom',{method:'POST',body:JSON.stringify({rules:routingCustom})});
+  if(d&&d.ok){box.textContent='已保存并生效'+(d.restart&&d.restart.success?'，Xray 已重启':'');toast('路由规则已生效');loadRouting();}
+  else box.textContent='保存失败: '+(d&&d.error||'unknown')+(d&&d.detail?'\n'+d.detail:'');
 }
 
-// Quick add helpers
-function routingQuickDomain(){
-  document.getElementById('rt-cond-type').value='domain';
-  document.getElementById('rt-cond-value').value='domain:example.com';
-  document.getElementById('rt-cond-value').focus();
+async function routingSaveBypass(list){
+  const r=await api('/api/transparent/bypass',{method:'POST',body:JSON.stringify({custom:list})});
+  if(r&&r.ok){routingBypass=r.custom||[];routingRenderBypass();toast('绕过列表已更新'+(r.reloaded?'，iptables 已重建':''));return true;}
+  toast('保存失败: '+(r&&r.error||''),false);return false;
 }
-function routingQuickBlock(){
-  document.getElementById('rt-cond-type').value='domain';
-  document.getElementById('rt-cond-value').value='domain:ads.example.com';
-  document.getElementById('rt-outbound').value='block';
-  document.getElementById('rt-cond-value').focus();
+async function routingAddBypass(){
+  const vals=rtSplit(document.getElementById('rt-cond-value').value);
+  if(!vals.length){toast('请填写 IP / CIDR',false);return;}
+  if(await routingSaveBypass([...new Set([...routingBypass,...vals])]))document.getElementById('rt-cond-value').value='';
 }
-function routingQuickIP(){
-  document.getElementById('rt-cond-type').value='ip';
-  document.getElementById('rt-cond-value').value='1.2.3.4/32';
-  document.getElementById('rt-cond-value').focus();
-}
-function routingQuickProxy(){
-  document.getElementById('rt-cond-type').value='domain';
-  document.getElementById('rt-cond-value').value='domain:google.com, domain:youtube.com';
-  document.getElementById('rt-cond-value').focus();
-}
+function routingRemoveBypass(i){const l=routingBypass.slice();l.splice(i,1);routingSaveBypass(l);}
 
 async function loadDns(){
   const d=await api('/api/dns');
@@ -5470,7 +6093,7 @@ async function loadBalancer(){
     if(d.enabled&&d.tags&&d.tags.length>0){
       const strMap={roundRobin:"轮询",leastPing:"最低延迟",random:"随机"};
       hint.style.borderLeftColor="var(--green)";
-      hint.innerHTML="✅ 启用时将使用 <b>负载均衡</b>："+d.tags.join(", ")+"（"+(strMap[d.strategy]||d.strategy)+"）";
+      hint.innerHTML="启用时将使用 <b>负载均衡</b>："+d.tags.join(", ")+"（"+(strMap[d.strategy]||d.strategy)+"）";
     }else{
       const sel=document.getElementById("tp-proxy-tag");
       const tag=sel?sel.value:"";
@@ -5672,7 +6295,7 @@ async function connStart(){
     box.textContent+='失败: '+(d&&d.error||'unknown')+'\n'+(d&&d.detail||'');
     return;
   }
-  box.textContent+='✅ 连接成功!\n';
+  box.textContent+='连接成功\n';
   box.textContent+='节点: '+(d.state.selected_tags||[]).join(', ')+'\n';
   box.textContent+='SOCKS5: 0.0.0.0:'+ports.socks+'\n';
   box.textContent+='HTTP: 0.0.0.0:'+ports.http+'\n';
@@ -5688,7 +6311,7 @@ async function connStop(){
   box.textContent='正在断开...';
   const d=await api('/api/connect/stop',{method:'POST',body:'{}'});
   if(!d||!d.ok){box.textContent='失败';return;}
-  box.textContent='✅ 已断开连接\n';
+  box.textContent='已断开连接\n';
   box.textContent+='Xray 重启: '+(d.restart&&d.restart.success?'成功':'失败')+'\n';
   loadConnect();
 }
@@ -5897,23 +6520,29 @@ async function loadTpBypass(){
 }
 
 async function loadTpForward(){
-  const d=await api('/api/sysctl');
-  if(!d)return;
-  const fp=d.params&&d.params.find(p=>p.key==='net.ipv4.ip_forward');
-  if(fp){
-    const el=document.getElementById('tp-ip-forward');
-    const st=document.getElementById('tp-forward-status');
-    if(el)el.checked=fp.value==='1'||fp.value===1;
-    if(st)st.textContent='当前: '+fp.value+(fp.value==='1'?' ✓':'');
-  }
-}
-
-async function tpToggleForward(on){
-  const v=on?'1':'0';
-  const r=await api('/api/sysctl',{method:'POST',body:JSON.stringify({changes:{'net.ipv4.ip_forward':v}})});
-  if(r&&r.ok)toast('IP 转发: '+(on?'开启':'关闭'));
-  else toast('设置失败',false);
-  loadTpForward();
+  const d=await api('/api/gateway/status');
+  const el=document.getElementById('gw-body');
+  if(!d||!el)return;
+  const lan=(d.lan||[]);
+  const ip=lan.length?lan[0].ip:'本机局域网 IP';
+  const ifs=d.send_redirects_ifaces||{};
+  const redirOff=d.send_redirects==='0'&&Object.values(ifs).every(v=>v==='0');
+  const redirCmd='sysctl -w net.ipv4.conf.all.send_redirects=0'+Object.keys(ifs).map(i=>' net.ipv4.conf.'+i+'.send_redirects=0').join('');
+  const chk=(cls,txt,title)=>`<span class="check ${cls}" title="${escapeHtml(title||'')}">${txt}</span>`;
+  const checks=[
+    d.transparent?chk('ok','透明代理已启用'):chk('bad','透明代理未启用','勾选上方“启用”后重新连接'),
+    d.ip_forward?chk('ok','IP 转发已开启'):chk('bad','IP 转发未开启','宿主机执行 sysctl -w net.ipv4.ip_forward=1'),
+    d.dns_inbound?chk('ok','DNS 入站 :53'):chk('warn','DNS 入站未就绪'),
+    d.rules_in_sync?chk('ok','iptables 规则最新'):chk(d.transparent?'warn':'','iptables 规则未生效'),
+    redirOff?chk('ok','ICMP 重定向已关闭'):chk('warn','ICMP 重定向未关闭','旁路由（手机、本机、路由器同网段）时，本机会通知手机“直接找路由器”，手机照做后部分流量绕过代理。请在宿主机执行下方命令'),
+    d.nft_forward_drop?chk('ok','已放行 Docker FORWARD DROP','宿主机 nftables FORWARD 默认丢弃，已在 DOCKER-USER 放行局域网'):'',
+  ].join('');
+  const rows=lan.length?lan.map(x=>`<span>${escapeHtml(x.iface)} · ${escapeHtml(x.cidr)}</span><b>网关 / DNS 填 ${escapeHtml(x.ip)}</b>`).join(''):'<span>网关 / DNS</span><b>本机局域网 IP</b>';
+  el.innerHTML=`<div class="gw-setup">${rows}
+      <span>手机 IP</span><b>同网段未占用的地址，子网掩码与网段一致</b>
+    </div><div class="gw-checks">${checks}</div>
+    ${redirOff?'':`<div class="log-box" style="margin-top:8px;padding:8px 10px;white-space:normal">宿主机执行（容器内 /proc/sys 只读，无法代为设置；写入 /etc/sysctl.d/ 可永久生效）：<br><code>${escapeHtml(redirCmd)}</code></div>`}
+    <p style="font-size:12px;color:var(--text2);margin-top:8px">TCP 全部经过代理；DNS 可以填本机或任意公共 DNS（都会被接管）；QUIC 被拒绝后浏览器自动改用 TCP；其他 UDP（游戏、语音）直连。IPv6 不经过本机，若路由器下发了 IPv6，建议在手机或路由器上关闭。</p>`;
 }
 
 async function tpSaveBypass(){

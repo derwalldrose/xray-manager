@@ -1,3 +1,4 @@
+import base64
 import json
 import tempfile
 import unittest
@@ -93,6 +94,8 @@ class IptablesSyncTest(TempConfigMixin, unittest.TestCase):
                 return "", "", 0
             return run
 
+        gw = mock.patch.object(app, "_gateway_in_sync", return_value=True)
+        gw.start(); self.addCleanup(gw.stop)
         with mock.patch.object(app, "_run", fake_run(live_without)):
             self.assertFalse(app._tp_iptables_in_sync(12345))
         with mock.patch.object(app, "_run", fake_run(live_with)):
@@ -193,6 +196,137 @@ class RoutingAndParsingTest(TempConfigMixin, unittest.TestCase):
         ob = app._parse_share_link(link)
         self.assertEqual(ob["protocol"], "vmess")
         self.assertEqual(ob["tag"], "n1")
+
+
+
+class ShareLinkParseTest(unittest.TestCase):
+    def test_vless_xhttp_ech_extra(self):
+        extra = {"xPaddingBytes": "100-1000", "xmux": {"maxConnections": 3}}
+        from urllib.parse import quote
+        link = ("vless://00000000-0000-0000-0000-000000000001@a.example.com:443?encryption=none&security=tls"
+                "&sni=s.example.com&fp=chrome&alpn=h2&ech=" + quote("cloudflare-ech.com+https://dns.alidns.com/dns-query", safe="")
+                + "&type=xhttp&host=h.example.com&path=%2Fx&mode=stream-one&extra=" + quote(json.dumps(extra), safe="") + "#n1")
+        ob = app._parse_share_link(link)
+        ss = ob["streamSettings"]
+        self.assertEqual(ss["network"], "xhttp")
+        self.assertEqual(ss["xhttpSettings"], {"path": "/x", "host": "h.example.com", "mode": "stream-one", "extra": extra})
+        self.assertEqual(ss["tlsSettings"]["echConfigList"], "cloudflare-ech.com+https://dns.alidns.com/dns-query")
+        self.assertEqual(ss["tlsSettings"]["alpn"], ["h2"])
+
+    def test_unencoded_plus_in_ech_is_kept(self):
+        ob = app._parse_share_link("vless://u@a.com:443?security=tls&ech=cloudflare-ech.com+https://1.1.1.1/dns-query&type=ws&host=a.com#x")
+        self.assertEqual(ob["streamSettings"]["tlsSettings"]["echConfigList"], "cloudflare-ech.com+https://1.1.1.1/dns-query")
+        self.assertEqual(ob["streamSettings"]["wsSettings"], {"path": "/", "host": "a.com"})
+
+    def test_reality_and_grpc_multi(self):
+        ob = app._parse_share_link("vless://u@1.2.3.4:443?security=reality&sni=www.apple.com&fp=safari&pbk=PUB&sid=ab12&spx=%2F"
+                                   "&type=grpc&serviceName=svc&mode=multi&flow=xtls-rprx-vision#r")
+        ss = ob["streamSettings"]
+        self.assertEqual(ss["realitySettings"], {"serverName": "www.apple.com", "fingerprint": "safari", "publicKey": "PUB",
+                                                 "shortId": "ab12", "spiderX": "/"})
+        self.assertEqual(ss["grpcSettings"], {"serviceName": "svc", "multiMode": True})
+        self.assertEqual(ob["settings"]["vnext"][0]["users"][0]["flow"], "xtls-rprx-vision")
+
+    def test_ss_v2ray_plugin_path_with_escapes(self):
+        from urllib.parse import quote
+        plugin = "v2ray-plugin;mode=websocket;tls;host=w.example.com;path=/?enc\\=aes-128-gcm&proxyip\\=p.example.com"
+        user = base64.urlsafe_b64encode(b"aes-128-gcm:p@ss/w+rd").decode().rstrip("=")
+        ob = app._parse_share_link(f"ss://{user}@1.2.3.4:8880/?plugin={quote(plugin, safe='')}#s")
+        srv = ob["settings"]["servers"][0]
+        self.assertEqual((srv["method"], srv["password"]), ("aes-128-gcm", "p@ss/w+rd"))
+        self.assertEqual(ob["streamSettings"]["wsSettings"], {"host": "w.example.com", "path": "/?enc=aes-128-gcm&proxyip=p.example.com"})
+        self.assertEqual(ob["streamSettings"]["security"], "tls")
+
+
+class CustomRulesTest(TempConfigMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.object(app, "CUSTOM_RULES_FILE", str(Path(self.tmp.name) / "rules.json"))
+        p.start(); self.patchers.append(p)
+
+    def test_normalize(self):
+        r, err = app._normalize_user_rule({"domain": "openai.com, geosite:google", "outboundTag": "__proxy__", "remark": "ai"})
+        self.assertIsNone(err)
+        self.assertEqual(r["domain"], ["domain:openai.com", "geosite:google"])
+        self.assertEqual(app._normalize_user_rule({"ip": ["1.2.3.4;id"], "outboundTag": "direct"})[1], "invalid IP/CIDR: 1.2.3.4;id")
+        self.assertIsNotNone(app._normalize_user_rule({"outboundTag": "direct"})[1])
+        self.assertIsNotNone(app._normalize_user_rule({"port": "443;x", "outboundTag": "direct"})[1])
+
+    def test_user_rules_go_before_geo_and_catch_all_and_survive_reconnect(self):
+        self.write_cfg({"outbounds": [{"tag": "n1", "protocol": "vless"}, {"tag": "n2", "protocol": "vless"},
+                                      {"tag": "direct", "protocol": "freedom"}], "routing": {"rules": []}})
+        app._custom_rules_save([
+            {"type": "field", "domain": ["domain:openai.com"], "outboundTag": "__proxy__"},
+            {"type": "field", "ip": ["10.9.0.0/16"], "outboundTag": "direct"},
+            {"type": "field", "domain": ["geosite:category-ads-all"], "outboundTag": "block"},
+            {"type": "field", "domain": ["domain:x.com"], "outboundTag": "deleted-node"},
+        ])
+        for tags, want in ((["n2"], ("outboundTag", "n2")), (["n1", "n2"], ("balancerTag", "proxy-balancer"))):
+            cfg, err = app._build_connect_config(tags, "roundRobin", True, {"socks": 1, "http": 2, "transparent": 3})
+            self.assertIsNone(err)
+            rules = cfg["routing"]["rules"]
+            user = [i for i, r in enumerate(rules) if str(r.get("ruleTag", "")).startswith("user:")]
+            self.assertEqual(len(user), 3)  # rule for a deleted node is skipped
+            geo = next(i for i, r in enumerate(rules) if r.get("ip") == ["geoip:cn"])
+            catch_all = next(i for i, r in enumerate(rules) if r.get("inboundTag") == ["transparent"])
+            self.assertLess(max(user), geo)
+            self.assertLess(max(user), catch_all)
+            self.assertEqual(rules[0]["inboundTag"], ["dns"])
+            self.assertEqual(rules[user[0]].get(want[0]), want[1])
+            self.assertTrue(any(o["tag"] == "block" for o in cfg["outbounds"]))
+
+    def test_transparent_builder_keeps_user_rules_in_front(self):
+        self.write_cfg({"outbounds": [{"tag": "n1", "protocol": "vless"}, {"tag": "direct", "protocol": "freedom"}],
+                        "routing": {"rules": [{"type": "field", "ruleTag": "user:1", "domain": ["domain:old.com"], "outboundTag": "direct"}]}})
+        app._custom_rules_save([{"type": "field", "domain": ["domain:new.com"], "outboundTag": "direct"}])
+        cfg, err = app._tp_add_dokodemo_to_config(12345)
+        self.assertIsNone(err)
+        rules = cfg["routing"]["rules"]
+        doms = [r.get("domain") for r in rules if str(r.get("ruleTag", "")).startswith("user:")]
+        self.assertEqual(doms, [["domain:new.com"]])
+        tp = next(i for i, r in enumerate(rules) if r.get("inboundTag") == ["transparent"])
+        self.assertLess(next(i for i, r in enumerate(rules) if r.get("domain") == ["domain:new.com"]), tp)
+
+
+class GatewayTest(unittest.TestCase):
+    IP_OUT = """1: lo    inet 127.0.0.1/8 scope host lo
+2: ens3    inet 172.21.2.67/24 brd 172.21.2.255 scope global ens3
+3: eth0    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0
+4: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0
+5: br-9eca    inet 172.28.0.1/16 scope global br-9eca
+6: wg0    inet 10.8.0.1/24 scope global wg0
+"""
+
+    def fake_run(self, nft_forward="", docker_user=False):
+        def run(cmd, timeout=15):
+            if cmd.startswith("ip -4 -o addr"):
+                return self.IP_OUT, "", 0
+            if cmd.startswith("iptables-nft -S FORWARD"):
+                return (nft_forward, "", 0) if nft_forward else ("", "", 1)
+            if cmd.startswith("iptables-nft -S DOCKER-USER"):
+                return ("-N DOCKER-USER\n-A DOCKER-USER -j RETURN\n", "", 0) if docker_user else ("", "", 1)
+            return "", "", 0
+        return run
+
+    def test_lan_detection_by_interface_name(self):
+        with mock.patch.object(app, "_run", self.fake_run()):
+            self.assertEqual(app._lan_cidrs(), ["172.21.2.0/24", "192.168.1.0/24"])
+
+    def test_rules_cover_masquerade_quic_redirects_and_nft_drop(self):
+        with mock.patch.object(app, "_run", self.fake_run("-P FORWARD DROP\n-A FORWARD -j DOCKER-USER\n", True)):
+            rules = app._gateway_rules()
+        specs = [f"{b} {t} {s}" for b, t, s in rules]
+        self.assertIn("iptables nat -A POSTROUTING -s 192.168.1.0/24 ! -o lo -m comment --comment xray-mgr-gw -j MASQUERADE", specs)
+        quic = app._iptables_rule_specs(12345, ["192.168.0.0/16"])
+        self.assertEqual(quic[-1], "-A XRAY_MGR_RULE -p udp -m udp --dport 443 -j REDIRECT --to-ports 9")
+        self.assertLess(quic.index("-A XRAY_MGR_RULE -d 192.168.0.0/16 -j RETURN"), len(quic) - 1)
+        self.assertTrue(any(x.startswith("iptables-nft filter -I DOCKER-USER -s 192.168.1.0/24") for x in specs))
+        self.assertFalse(any("172.17." in x or "172.28." in x or "10.8.0." in x for x in specs))
+        self.assertTrue(all("xray-mgr-gw" in x for x in specs))
+
+    def test_no_nft_rules_when_nft_forward_accepts(self):
+        with mock.patch.object(app, "_run", self.fake_run("-P FORWARD ACCEPT\n")):
+            self.assertFalse(any(b == "iptables-nft" for b, _, _ in app._gateway_rules()))
 
 
 if __name__ == "__main__":
