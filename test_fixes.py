@@ -154,6 +154,17 @@ class ReconcileTest(TempConfigMixin, unittest.TestCase):
 
 
 class RoutingAndParsingTest(TempConfigMixin, unittest.TestCase):
+    def test_ensure_dns_inbound_is_idempotent(self):
+        self.write_cfg({"outbounds": [{"tag": "proxy", "protocol": "vless"}], "routing": {"rules": [
+            {"type": "field", "inboundTag": ["socks-in"], "outboundTag": "proxy"}]}})
+        with mock.patch.object(app, "_test_config", return_value={"ok": True}), \
+                mock.patch.object(app, "_backup_config", return_value=""):
+            with mock.patch.object(app, "_save_config_object", wraps=app._save_config_object) as save:
+                app._ensure_dns_inbound_in_config()
+                self.assertEqual(save.call_count, 1)
+                app._ensure_dns_inbound_in_config()
+                self.assertEqual(save.call_count, 1)
+
     def test_udp_fallback_stays_last_and_single(self):
         self.write_cfg({
             "outbounds": [{"tag": "proxy", "protocol": "vless"}, {"tag": "direct", "protocol": "freedom"}],

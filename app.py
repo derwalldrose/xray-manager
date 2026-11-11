@@ -1106,15 +1106,14 @@ def _ensure_dns_inbound_in_config():
     # Ensure dns routing rules
     desired_dns_rules = _dns_routing_rules(any(ib.get("tag") == "transparent" for ib in inbounds))
     quic_rule = _quic_block_rule()
-    changed_rules = False
+    original_rules = list(rules)
     rules = [r for r in rules if r.get("inboundTag") != ["dns"]]
     rules = [r for r in rules if not (r.get("inboundTag") == ["transparent"] and r.get("port") == 53 and r.get("network") == "udp")]
     rules = [r for r in rules if not (r.get("network") == "udp" and r.get("port") == 443)]
-    for desired_rule in reversed(desired_dns_rules + [quic_rule]):
-        if not any(r == desired_rule for r in rules):
-            rules.insert(0, desired_rule)
-            changed_rules = True
-    changed = changed or changed_rules
+    rules = desired_dns_rules + [quic_rule] + rules
+    # The managed rules are always stripped and re-added; only a real difference
+    # counts (otherwise every reconcile rewrote the config and left a backup file).
+    changed = changed or rules != original_rules
 
     if changed:
         cfg["inbounds"] = inbounds
