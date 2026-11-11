@@ -429,5 +429,52 @@ class TrafficHistoryTest(unittest.TestCase):
         self.assertEqual(m["buckets"][-1]["label"], time.strftime("%Y-%m", time.localtime(now)))
 
 
+
+class SysctlHostTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        (base / "proc/net/netfilter").mkdir(parents=True)
+        (base / "proc/net/ipv4").mkdir(parents=True)
+        (base / "proc/net/netfilter/nf_conntrack_acct").write_text("0\n")
+        (base / "proc/net/ipv4/tcp_fastopen").write_text("1\n")
+        (base / "etc/sysctl.d").mkdir(parents=True)
+        self.persist = base / "etc/sysctl.d/90-derwalld.conf"
+        self.ps = [mock.patch.object(app, "SYSCTL_HOST_ROOT", str(base / "proc")),
+                   mock.patch.object(app, "SYSCTL_PERSIST_FILE", str(self.persist)),
+                   mock.patch.object(app, "AUTH_TOKEN", "")]
+        for p in self.ps: p.start()
+        self.base = base
+        self.client = app.app.test_client()
+
+    def tearDown(self):
+        for p in self.ps: p.stop()
+        self.tmp.cleanup()
+
+    def test_apply_writes_host_and_persists(self):
+        r = self.client.post("/api/sysctl", json={"changes": {"net.netfilter.nf_conntrack_acct": "1", "net.ipv4.tcp_fastopen": "3"}})
+        d = r.get_json()
+        self.assertTrue(d["ok"], d)
+        self.assertEqual((self.base / "proc/net/netfilter/nf_conntrack_acct").read_text(), "1")
+        text = self.persist.read_text()
+        self.assertIn("net.netfilter.nf_conntrack_acct = 1", text)
+        self.assertIn("net.ipv4.tcp_fastopen = 3", text)
+        self.client.post("/api/sysctl", json={"changes": {"net.ipv4.tcp_fastopen": "1"}})
+        text = self.persist.read_text()
+        self.assertEqual(text.count("net.ipv4.tcp_fastopen"), 1)
+        self.assertIn("net.ipv4.tcp_fastopen = 1", text)
+        g = self.client.get("/api/sysctl").get_json()
+        acct = [p for p in g["params"] if p["key"] == "net.netfilter.nf_conntrack_acct"][0]
+        self.assertEqual(acct["value"], "1")
+
+    def test_rejects_unknown_key_and_bad_value(self):
+        r = self.client.post("/api/sysctl", json={"changes": {"kernel.core_pattern": "|/bin/sh", "net.ipv4.tcp_fastopen": "3\nnet.x=1"}})
+        d = r.get_json()
+        self.assertFalse(d["ok"])
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(self.persist.exists())
+        self.assertEqual((self.base / "proc/net/ipv4/tcp_fastopen").read_text(), "1\n")
+
+
 if __name__ == "__main__":
     unittest.main()

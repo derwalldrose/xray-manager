@@ -1,9 +1,9 @@
 # Fast rebuild on top of the published v2 image (same Xray core + geo data):
 # only the panel code, supervisor config and TZ change.
-#   docker build -f Dockerfile.overlay -t derwalldrose/derwalld:v3.1 .
-# Full rebuild from scratch: docker build -t derwalldrose/derwalld:v3.1 .
+#   docker build -f Dockerfile.overlay -t derwalldrose/derwalld:v3.2 .
+# Full rebuild from scratch: docker build -t derwalldrose/derwalld:v3.2 .
 FROM derwalldrose/derwalld:v2
 ENV TZ=Asia/Shanghai
-COPY app.py txt_endpoints.py xray-entrypoint.py /opt/derwalld/
+COPY app.py txt_endpoints.py conntrack_stats.py xray-entrypoint.py /opt/derwalld/
 COPY xray-manager.conf /etc/supervisor/conf.d/xray-manager.conf
-LABEL org.opencontainers.image.title="derwalld" org.opencontainers.image.version="v3.1"
+LABEL org.opencontainers.image.title="derwalld" org.opencontainers.image.version="v3.2"

@@ -75,6 +75,7 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.
 # Copy application (code dir, never mounted)
 COPY app.py ${CODE_DIR}/app.py
 COPY txt_endpoints.py ${CODE_DIR}/txt_endpoints.py
+COPY conntrack_stats.py ${CODE_DIR}/conntrack_stats.py
 COPY xray-entrypoint.py ${CODE_DIR}/xray-entrypoint.py
 
 # Panel port (override at runtime: docker run -e PANEL_PORT=54322 ...)

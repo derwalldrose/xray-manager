@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import errno
 import json
 import ipaddress
 import re
@@ -39,6 +40,7 @@ import socket
 
 from flask import Flask, jsonify, request, Response
 from txt_endpoints import materialize_config
+import conntrack_stats as _ct
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -3492,6 +3494,179 @@ def api_traffic_history():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+
+# ---------------------------------------------------------------------------
+# Per-remote-IP traffic (conntrack accounting, whole host incl. LAN/docker)
+# ---------------------------------------------------------------------------
+PEER_STATS_ENABLED = os.environ.get("PEER_STATS", "1") not in ("0", "false", "no")
+PEER_KEEP_DAYS = int(os.environ.get("PEER_KEEP_DAYS", "30") or 30)
+_ct_acc = None
+_PEER_NODE_CACHE = {"t": 0, "ips": {}}
+_PEER_DOMAIN_CACHE = {"t": 0, "map": {}}
+PEER_KIND_LABELS = {"core": "经核心", "node": "代理节点", "direct": "直连", "internal": "内网", "inbound": "入站"}
+
+
+def _conntrack_acct_enabled():
+    try:
+        return Path("/proc/sys/net/netfilter/nf_conntrack_acct").read_text().strip() == "1"
+    except OSError:
+        return None
+
+
+def _peer_node_ips():
+    """{ip: tag} of proxy node servers (domains resolved, cached 10 min)."""
+    now = time.time()
+    if now - _PEER_NODE_CACHE["t"] < 600 and _PEER_NODE_CACHE["ips"]:
+        return _PEER_NODE_CACHE["ips"]
+    cfg = None
+    for path in (_runtime_config_path(), XRAY_CFG):
+        try:
+            with open(path) as f:
+                cfg = json.load(f)
+            break
+        except Exception:
+            continue
+    ips = {}
+    for ob in (cfg or {}).get("outbounds", []):
+        if ob.get("protocol") in ("freedom", "blackhole", "dns", "loopback"):
+            continue
+        addr = _extract_node_info(ob).get("address", "")
+        if not addr:
+            continue
+        if _is_ip(addr):
+            ips.setdefault(addr, ob.get("tag", ""))
+            continue
+        try:
+            for info in socket.getaddrinfo(addr, None, proto=socket.IPPROTO_TCP):
+                ips.setdefault(info[4][0], ob.get("tag", ""))
+        except OSError:
+            pass
+    _PEER_NODE_CACHE.update(t=now, ips=ips)
+    return ips
+
+
+def _peer_context():
+    local = {"127.0.0.1", "::1"}
+    for addrs in _iface_ipv4().values():
+        local.update(addrs)
+    out, _, rc = _run("ip -6 -o addr show", timeout=5)
+    if rc == 0:
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[2] == "inet6":
+                local.add(parts[3].split("/", 1)[0])
+    return {"local_ips": local, "node_ips": set(_peer_node_ips())}
+
+
+_PEER_RX_RECV = re.compile(r"\[(\d+)\] proxy/dokodemo: received request for (\S+)")
+_PEER_RX_SNIFF = re.compile(r"\[(\d+)\] app/dispatcher: sniffed domain: (\S+)")
+_PEER_RX_ACCEPT = re.compile(r" from (\S+) accepted (?:tcp|udp):(\[[^\]]+\]|[0-9.]+):\d+ \[[^\]]*?(?:->|>>)\s*([^\]\s]+)\]")
+
+
+def _peer_domain_map():
+    """({ip: [domain, ...]}, {ip: outbound_tag}) from the core log of the last 24h
+    (cached 60s). Transparent connections are linked by the client endpoint:
+    "[sid] dokodemo: received request for C" + "[sid] sniffed domain: D" +
+    "from C accepted tcp:IP:443 [in -> out]". DNS answers and freedom
+    "connection opened" lines add more IP -> domain pairs."""
+    now = time.time()
+    if now - _PEER_DOMAIN_CACHE["t"] < 60:
+        return _PEER_DOMAIN_CACHE["map"], _PEER_DOMAIN_CACHE.get("routes", {})
+    import collections
+    m = collections.defaultdict(collections.Counter)
+    routes = {}
+    sid_by_client, domain_by_sid = {}, {}
+    for line in _read_log_window(datetime.now() - timedelta(hours=24)):
+        if "accepted" in line:
+            g = _PEER_RX_ACCEPT.search(line)
+            if g:
+                client, ip, out = g.group(1), g.group(2).strip("[]"), g.group(3)
+                routes[ip] = out
+                d = domain_by_sid.get(sid_by_client.get(client, ""))
+                if d and d != ip:
+                    m[ip][d] += 3
+                continue
+        if "dokodemo: received request" in line:
+            g = _PEER_RX_RECV.search(line)
+            if g:
+                sid_by_client[g.group(2)] = g.group(1)
+            continue
+        if "sniffed domain" in line:
+            g = _PEER_RX_SNIFF.search(line)
+            if g:
+                domain_by_sid[g.group(1)] = g.group(2).rstrip(".")
+            continue
+        a = _parse_dns_answer_line(line) or _parse_connection_opened_line(line)
+        if a:
+            for ip in a[1]:
+                m[ip][a[0]] += 1
+    res = {ip: [d for d, _ in cnt.most_common(3)] for ip, cnt in m.items() if ip}
+    _PEER_DOMAIN_CACHE.update(t=now, map=res, routes=routes)
+    return res, routes
+
+
+def _peer_stats_start():
+    global _ct_acc
+    if not PEER_STATS_ENABLED or _ct_acc is not None:
+        return
+    _ct_acc = _ct.ConntrackAccounting(TRAFFIC_DB, _peer_context, dump_interval=60, keep_days=PEER_KEEP_DAYS)
+    _ct_acc.start()
+
+
+@app.route("/api/traffic/peers")
+def api_traffic_peers():
+    hours = max(1, min(request.args.get("hours", 1, type=int) or 1, 24 * PEER_KEEP_DAYS))
+    kind = (request.args.get("kind") or "").strip()
+    q = (request.args.get("q") or "").strip().lower()
+    limit = max(1, min(request.args.get("limit", 200, type=int) or 200, 2000))
+    status = {"enabled": PEER_STATS_ENABLED, "acct": _conntrack_acct_enabled()}
+    if _ct_acc is None:
+        return jsonify({"ok": True, "status": status, "rows": [], "totals": {}, "total_rows": 0})
+    status.update({k: _ct_acc.stats.get(k) for k in ("events", "dropped", "dumps", "last_dump", "flows",
+                                                      "started_at", "error", "no_counters")})
+    try:
+        rows, totals, n = _ct_acc.query(hours=hours)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "status": status}), 500
+    domains, routes = _peer_domain_map()
+    nodes = _peer_node_ips()
+    wire_direct = {r["ip"] for r in rows if r["kind"] == "direct"}
+    for r in rows:
+        r["domains"] = domains.get(r["ip"], [])
+        if r["kind"] == "node":
+            r["node"] = nodes.get(r["ip"], "")
+        if r["kind"] == "core":
+            tag = routes.get(r["ip"], "")
+            r["outbound"] = tag
+            if tag:
+                r["route"] = {"direct": "direct", "blocked": "block"}.get(_classify_outbound(tag), "proxy")
+            else:
+                r["route"] = "direct" if r["ip"] in wire_direct else "proxy"
+        r["label"] = PEER_KIND_LABELS.get(r["kind"], r["kind"])
+    if kind == "wire":
+        rows = [r for r in rows if r["kind"] != "core"]
+    elif kind:
+        rows = [r for r in rows if r["kind"] == kind]
+    if q:
+        rows = [r for r in rows if q in r["ip"].lower() or any(q in d.lower() for d in r["domains"])
+                or q in (r.get("node") or "").lower()]
+    matched = len(rows)
+    rows = rows[:limit]
+    if request.args.get("enrich", "1") != "0":
+        meta = _enrich_ip_meta([r["ip"] for r in rows[:100] if not _ct._is_private(r["ip"])])
+        for r in rows:
+            if r["ip"] in meta:
+                m = meta[r["ip"]]
+                r["meta"] = {"asn": m.get("asn"), "country": m.get("country"), "as_name": m.get("as_name")}
+    wire = {"rx": 0, "tx": 0}
+    for k, t in totals.items():
+        if k != "core":
+            wire["rx"] += t["rx"]
+            wire["tx"] += t["tx"]
+    return jsonify({"ok": True, "status": status, "hours": hours, "rows": rows, "matched": matched,
+                    "total_rows": n, "totals": totals, "wire": wire})
+
+
 def _classify_outbound(tag):
     if tag == "direct":
         return "direct"
@@ -3759,6 +3934,7 @@ def _build_sessions(max_lines=50000, cutoff=None):
             "target": target,
             "display_target": _target_display(display, domains) if domain else target_ip,
             "domains": domains,
+            "ip": target_ip,
             "ip_meta": None,
             "port": target_port,
             "route_type": route_type,
@@ -4073,23 +4249,75 @@ SYSCTL_PARAMS = [
     ("net.ipv4.tcp_timestamps", "tcp_timestamps", "时间戳 (0/1)", "1"),
     ("net.ipv4.tcp_sack", "tcp_sack", "选择性确认 (0/1)", "1"),
     ("net.ipv4.tcp_congestion_control", "tcp_congestion_control", "拥塞控制算法", ""),
+    ("net.netfilter.nf_conntrack_acct", "nf_conntrack_acct", "连接跟踪字节计数 (0/1)，「外部 IP 流量」统计需要；只对之后新建的连接生效", "1"),
 ]
+
+# The container's own /proc/sys is read-only. Mount the host's net sysctls and
+# sysctl.d to make changes apply immediately and survive reboots:
+#   -v /proc/sys/net:/host/proc/sys/net -v /etc/sysctl.d:/host/etc/sysctl.d
+SYSCTL_HOST_ROOT = os.environ.get("SYSCTL_HOST_ROOT", "/host/proc/sys")
+SYSCTL_PERSIST_FILE = os.environ.get("SYSCTL_PERSIST_FILE", "/host/etc/sysctl.d/90-derwalld.conf")
+_SYSCTL_VALUE_RE = re.compile(r"^[A-Za-z0-9_.\- ]{1,64}$")
+
+
+def _sysctl_path(key):
+    rel = key.replace(".", "/")
+    host = Path(SYSCTL_HOST_ROOT) / rel
+    if host.exists():
+        return host, True
+    return Path("/proc/sys") / rel, False
+
+
+def _sysctl_writable(path):
+    return os.access(str(path), os.W_OK) and "ro" not in _mount_opts_for(str(path))
+
+
+def _mount_opts_for(path):
+    best, opts = "", ""
+    try:
+        for line in Path("/proc/mounts").read_text().splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and (path == parts[1] or path.startswith(parts[1].rstrip("/") + "/")) and len(parts[1]) > len(best):
+                best, opts = parts[1], parts[3]
+    except OSError:
+        pass
+    return opts.split(",")
+
+
+def _sysctl_persist(values):
+    """Merge key=value lines into the host sysctl.d file owned by the panel."""
+    path = Path(SYSCTL_PERSIST_FILE)
+    if not path.parent.is_dir():
+        return None, "宿主机 /etc/sysctl.d 未挂载，未持久化（重启后失效）"
+    lines = path.read_text().splitlines() if path.exists() else [f"# managed by {PANEL_TITLE} panel"]
+    for k, v in values.items():
+        for i, line in enumerate(lines):
+            if line.split("=", 1)[0].strip() == k:
+                lines[i] = f"{k} = {v}"
+                break
+        else:
+            lines.append(f"{k} = {v}")
+    path.write_text("\n".join(lines) + "\n")
+    return str(path).replace("/host", "", 1), None
 
 
 @app.route("/api/sysctl")
 def api_sysctl_get():
     result = []
+    writable_any = False
     for full_key, short, desc, recommended in SYSCTL_PARAMS:
-        proc_path = "/proc/sys/" + full_key.replace(".", "/")
+        path, on_host = _sysctl_path(full_key)
         try:
-            val = Path(proc_path).read_text().strip()
+            val = " ".join(path.read_text().split())
         except Exception:
-            try:
-                val = subprocess.check_output(["sysctl", "-n", full_key], stderr=subprocess.DEVNULL, timeout=3).decode().strip()
-            except Exception:
-                val = "(unavailable)"
-        result.append({"key": full_key, "short": short, "value": val, "desc": desc, "recommended": recommended})
-    return jsonify({"params": result})
+            val = "(unavailable)"
+        writable = path.exists() and _sysctl_writable(path)
+        writable_any = writable_any or writable
+        result.append({"key": full_key, "short": short, "value": val, "desc": desc, "recommended": recommended,
+                       "writable": writable})
+    persist_dir = Path(SYSCTL_PERSIST_FILE).parent
+    return jsonify({"params": result, "writable": writable_any,
+                    "persist": str(SYSCTL_PERSIST_FILE).replace("/host", "", 1) if persist_dir.is_dir() else ""})
 
 
 @app.route("/api/sysctl", methods=["POST"])
@@ -4098,42 +4326,38 @@ def api_sysctl_set():
     changes = data.get("changes", {})
     if not changes:
         return jsonify({"error": "no changes"}), 400
-    applied = []
-    errors = []
+    if not isinstance(changes, dict):
+        return jsonify({"error": "changes must be an object"}), 400
+    applied, errors, done = [], [], {}
     for key, val in changes.items():
         if not any(key == p[0] for p in SYSCTL_PARAMS):
             errors.append(f"{key}: not allowed")
             continue
-        proc_path = "/proc/sys/" + key.replace(".", "/")
+        val = " ".join(str(val).split())
+        if not _SYSCTL_VALUE_RE.match(val):
+            errors.append(f"{key}: invalid value")
+            continue
+        path, _ = _sysctl_path(key)
         try:
-            Path(proc_path).write_text(str(val))
+            cur = " ".join(path.read_text().split())
+            if cur != val:
+                path.write_text(val)
+            if " ".join(path.read_text().split()) != val:
+                raise OSError("value not accepted by kernel")
             applied.append(f"{key}={val}")
-        except Exception:
-            try:
-                subprocess.check_call(["sysctl", "-w", f"{key}={val}"], stderr=subprocess.PIPE, timeout=5)
-                applied.append(f"{key}={val}")
-            except Exception as e:
-                errors.append(f"{key}: {e}")
-    # persist to /etc/sysctl.conf
-    if applied:
+            done[key] = val
+        except OSError as e:
+            hint = "（容器内只读，需挂载 -v /proc/sys/net:/host/proc/sys/net）" if e.errno == errno.EROFS else ""
+            errors.append(f"{key}: {e.strerror or e}{hint}")
+    persisted = None
+    if done:
         try:
-            existing = Path("/etc/sysctl.conf").read_text() if Path("/etc/sysctl.conf").exists() else ""
-            lines = existing.splitlines()
-            for item in applied:
-                k, v = item.split("=", 1)
-                k = k.strip()
-                found = False
-                for i, line in enumerate(lines):
-                    if line.strip().startswith(k):
-                        lines[i] = f"{k} = {v}"
-                        found = True
-                        break
-                if not found:
-                    lines.append(f"{k} = {v}")
-            Path("/etc/sysctl.conf").write_text("\n".join(lines) + "\n")
-        except Exception as e:
+            persisted, perr = _sysctl_persist(done)
+            if perr:
+                errors.append(perr)
+        except OSError as e:
             errors.append(f"persist: {e}")
-    return jsonify({"ok": True, "applied": applied, "errors": errors})
+    return jsonify({"ok": not errors, "applied": applied, "errors": errors, "persisted": persisted}), (200 if applied or not errors else 400)
 
 
 # ---------------------------------------------------------------------------
@@ -4562,6 +4786,29 @@ details > summary{cursor:pointer;color:var(--text3)!important}
       <svg class="tr-chart" id="tr-chart" preserveAspectRatio="none"></svg>
     </div>
     <div class="card">
+      <h2>外部 IP 流量</h2>
+      <p style="font-size:13px;margin:-6px 0 12px">按对端 IP 统计整台机器（含局域网转发和 docker）的连接与字节，来自内核连接跟踪（nf_conntrack_acct）。「经核心」是应用要访问的原始目标 IP（如 kiro.dev 解析出的地址），其线上流量实际流向「代理节点」或「直连」，合计时不重复计入。</p>
+      <div id="pr-status" style="font-size:12px;color:var(--text2);margin-bottom:10px"></div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <div class="seg" id="pr-range">
+          <button data-h="1" class="on" onclick="setPeerRange(1)">1 小时</button>
+          <button data-h="24" onclick="setPeerRange(24)">24 小时</button>
+          <button data-h="168" onclick="setPeerRange(168)">7 天</button>
+        </div>
+        <select id="pr-kind" onchange="loadPeers()" style="height:30px;padding:0 8px;border:1px solid var(--border2);border-radius:4px;background:var(--bg2);color:var(--text)">
+          <option value="">全部类型</option><option value="core">经核心（应用目标）</option><option value="wire">仅线上（不含经核心）</option>
+          <option value="node">代理节点</option><option value="direct">直连</option><option value="internal">内网</option><option value="inbound">入站</option>
+        </select>
+        <input id="pr-q" placeholder="搜索 IP / 域名 / 节点" onkeydown="if(event.key==='Enter')loadPeers()" style="height:30px;flex:1;min-width:min(200px,100%);padding:0 10px;border:1px solid var(--border2);border-radius:4px">
+        <button class="btn" onclick="loadPeers()">刷新</button>
+      </div>
+      <div id="pr-sum" style="font-size:13px;color:var(--text3);margin-bottom:10px"></div>
+      <div style="overflow-x:auto"><table style="white-space:nowrap">
+        <thead><tr><th>对端 IP</th><th>域名 / 节点</th><th>归属</th><th>类型</th><th>协议:端口</th><th>↓ 下载</th><th>↑ 上传</th><th>连接</th><th>最后</th></tr></thead>
+        <tbody id="pr-tbody"><tr><td colspan="9" style="color:var(--text2)">加载中…</td></tr></tbody>
+      </table></div>
+    </div>
+    <div class="card">
       <h2>监听端口</h2>
       <table><thead><tr><th>地址</th><th>出口</th></tr></thead><tbody id="listen-tbody"></tbody></table>
     </div>
@@ -4810,7 +5057,8 @@ details > summary{cursor:pointer;color:var(--text3)!important}
   <div class="tab-content" id="tab-system">
     <div class="card">
       <h2>内核参数调优</h2>
-      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">修改后立即生效并持久化到 /etc/sysctl.conf。标黄的值与推荐值不一致。</p>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">修改宿主机网络内核参数，保存后立即生效，并写入宿主机 sysctl.d 以便重启后保持。标黄的值与推荐值不一致。</p>
+      <div id="sysctl-hint" style="font-size:12px;margin-bottom:12px"></div>
       <table>
         <thead><tr><th>参数</th><th>说明</th><th>当前值</th><th>推荐值</th><th>操作</th></tr></thead>
         <tbody id="sysctl-tbody"></tbody>
@@ -5060,7 +5308,7 @@ function switchTab(name){
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
   if(name==='connect')loadConnect();
-  if(name==='status'){loadStatus();startStatsPolling();loadTraffic();}else{stopStatsPolling();}
+  if(name==='status'){loadStatus();startStatsPolling();loadTraffic();loadPeers();}else{stopStatsPolling();}
   if(name==='inbounds'){loadInbounds();loadTestUrls();}
   if(name==='outbounds'){loadOutbounds();loadObTestUrls();}
   if(name==='routing')loadRouting();
@@ -5207,6 +5455,41 @@ function renderTraffic(){
   document.getElementById('tr-sum').textContent='区间合计 ↓ '+fmtBytes(srx)+'  ↑ '+fmtBytes(stx);
 }
 window.addEventListener('resize',()=>{if(document.getElementById('tab-status').classList.contains('active'))renderTraffic();});
+
+let peerHours=1;
+function setPeerRange(h){
+  peerHours=h;
+  document.querySelectorAll('#pr-range button').forEach(b=>b.classList.toggle('on',+b.dataset.h===h));
+  loadPeers();
+}
+async function loadPeers(){
+  const kind=document.getElementById('pr-kind').value, q=document.getElementById('pr-q').value.trim();
+  const d=await api('/api/traffic/peers?hours='+peerHours+'&kind='+encodeURIComponent(kind)+'&q='+encodeURIComponent(q)+'&limit=300');
+  const tb=document.getElementById('pr-tbody'), st=document.getElementById('pr-status');
+  if(!d||!d.ok){tb.innerHTML='<tr><td colspan="9" style="color:var(--red)">'+escapeHtml((d&&d.error)||'加载失败')+'</td></tr>';return;}
+  const s=d.status||{};
+  let msg=[];
+  if(!s.enabled)msg.push('<span style="color:var(--yellow)">已通过 PEER_STATS=0 关闭</span>');
+  else if(s.acct===false)msg.push('<span style="color:var(--yellow)">宿主机未开启 net.netfilter.nf_conntrack_acct，开启后新连接才有字节计数：sysctl -w net.netfilter.nf_conntrack_acct=1</span>');
+  if(s.error)msg.push('<span style="color:var(--red)">'+escapeHtml(s.error)+'</span>');
+  if(s.enabled)msg.push('跟踪中连接 '+(s.flows||0)+'，已处理关闭事件 '+(s.events||0)+(s.dropped?'，<span style="color:var(--yellow)">事件丢失 '+s.dropped+' 次（短连接可能少算）</span>':'')+(s.last_dump?'，上次全量读取 '+new Date(s.last_dump*1000).toLocaleTimeString('zh-CN',{hour12:false}):''));
+  st.innerHTML=msg.join('；');
+  const t=d.totals||{}, g=k=>t[k]||{rx:0,tx:0,peers:0};
+  document.getElementById('pr-sum').innerHTML='线上合计 ↓ <b>'+fmtBytes((d.wire||{}).rx||0)+'</b> ↑ <b>'+fmtBytes((d.wire||{}).tx||0)+'</b>'+
+    '　代理节点 '+fmtBytes(g('node').rx+g('node').tx)+'　直连 '+fmtBytes(g('direct').rx+g('direct').tx)+'　内网 '+fmtBytes(g('internal').rx+g('internal').tx)+'　入站 '+fmtBytes(g('inbound').rx+g('inbound').tx)+
+    '　<span style="color:var(--text2)">经核心目标 '+g('core').peers+' 个</span>';
+  const kindTag=r=>{
+    const c={core:'var(--accent)',node:'#722ed1',direct:'var(--green)',internal:'var(--text3)',inbound:'var(--yellow)'}[r.kind]||'var(--text3)';
+    let l=r.label; if(r.kind==='core')l+=r.route==='direct'?' → 直连':r.route==='block'?' → 拦截':' → '+(r.outbound||'代理');
+    return '<span style="color:'+c+'">'+escapeHtml(l)+'</span>';
+  };
+  tb.innerHTML=(d.rows||[]).length?d.rows.map(r=>{
+    const name=r.kind==='node'?('节点 '+escapeHtml(r.node||'')):escapeHtml((r.domains||[]).join(', ')||'-');
+    const meta=r.meta?('AS'+escapeHtml(r.meta.asn||'')+' '+escapeHtml(r.meta.country||'')+'<div style="font-size:11px;color:var(--text2);max-width:220px;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(r.meta.as_name||'')+'</div>'):'-';
+    const last=r.last_seen?new Date(r.last_seen*1000).toLocaleString('zh-CN',{hour12:false,month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'-';
+    return '<tr><td>'+escapeHtml(r.ip)+'</td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis">'+name+'</td><td>'+meta+'</td><td>'+kindTag(r)+'</td><td>'+escapeHtml((r.proto||'')+':'+(r.port||''))+'</td><td>'+fmtBytes(r.rx)+'</td><td>'+fmtBytes(r.tx)+'</td><td>'+r.conns+'</td><td style="font-size:12px;color:var(--text2)">'+last+'</td></tr>';
+  }).join('')+(d.matched>d.rows.length?'<tr><td colspan="9" style="color:var(--text2)">仅显示前 '+d.rows.length+' 条，共 '+d.matched+' 条</td></tr>':''):'<tr><td colspan="9" style="color:var(--text2)">暂无数据（每分钟全量读取一次，新连接关闭时实时计入）</td></tr>';
+}
 
 function startStatsPolling(){
   if(statsTimer)return;
@@ -6454,14 +6737,16 @@ async function loadSysctl(){
   const d=await api('/api/sysctl');
   if(!d)return;
   const tbody=document.getElementById('sysctl-tbody');
+  document.getElementById('sysctl-hint').innerHTML=d.writable
+    ?'<span style="color:var(--green)">可直接修改宿主机参数</span>'+(d.persist?'，持久化到 '+escapeHtml(d.persist):'，<span style="color:var(--yellow)">未挂载宿主机 /etc/sysctl.d，重启后失效</span>')
+    :'<span style="color:var(--yellow)">当前容器内 /proc/sys 只读，保存不会生效。启动容器时加上 -v /proc/sys/net:/host/proc/sys/net -v /etc/sysctl.d:/host/etc/sysctl.d</span>';
   tbody.innerHTML=d.params.map(p=>{
-    const mismatch=p.recommended&&p.value!==p.recommended;
-    const style=mismatch?'color:var(--yellow)':'';
-    const rec=p.recommended?`<span style="color:var(--text2)">${p.recommended}</span>`:'<span style="color:var(--text2)">—</span>';
+    const mismatch=p.recommended&&p.value!==p.recommended&&p.value!=='(unavailable)';
+    const rec=p.recommended?`<span style="color:var(--text2)">${escapeHtml(p.recommended)}</span>`:'<span style="color:var(--text2)">—</span>';
     return `<tr>
-      <td style="font-family:monospace;font-size:12px">${p.key}</td>
-      <td style="color:var(--text2);font-size:12px">${p.desc}</td>
-      <td><input class="sysctl-val" data-key="${p.key}" value="${p.value}" style="width:120px;padding:4px;background:var(--bg);color:var(--text);border:1px solid ${mismatch?'var(--yellow)':'var(--border)'};border-radius:4px;font-family:monospace;font-size:12px"></td>
+      <td style="font-family:monospace;font-size:12px">${escapeHtml(p.key)}</td>
+      <td style="color:var(--text2);font-size:12px;white-space:normal;min-width:180px">${escapeHtml(p.desc)}</td>
+      <td><input class="sysctl-val" data-key="${escapeHtml(p.key)}" data-orig="${escapeHtml(p.value)}" value="${escapeHtml(p.value)}" style="width:120px;padding:4px;background:var(--bg);color:var(--text);border:1px solid ${mismatch?'var(--yellow)':'var(--border)'};border-radius:4px;font-family:monospace;font-size:12px"></td>
       <td>${rec}</td>
       <td>${mismatch?`<button class="btn" style="font-size:11px;padding:2px 8px" onclick="applyOne('${p.key}','${p.recommended}')">应用</button>`:''}</td>
     </tr>`;
@@ -6472,12 +6757,13 @@ async function saveSysctl(){
   document.querySelectorAll('.sysctl-val').forEach(inp=>{
     const key=inp.dataset.key;
     const val=inp.value.trim();
-    if(val)changes[key]=val;
+    if(val&&val!==inp.dataset.orig)changes[key]=val;
   });
   if(!Object.keys(changes).length){toast('无修改',false);return;}
   const d=await api('/api/sysctl',{method:'POST',body:JSON.stringify({changes})});
-  if(d&&d.ok){toast('已保存'+(d.applied.length?' ('+d.applied.length+'项)':''));loadSysctl();}
-  else toast('保存失败: '+(d&&d.error||'unknown'),false);
+  if(d&&d.ok){toast('已生效 '+d.applied.length+' 项'+(d.persisted?'，已写入 '+d.persisted:''));}
+  else toast('部分失败: '+((d&&d.errors)||[d&&d.error||'unknown']).join('；'),false);
+  loadSysctl();
 }
 function applyOne(key,val){
   const inp=document.querySelector(`.sysctl-val[data-key="${key}"]`);
@@ -6487,11 +6773,12 @@ async function applyRecommended(){
   const d=await api('/api/sysctl');
   if(!d)return;
   const changes={};
-  d.params.forEach(p=>{if(p.recommended&&p.value!==p.recommended)changes[p.key]=p.recommended;});
+  d.params.forEach(p=>{if(p.recommended&&p.value!==p.recommended&&p.writable)changes[p.key]=p.recommended;});
   if(!Object.keys(changes).length){toast('全部已是推荐值');return;}
   const r=await api('/api/sysctl',{method:'POST',body:JSON.stringify({changes})});
-  if(r&&r.ok){toast('已应用推荐值 ('+r.applied.length+'项)');loadSysctl();}
-  else toast('应用失败',false);
+  if(r&&r.ok){toast('已应用推荐值 ('+r.applied.length+'项)');}
+  else toast('部分失败: '+((r&&r.errors)||[r&&r.error||'unknown']).join('；'),false);
+  loadSysctl();
 }
 
 // ===================== Connect Mode =====================
@@ -6955,5 +7242,8 @@ if __name__ == "__main__":
     if TRAFFIC_SAMPLE_INTERVAL > 0:
         threading.Thread(target=_traffic_loop, name="traffic", daemon=True).start()
         print(f"  Traffic history: every {TRAFFIC_SAMPLE_INTERVAL}s -> {TRAFFIC_DB}")
+    if PEER_STATS_ENABLED:
+        _peer_stats_start()
+        print(f"  Peer traffic (conntrack): acct={_conntrack_acct_enabled()} keep {PEER_KEEP_DAYS}d")
 
     app.run(host=args.host, port=args.port, debug=False)
