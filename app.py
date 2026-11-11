@@ -6534,14 +6534,14 @@ async function loadTpForward(){
     d.ip_forward?chk('ok','IP 转发已开启'):chk('bad','IP 转发未开启','宿主机执行 sysctl -w net.ipv4.ip_forward=1'),
     d.dns_inbound?chk('ok','DNS 入站 :53'):chk('warn','DNS 入站未就绪'),
     d.rules_in_sync?chk('ok','iptables 规则最新'):chk(d.transparent?'warn':'','iptables 规则未生效'),
-    redirOff?chk('ok','ICMP 重定向已关闭'):chk('warn','ICMP 重定向未关闭','旁路由（手机、本机、路由器同网段）时，本机会通知手机“直接找路由器”，手机照做后部分流量绕过代理。请在宿主机执行下方命令'),
+    redirOff?chk('ok','ICMP 重定向已关闭'):'',
     d.nft_forward_drop?chk('ok','已放行 Docker FORWARD DROP','宿主机 nftables FORWARD 默认丢弃，已在 DOCKER-USER 放行局域网'):'',
   ].join('');
   const rows=lan.length?lan.map(x=>`<span>${escapeHtml(x.iface)} · ${escapeHtml(x.cidr)}</span><b>网关 / DNS 填 ${escapeHtml(x.ip)}</b>`).join(''):'<span>网关 / DNS</span><b>本机局域网 IP</b>';
   el.innerHTML=`<div class="gw-setup">${rows}
       <span>手机 IP</span><b>同网段未占用的地址，子网掩码与网段一致</b>
     </div><div class="gw-checks">${checks}</div>
-    ${redirOff?'':`<div class="log-box" style="margin-top:8px;padding:8px 10px;white-space:normal">宿主机执行（容器内 /proc/sys 只读，无法代为设置；写入 /etc/sysctl.d/ 可永久生效）：<br><code>${escapeHtml(redirCmd)}</code></div>`}
+    ${redirOff?'':`<details style="margin-top:8px"><summary style="font-size:12px">可选：关闭 ICMP 重定向</summary><div class="log-box" style="margin-top:6px;padding:8px 10px;white-space:normal">不影响正常使用。旁路由接法下，本机给 UDP 等直连流量转发时会顺带告诉设备“这个目标可以直接找路由器”，部分系统会自动记下，之后访问同一 IP 的 TCP 也绕过代理。宿主机执行可避免：<br><code>${escapeHtml(redirCmd)}</code></div></details>`}
     <p style="font-size:12px;color:var(--text2);margin-top:8px">TCP 全部经过代理；DNS 可以填本机或任意公共 DNS（都会被接管）；QUIC 被拒绝后浏览器自动改用 TCP；其他 UDP（游戏、语音）直连。IPv6 不经过本机，若路由器下发了 IPv6，建议在手机或路由器上关闭。</p>`;
 }
 
