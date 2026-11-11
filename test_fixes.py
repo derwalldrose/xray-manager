@@ -1,6 +1,7 @@
 import base64
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -366,6 +367,66 @@ class HousekeepingTest(unittest.TestCase):
         self.assertEqual(both, [old, new])
         only_new = app._read_log_window(dt(2026, 11, 11, 2, 30, 0).replace(hour=3, minute=0, second=0))
         self.assertEqual(only_new, [new])
+
+
+
+class TrafficHistoryTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.p = mock.patch.object(app, "TRAFFIC_DB", str(Path(self.tmp.name) / "traffic.db"))
+        self.p.start()
+        self.boot = ("boot-a", 1_000_000)
+        self.ips = {"ens3": ["172.21.2.67"], "ens9": ["10.18.216.67"]}
+
+    def tearDown(self):
+        self.p.stop()
+        self.tmp.cleanup()
+
+    def sample(self, ts, counters, boot=None):
+        app._traffic_sample(now=ts, counters=counters, boot=boot or self.boot, ips=self.ips)
+
+    def hourly(self):
+        import sqlite3
+        c = sqlite3.connect(app.TRAFFIC_DB)
+        try:
+            return {(r[0], r[1]): (r[2], r[3]) for r in c.execute("SELECT iface,hour,rx,tx FROM hourly")}
+        finally:
+            c.close()
+
+    def test_deltas_skip_virtual_and_baseline(self):
+        h = 1_800_000_000 - 1_800_000_000 % 3600
+        self.sample(h + 60, {"ens3": (1000, 500), "docker0": (9, 9), "veth1": (9, 9)})
+        self.assertEqual(self.hourly(), {})
+        self.sample(h + 120, {"ens3": (1600, 800), "docker0": (99, 99)})
+        self.assertEqual(self.hourly(), {("ens3", h): (600, 300)})
+
+    def test_gap_is_spread_and_reset_counted(self):
+        h = 1_800_000_000 - 1_800_000_000 % 3600
+        self.sample(h + 1800, {"ens9": (0, 0)})
+        self.sample(h + 3600 + 1800, {"ens9": (3600, 0)})  # panel down 1h, same boot
+        self.assertEqual(self.hourly(), {("ens9", h): (1800, 0), ("ens9", h + 3600): (1800, 0)})
+        self.sample(h + 3600 + 1860, {"ens9": (100, 50)})  # counter reset (iface re-created)
+        self.assertEqual(self.hourly()[("ens9", h + 3600)], (1900, 50))
+        self.sample(h + 3600 + 1920, {"ens9": (70, 10)}, boot=("boot-b", h + 3600 + 1900))  # reboot
+        self.assertEqual(self.hourly()[("ens9", h + 3600)], (1970, 60))
+
+    def test_history_buckets_and_totals(self):
+        now = int(time.time())
+        h = now - now % 3600
+        self.sample(h - 7200 + 10, {"ens3": (0, 0), "ens9": (0, 0)})
+        self.sample(h - 7200 + 20, {"ens3": (100, 10), "ens9": (5, 5)})
+        self.sample(h + 5, {"ens3": (100 + 7, 10), "ens9": (5, 5)})
+        d = app._traffic_history("24h", now=now)
+        self.assertEqual(len(d["buckets"]), 24)
+        self.assertEqual(d["buckets"][-1]["start"], h)
+        names = {i["name"]: i for i in d["interfaces"]}
+        self.assertEqual(names["ens3"]["ips"], ["172.21.2.67"])
+        self.assertEqual(names["ens3"]["total"], {"rx": 107, "tx": 10})
+        self.assertEqual(sum(b["data"].get("ens3", {}).get("rx", 0) for b in d["buckets"]), 107)
+        self.assertEqual(len(app._traffic_history("30d", now=now)["buckets"]), 30)
+        m = app._traffic_history("12m", now=now)
+        self.assertEqual(len(m["buckets"]), 12)
+        self.assertEqual(m["buckets"][-1]["label"], time.strftime("%Y-%m", time.localtime(now)))
 
 
 if __name__ == "__main__":

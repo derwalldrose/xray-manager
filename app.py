@@ -3274,6 +3274,224 @@ def api_stats():
     return jsonify(result)
 
 
+# ---------------------------------------------------------------------------
+# Host traffic history (vnstat-like): samples /proc/net/dev of the host netns
+# (the container runs with --network host) into hourly buckets per interface.
+# Covers all traffic of the machine, not only the proxy core.
+# ---------------------------------------------------------------------------
+TRAFFIC_DB = f"{BASE_DIR}/state/traffic.db"
+TRAFFIC_SAMPLE_INTERVAL = int(os.environ.get("TRAFFIC_SAMPLE_INTERVAL", "60") or 0)
+TRAFFIC_KEEP_DAYS = int(os.environ.get("TRAFFIC_KEEP_DAYS", "400") or 400)
+_TRAFFIC_SKIP_PREFIXES = ("lo", "docker", "br-", "veth", "virbr", "cni", "flannel", "cali", "vxlan", "kube")
+_TRAFFIC_LOCK = threading.Lock()
+
+
+def _traffic_conn():
+    import sqlite3
+    Path(TRAFFIC_DB).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(TRAFFIC_DB, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript(
+        "CREATE TABLE IF NOT EXISTS last_sample(iface TEXT PRIMARY KEY, boot_id TEXT, rx INTEGER, tx INTEGER, ts INTEGER);"
+        "CREATE TABLE IF NOT EXISTS hourly(iface TEXT, hour INTEGER, rx INTEGER NOT NULL DEFAULT 0, tx INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(iface, hour));"
+        "CREATE TABLE IF NOT EXISTS iface_info(iface TEXT PRIMARY KEY, ips TEXT, first_seen INTEGER, last_seen INTEGER);"
+    )
+    return conn
+
+
+def _boot_info():
+    boot_id, btime = "", 0
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        pass
+    try:
+        for line in Path("/proc/stat").read_text().splitlines():
+            if line.startswith("btime "):
+                btime = int(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return boot_id, btime
+
+
+def _iface_ipv4():
+    out, _, rc = _run("ip -4 -o addr show", timeout=5)
+    res = {}
+    if rc == 0:
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[2] == "inet":
+                res.setdefault(parts[1].split("@", 1)[0], []).append(parts[3].split("/", 1)[0])
+    return res
+
+
+def _traffic_spread(conn, iface, start, end, rx, tx):
+    """Add rx/tx to hourly buckets, split proportionally over [start, end]."""
+    if rx <= 0 and tx <= 0:
+        return
+    start = min(start, end)
+    span = end - start
+    hours = []
+    h = start - start % 3600
+    while h <= end:
+        lo, hi = max(h, start), min(h + 3600, end)
+        hours.append((h, (hi - lo) if span > 0 else 1))
+        h += 3600
+    total = sum(w for _, w in hours) or 1
+    rx_left, tx_left = rx, tx
+    for i, (h, w) in enumerate(hours):
+        if i == len(hours) - 1:
+            r, t = rx_left, tx_left
+        else:
+            r, t = rx * w // total, tx * w // total
+        rx_left -= r
+        tx_left -= t
+        if r or t:
+            conn.execute("INSERT INTO hourly(iface,hour,rx,tx) VALUES(?,?,?,?) "
+                         "ON CONFLICT(iface,hour) DO UPDATE SET rx=rx+excluded.rx, tx=tx+excluded.tx",
+                         (iface, h, r, t))
+
+
+def _traffic_sample(now=None, counters=None, boot=None, ips=None):
+    """One sampling pass. Deltas since the previous sample (also across panel
+    restarts within the same boot) go into hourly buckets."""
+    now = int(now if now is not None else time.time())
+    counters = _read_net_dev() if counters is None else counters
+    boot_id, btime = _boot_info() if boot is None else boot
+    ips = _iface_ipv4() if ips is None else ips
+    with _TRAFFIC_LOCK:
+        conn = _traffic_conn()
+        try:
+            last = {r[0]: r[1:] for r in conn.execute("SELECT iface, boot_id, rx, tx, ts FROM last_sample")}
+            for iface, (rx, tx) in counters.items():
+                if iface.startswith(_TRAFFIC_SKIP_PREFIXES):
+                    continue
+                prev = last.get(iface)
+                if prev is None:
+                    pass  # first sight: baseline only
+                elif prev[0] == boot_id and rx >= prev[1] and tx >= prev[2]:
+                    _traffic_spread(conn, iface, prev[3], now, rx - prev[1], tx - prev[2])
+                else:
+                    # reboot or interface counter reset: counters restart from 0
+                    start = max(prev[3], btime) if prev[0] != boot_id else prev[3]
+                    _traffic_spread(conn, iface, start, now, rx, tx)
+                conn.execute("INSERT OR REPLACE INTO last_sample VALUES(?,?,?,?,?)", (iface, boot_id, rx, tx, now))
+                conn.execute("INSERT INTO iface_info(iface, ips, first_seen, last_seen) VALUES(?,?,?,?) "
+                             "ON CONFLICT(iface) DO UPDATE SET ips=CASE WHEN excluded.ips!='' THEN excluded.ips ELSE ips END, last_seen=excluded.last_seen",
+                             (iface, ",".join(ips.get(iface, [])), now, now))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _traffic_prune(now=None):
+    now = int(now if now is not None else time.time())
+    with _TRAFFIC_LOCK:
+        conn = _traffic_conn()
+        try:
+            conn.execute("DELETE FROM hourly WHERE hour < ?", (now - TRAFFIC_KEEP_DAYS * 86400,))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _traffic_loop():
+    last_prune = 0
+    while True:
+        try:
+            _traffic_sample()
+            if time.time() - last_prune > 86400:
+                _traffic_prune()
+                last_prune = time.time()
+        except Exception as e:  # keep sampling even if one pass fails
+            print(f"[traffic] sample failed: {e}", flush=True)
+        time.sleep(TRAFFIC_SAMPLE_INTERVAL)
+
+
+def _traffic_history(range_name="24h", now=None):
+    now = int(now if now is not None else time.time())
+    lt = time.localtime(now)
+    if range_name == "30d":
+        day0 = int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)))
+        starts = []
+        d = datetime.fromtimestamp(day0)
+        for i in range(29, -1, -1):
+            x = d - timedelta(days=i)
+            starts.append(int(time.mktime(x.timetuple())))
+        label = lambda t: time.strftime("%m-%d", time.localtime(t))
+        end = int(time.mktime((datetime.fromtimestamp(day0) + timedelta(days=1)).timetuple()))
+    elif range_name == "12m":
+        y, m = lt.tm_year, lt.tm_mon
+        months = []
+        for _ in range(12):
+            months.append((y, m))
+            y, m = (y - 1, 12) if m == 1 else (y, m - 1)
+        months.reverse()
+        starts = [int(time.mktime((y, m, 1, 0, 0, 0, 0, 0, -1))) for y, m in months]
+        ny, nm = (lt.tm_year + 1, 1) if lt.tm_mon == 12 else (lt.tm_year, lt.tm_mon + 1)
+        end = int(time.mktime((ny, nm, 1, 0, 0, 0, 0, 0, -1)))
+        label = lambda t: time.strftime("%Y-%m", time.localtime(t))
+    else:
+        range_name = "24h"
+        h0 = now - now % 3600
+        starts = [h0 - 3600 * i for i in range(23, -1, -1)]
+        end = h0 + 3600
+        label = lambda t: time.strftime("%H:00", time.localtime(t))
+
+    day_start = int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)))
+    month_start = int(time.mktime((lt.tm_year, lt.tm_mon, 1, 0, 0, 0, 0, 0, -1)))
+    with _TRAFFIC_LOCK:
+        conn = _traffic_conn()
+        try:
+            rows = conn.execute("SELECT iface, hour, rx, tx FROM hourly WHERE hour >= ? AND hour < ?",
+                                (min(starts[0], month_start), end)).fetchall()
+            totals = {r[0]: (r[1], r[2], r[3]) for r in conn.execute(
+                "SELECT iface, SUM(rx), SUM(tx), MIN(hour) FROM hourly GROUP BY iface")}
+            info = {r[0]: (r[1], r[2], r[3]) for r in conn.execute("SELECT iface, ips, first_seen, last_seen FROM iface_info")}
+        finally:
+            conn.close()
+
+    import bisect
+    buckets = [{"start": t, "label": label(t), "data": {}} for t in starts]
+    ifaces = {}
+    for iface, hour, rx, tx in rows:
+        st = ifaces.setdefault(iface, {"today": [0, 0], "month": [0, 0]})
+        if hour >= day_start:
+            st["today"][0] += rx; st["today"][1] += tx
+        if hour >= month_start:
+            st["month"][0] += rx; st["month"][1] += tx
+        i = bisect.bisect_right(starts, hour) - 1
+        if 0 <= i < len(buckets) and hour < end:
+            cell = buckets[i]["data"].setdefault(iface, [0, 0])
+            cell[0] += rx; cell[1] += tx
+    out_ifaces = []
+    for iface in sorted(set(totals) | set(info)):
+        ips, first_seen, last_seen = info.get(iface, ("", None, None))
+        t = totals.get(iface, (0, 0, None))
+        st = ifaces.get(iface, {"today": [0, 0], "month": [0, 0]})
+        out_ifaces.append({
+            "name": iface, "ips": [x for x in (ips or "").split(",") if x],
+            "today": {"rx": st["today"][0], "tx": st["today"][1]},
+            "month": {"rx": st["month"][0], "tx": st["month"][1]},
+            "total": {"rx": t[0] or 0, "tx": t[1] or 0},
+            "since": min(x for x in (first_seen, t[2]) if x) if (first_seen or t[2]) else None,
+            "last_seen": last_seen,
+            "active": bool(last_seen and now - last_seen < max(3 * TRAFFIC_SAMPLE_INTERVAL, 300)),
+        })
+    for b in buckets:
+        b["data"] = {k: {"rx": v[0], "tx": v[1]} for k, v in b["data"].items()}
+    return {"ok": True, "range": range_name, "interval": TRAFFIC_SAMPLE_INTERVAL,
+            "interfaces": out_ifaces, "buckets": buckets}
+
+
+@app.route("/api/traffic/history")
+def api_traffic_history():
+    try:
+        return jsonify(_traffic_history(request.args.get("range", "24h")))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 def _classify_outbound(tag):
     if tag == "direct":
         return "direct"
@@ -3993,6 +4211,14 @@ input[readonly],textarea[readonly]{background:var(--bg3)!important;color:var(--t
 .btn:active{background:var(--accent-soft)}
 .btn:disabled{cursor:not-allowed;opacity:.45;color:var(--text2);border-color:var(--border)}
 .btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.seg{display:inline-flex;border:1px solid var(--border2);border-radius:4px;overflow:hidden}
+.seg button{height:30px;padding:0 14px;border:0;border-right:1px solid var(--border2);background:var(--bg2);color:var(--text3);cursor:pointer;font-size:13px}
+.seg button:last-child{border-right:0}
+.seg button.on{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.tr-chart{width:100%;height:200px;display:block}
+.tr-share{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--bg3);min-width:80px}
+.tr-legend{display:flex;gap:14px;font-size:12px;color:var(--text2);align-items:center}
+.tr-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
 .btn.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover);color:#fff}
 .btn.danger{background:var(--bg2);color:var(--red);border-color:#fbaca3}
 .btn.danger:hover{background:var(--red);color:#fff;border-color:var(--red)}
@@ -4314,6 +4540,25 @@ details > summary{cursor:pointer;color:var(--text3)!important}
         <div class="stat"><div class="label">↑ 上传速度</div><div class="value" id="stat-tx" style="color:var(--yellow)">-</div></div>
       </div>
       <div id="stats-interfaces" style="font-size:12px;color:var(--text2)"></div>
+    </div>
+    <div class="card">
+      <h2>流量统计（本机）</h2>
+      <p style="font-size:13px;margin:-6px 0 12px">按网卡统计整台机器的收发字节（读取宿主机 /proc/net/dev，含代理以外的全部流量），每分钟采样一次，按小时存储，保留 400 天。</p>
+      <div style="overflow-x:auto"><table style="white-space:nowrap">
+        <thead><tr><th>网卡</th><th>IP</th><th>今日 ↓ / ↑</th><th>本月 ↓ / ↑</th><th>本月占比</th><th>累计 ↓ / ↑</th><th>记录起始</th></tr></thead>
+        <tbody id="tr-iface-tbody"><tr><td colspan="7" style="color:var(--text2)">加载中…</td></tr></tbody>
+      </table></div>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:16px 0 8px">
+        <div class="seg" id="tr-range">
+          <button data-r="24h" class="on" onclick="setTrafficRange('24h')">24 小时</button>
+          <button data-r="30d" onclick="setTrafficRange('30d')">30 天</button>
+          <button data-r="12m" onclick="setTrafficRange('12m')">12 个月</button>
+        </div>
+        <select id="tr-iface" onchange="renderTraffic()" style="height:30px;padding:0 8px;border:1px solid var(--border2);border-radius:4px;background:var(--bg2);color:var(--text)"></select>
+        <span class="tr-legend"><span><i style="background:var(--green)"></i>下载 ↓</span><span><i style="background:var(--yellow)"></i>上传 ↑</span></span>
+        <span id="tr-sum" style="font-size:12px;color:var(--text2);margin-left:auto"></span>
+      </div>
+      <svg class="tr-chart" id="tr-chart" preserveAspectRatio="none"></svg>
     </div>
     <div class="card">
       <h2>监听端口</h2>
@@ -4814,7 +5059,7 @@ function switchTab(name){
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
   if(name==='connect')loadConnect();
-  if(name==='status'){loadStatus();startStatsPolling();}else{stopStatsPolling();}
+  if(name==='status'){loadStatus();startStatsPolling();loadTraffic();}else{stopStatsPolling();}
   if(name==='inbounds'){loadInbounds();loadTestUrls();}
   if(name==='outbounds'){loadOutbounds();loadObTestUrls();}
   if(name==='routing')loadRouting();
@@ -4914,6 +5159,54 @@ async function loadStats(){
     }).join('');
   }
 }
+let trafficRange='24h', trafficData=null;
+const TR_COLORS=['#165dff','#00b42a','#ff7d00','#722ed1','#f53f3f','#14c9c9','#86909c'];
+function setTrafficRange(r){
+  trafficRange=r;
+  document.querySelectorAll('#tr-range button').forEach(b=>b.classList.toggle('on',b.dataset.r===r));
+  loadTraffic();
+}
+async function loadTraffic(){
+  const d=await api('/api/traffic/history?range='+encodeURIComponent(trafficRange));
+  if(!d||!d.ok){document.getElementById('tr-iface-tbody').innerHTML='<tr><td colspan="7" style="color:var(--red)">'+escapeHtml((d&&d.error)||'加载失败')+'</td></tr>';return;}
+  trafficData=d;
+  const sel=document.getElementById('tr-iface'), cur=sel.value||'__all__';
+  sel.innerHTML='<option value="__all__">全部网卡</option>'+d.interfaces.map(i=>'<option value="'+escapeHtml(i.name)+'">'+escapeHtml(i.name)+(i.ips.length?' '+escapeHtml(i.ips[0]):'')+'</option>').join('');
+  sel.value=[...sel.options].some(o=>o.value===cur)?cur:'__all__';
+  const monthTotal=d.interfaces.reduce((a,i)=>a+i.month.rx+i.month.tx,0)||0;
+  const pair=x=>fmtBytes(x.rx)+' / '+fmtBytes(x.tx);
+  document.getElementById('tr-iface-tbody').innerHTML=d.interfaces.length?d.interfaces.map((i,k)=>{
+    const m=i.month.rx+i.month.tx, pct=monthTotal?m*100/monthTotal:0;
+    const since=i.since?new Date(i.since*1000).toLocaleString('zh-CN',{hour12:false}):'-';
+    return '<tr'+(i.active?'':' style="color:var(--text2)"')+'><td>'+escapeHtml(i.name)+(i.active?'':' <span style="font-size:11px;color:var(--text2)">(已不在)</span>')+'</td><td>'+escapeHtml(i.ips.join(', ')||'-')+'</td><td>'+pair(i.today)+'</td><td>'+pair(i.month)+'</td>'+
+      '<td><div style="display:flex;align-items:center;gap:8px"><div class="tr-share" style="width:90px"><div style="width:'+pct.toFixed(1)+'%;background:'+TR_COLORS[k%TR_COLORS.length]+'"></div></div><span>'+pct.toFixed(1)+'%</span></div></td>'+
+      '<td>'+pair(i.total)+'</td><td style="font-size:12px;color:var(--text2)">'+since+'</td></tr>';
+  }).join(''):'<tr><td colspan="7" style="color:var(--text2)">暂无数据，采样开始后约 1 分钟出现</td></tr>';
+  renderTraffic();
+}
+function renderTraffic(){
+  const d=trafficData; if(!d)return;
+  const iface=document.getElementById('tr-iface').value||'__all__';
+  const pts=d.buckets.map(b=>{let rx=0,tx=0;for(const [k,v] of Object.entries(b.data)){if(iface==='__all__'||k===iface){rx+=v.rx;tx+=v.tx;}}return {label:b.label,rx,tx};});
+  const svg=document.getElementById('tr-chart');
+  const W=Math.max(svg.clientWidth||800,320), H=200, padL=64, padB=22, padT=8, plotW=W-padL-8, plotH=H-padB-padT;
+  svg.setAttribute('viewBox','0 0 '+W+' '+H);
+  const max=Math.max(1,...pts.map(p=>Math.max(p.rx,p.tx)));
+  const n=pts.length, bw=plotW/n, barW=Math.max(2,Math.min(14,bw*0.36));
+  let g='';
+  for(let i=0;i<=4;i++){const y=padT+plotH-plotH*i/4;g+='<line x1="'+padL+'" x2="'+(W-8)+'" y1="'+y+'" y2="'+y+'" stroke="#e5e6eb"/><text x="'+(padL-6)+'" y="'+(y+4)+'" text-anchor="end" font-size="11" fill="#86909c">'+fmtBytes(Math.round(max*i/4))+'</text>';}
+  const step=Math.ceil(n/Math.max(4,Math.min(12,Math.floor(plotW/52))));
+  pts.forEach((p,i)=>{
+    const x=padL+bw*i+bw/2, hr=plotH*p.rx/max, ht=plotH*p.tx/max, tip=escapeHtml(p.label)+'  ↓ '+fmtBytes(p.rx)+'  ↑ '+fmtBytes(p.tx);
+    g+='<g><title>'+tip+'</title><rect x="'+(x-barW-1)+'" y="'+(padT+plotH-hr)+'" width="'+barW+'" height="'+hr+'" fill="#00b42a" rx="1"/><rect x="'+(x+1)+'" y="'+(padT+plotH-ht)+'" width="'+barW+'" height="'+ht+'" fill="#ff7d00" rx="1"/><rect x="'+(padL+bw*i)+'" y="'+padT+'" width="'+bw+'" height="'+plotH+'" fill="transparent"/></g>';
+    if(i%step===0||i===n-1)g+='<text x="'+x+'" y="'+(H-6)+'" text-anchor="middle" font-size="11" fill="#86909c">'+escapeHtml(p.label)+'</text>';
+  });
+  svg.innerHTML=g;
+  const srx=pts.reduce((a,p)=>a+p.rx,0), stx=pts.reduce((a,p)=>a+p.tx,0);
+  document.getElementById('tr-sum').textContent='区间合计 ↓ '+fmtBytes(srx)+'  ↑ '+fmtBytes(stx);
+}
+window.addEventListener('resize',()=>{if(document.getElementById('tab-status').classList.contains('active'))renderTraffic();});
+
 function startStatsPolling(){
   if(statsTimer)return;
   loadStats();
@@ -6661,5 +6954,8 @@ if __name__ == "__main__":
     if RECONCILE_INTERVAL > 0:
         threading.Thread(target=_reconcile_loop, name="reconcile", daemon=True).start()
         print(f"  Reconcile: every {RECONCILE_INTERVAL}s")
+    if TRAFFIC_SAMPLE_INTERVAL > 0:
+        threading.Thread(target=_traffic_loop, name="traffic", daemon=True).start()
+        print(f"  Traffic history: every {TRAFFIC_SAMPLE_INTERVAL}s -> {TRAFFIC_DB}")
 
     app.run(host=args.host, port=args.port, debug=False)
