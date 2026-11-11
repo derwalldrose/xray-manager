@@ -3884,7 +3884,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Xray Manager</title>
+<title>__PANEL_TITLE__</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -4103,7 +4103,7 @@ details > summary{cursor:pointer;color:var(--text3)!important}
 <div id="login-overlay" style="position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;align-items:center;justify-content:center">
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:32px;width:360px;text-align:center">
     <svg viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" style="width:40px;height:40px;margin-bottom:12px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-    <h2 style="margin-bottom:20px;font-size:18px;color:var(--text)">Xray Manager</h2>
+    <h2 style="margin-bottom:20px;font-size:18px;color:var(--text)">__PANEL_TITLE__</h2>
     <input type="password" id="login-token" placeholder="输入 Token" autocomplete="off"
       style="width:100%;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;outline:none;margin-bottom:12px"
       onkeydown="if(event.key==='Enter')doLogin()">
@@ -4115,7 +4115,7 @@ details > summary{cursor:pointer;color:var(--text3)!important}
 <div class="header">
   <h1>
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-    Xray Manager
+    __PANEL_TITLE__
   </h1>
   <div style="display:flex;align-items:center;gap:10px">
     <span id="header-stats" style="font-size:11px;color:var(--text2);font-family:monospace">↓ - ↑ -</span>
@@ -4369,7 +4369,7 @@ details > summary{cursor:pointer;color:var(--text3)!important}
         <button class="btn" onclick="routingAdd('direct')">直连</button>
         <button class="btn primary" onclick="routingAdd('proxy')">走代理</button>
         <button class="btn danger" onclick="routingAdd('block')">阻断</button>
-        <button class="btn" id="rt-bypass-btn" onclick="routingAddBypass()" title="IP/CIDR 在 iptables 层直接放行，不经过 Xray（局域网服务、游戏、内网段）">透明代理绕过</button>
+        <button class="btn" id="rt-bypass-btn" onclick="routingAddBypass()" title="IP/CIDR 在 iptables 层直接放行，不经过代理核心（局域网服务、游戏、内网段）">透明代理绕过</button>
       </div>
       <div class="chips">
         <span>常用：</span>
@@ -4392,14 +4392,14 @@ details > summary{cursor:pointer;color:var(--text3)!important}
       <div class="btn-group">
         <button class="btn primary" onclick="routingSaveCustom()">保存并生效</button>
         <button class="btn" onclick="loadRouting()">放弃修改</button>
-        <span style="font-size:12px;color:var(--text2)">保存会重启 Xray，已有连接会断开重连</span>
+        <span style="font-size:12px;color:var(--text2)">保存会重启代理核心，已有连接会断开重连</span>
       </div>
       <div class="log-box" id="routing-output" style="display:none;margin-top:10px;max-height:150px"></div>
     </div>
 
     <div class="card">
       <h2>透明代理绕过</h2>
-      <p style="font-size:13px;margin-bottom:10px">这些目标 IP 不进入 Xray，直接由本机转发。私有网段、保留地址和 DNS 服务器已默认绕过。</p>
+      <p style="font-size:13px;margin-bottom:10px">这些目标 IP 不进入代理核心，直接由本机转发。私有网段、保留地址和 DNS 服务器已默认绕过。</p>
       <div class="chips" id="rt-bypass-list" style="margin-top:0"></div>
     </div>
 
@@ -4462,7 +4462,7 @@ details > summary{cursor:pointer;color:var(--text3)!important}
   <div class="tab-content" id="tab-dns">
     <div class="card">
       <h2>DNS 配置</h2>
-      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">编辑 Xray 的 <code>dns</code> 配置。常见 DoH：<code>https://dns.alidns.com/dns-query</code>、<code>https://doh.pub/dns-query</code>、<code>https://cloudflare-dns.com/dns-query</code>、<code>https://dns.google/dns-query</code></p>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">编辑 <code>dns</code> 配置。常见 DoH：<code>https://dns.alidns.com/dns-query</code>、<code>https://doh.pub/dns-query</code>、<code>https://cloudflare-dns.com/dns-query</code>、<code>https://dns.google/dns-query</code></p>
       <div class="edit-row"><label>服务器（每行一个）</label><textarea id="dns-servers" style="min-height:140px"></textarea></div>
       <div class="edit-row"><label>clientIp</label><input id="dns-client-ip" placeholder="可选，如 1.1.1.1"></div>
       <div class="btn-group"><button class="btn primary" onclick="saveDns()">保存 DNS</button></div>
@@ -4483,7 +4483,7 @@ details > summary{cursor:pointer;color:var(--text3)!important}
   <div class="tab-content" id="tab-logs">
     <div class="card">
       <h2>访问统计</h2>
-      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">基于 xray.log session ID 解析，统计最近窗口内的访问域名、直连/代理/拦截和出口节点。需确保 Xray loglevel 为 info。</p>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">基于核心日志解析，统计最近窗口内的访问域名、直连/代理/拦截和出口节点。需确保日志级别为 info。</p>
       <div class="btn-group" style="margin-bottom:12px">
         <button class="btn" onclick="loadAccessStats(5)">最近5分钟</button>
         <button class="btn" onclick="loadAccessStats(10)">最近10分钟</button>
@@ -4796,7 +4796,7 @@ async function loadStatus(){
   const d=await api('/api/status');
   if(!d)return;
   statusData=d;
-  document.getElementById('version').textContent=d.xray_version||'-';
+  document.getElementById('version').textContent=(m=>m?'核心 v'+m[0]:'-')(String(d.xray_version||'').match(/\d+\.\d+\.\d+/));
   const dot=document.getElementById('status-dot');
   dot.className='dot '+(d.running?'on':'off');
 
@@ -5067,7 +5067,7 @@ async function saveInbounds(){
   }
   routing.rules=rules;
   const d=await api('/api/inbounds',{method:'POST',body:JSON.stringify({inbounds:inboundsData,routing})});
-  if(d&&d.ok){toast('入站已保存'+(d.restart&&d.restart.success?'，Xray 已重启':''));}
+  if(d&&d.ok){toast('入站已保存'+(d.restart&&d.restart.success?'，核心已重启':''));}
 }
 
 function renderOutbounds(){
@@ -5155,7 +5155,7 @@ async function batchTestSelected(mode){
   const doSpeed=mode==='speed';
   const box=document.getElementById('outbound-test-output');
   box.style.display='block';
-  box.textContent='Batch '+(doSpeed?'speedtest':'latency')+' ('+tags.length+' nodes)...\nStarting temp Xray...';
+  box.textContent='Batch '+(doSpeed?'speedtest':'latency')+' ('+tags.length+' nodes)...\nStarting temp core...';
   const d=await api('/api/outbounds/batch-test',{method:'POST',body:JSON.stringify({tags,url:obTestUrl(),speed_url:document.getElementById('ob-speed-url').value.trim(),mode:doSpeed?'speed':'ping'})});
   if(!d||!d.ok){box.textContent='Failed: '+(d&&d.error||'unknown');return;}
   let lines=['=== '+(doSpeed?'Speed Test':'Latency Test')+' ('+d.count+' nodes) ===',''];
@@ -5191,7 +5191,7 @@ async function testOutbound(idx){
   box.style.display='block';
   let addr='-';
   try{const v=ob.settings.vnext[0];addr=v.address+':'+v.port;}catch(e){}
-  box.textContent=`Testing ${ob.tag} (${addr}) ...\nStarting temp Xray...`;
+  box.textContent=`Testing ${ob.tag} (${addr}) ...\nStarting temp core...`;
   const d=await api('/api/outbounds/test',{method:'POST',body:JSON.stringify({outbound:ob,url:obTestUrl(),type:'ping'})});
   if(!d){box.textContent+='\n请求失败';return;}
   if(!d.ok){
@@ -5209,7 +5209,7 @@ async function speedtestOutbound(idx){
   let addr='-';
   try{const v=ob.settings.vnext[0];addr=v.address+':'+v.port;}catch(e){}
   const speedUrl=document.getElementById('ob-speed-url').value.trim()||'https://speed.cloudflare.com/__down?bytes=10000000';
-  box.textContent=`Speedtest ${ob.tag} (${addr}) ...\nDownloading: ${speedUrl}\nStarting temp Xray...`;
+  box.textContent=`Speedtest ${ob.tag} (${addr}) ...\nDownloading: ${speedUrl}\nStarting temp core...`;
   const d=await api('/api/outbounds/test',{method:'POST',body:JSON.stringify({outbound:ob,url:speedUrl,type:'speed'})});
   if(!d){box.textContent+='\n请求失败';return;}
   if(!d.ok){
@@ -5560,13 +5560,13 @@ async function parseAndAddVless(){
   if(!added){toast('解析失败',false);return;}
   // auto-save + restart
   const s=await api('/api/outbounds',{method:'POST',body:JSON.stringify({outbounds:outboundsData})});
-  if(s&&s.ok) toast('已添加 '+added+' 个节点并保存'+(s.restart&&s.restart.success?'，Xray 已重启':''));
+  if(s&&s.ok) toast('已添加 '+added+' 个节点并保存'+(s.restart&&s.restart.success?'，核心已重启':''));
   else toast('已解析但保存失败，请手动点保存',false);
 }
 
 async function saveOutbounds(){
   const d=await api('/api/outbounds',{method:'POST',body:JSON.stringify({outbounds:outboundsData})});
-  if(d&&d.ok)toast('出站已保存'+(d.restart&&d.restart.success?'，Xray 已重启':''));
+  if(d&&d.ok)toast('出站已保存'+(d.restart&&d.restart.success?'，核心已重启':''));
 }
 
 function exportOutbound(idx){
@@ -5615,7 +5615,7 @@ async function quickImportLinks(){
   if(!added){toast('解析失败',false);return;}
   document.getElementById('quick-import-links').value='';
   const s=await api('/api/outbounds',{method:'POST',body:JSON.stringify({outbounds:outboundsData})});
-  if(s&&s.ok) toast('已导入 '+added+' 个节点并保存'+(s.restart&&s.restart.success?'，Xray 已重启':''));
+  if(s&&s.ok) toast('已导入 '+added+' 个节点并保存'+(s.restart&&s.restart.success?'，核心已重启':''));
   else toast('已解析但保存失败，请手动点保存',false);
 }
 
@@ -5779,7 +5779,7 @@ async function routingSaveCustom(){
   const box=document.getElementById('routing-output');
   box.style.display='block';box.textContent='保存中...';
   const d=await api('/api/routing/custom',{method:'POST',body:JSON.stringify({rules:routingCustom})});
-  if(d&&d.ok){box.textContent='已保存并生效'+(d.restart&&d.restart.success?'，Xray 已重启':'');toast('路由规则已生效');loadRouting();}
+  if(d&&d.ok){box.textContent='已保存并生效'+(d.restart&&d.restart.success?'，核心已重启':'');toast('路由规则已生效');loadRouting();}
   else box.textContent='保存失败: '+(d&&d.error||'unknown')+(d&&d.detail?'\n'+d.detail:'');
 }
 
@@ -5820,7 +5820,7 @@ async function saveDns(){
   const cip=document.getElementById('dns-client-ip').value.trim();
   if(cip) dns.clientIp=cip;
   const d=await api('/api/dns',{method:'POST',body:JSON.stringify({dns})});
-  if(d&&d.ok) toast('DNS 已保存'+(d.restart&&d.restart.success?'，Xray 已重启':'')+(d.iptables_rebuilt?'，iptables 已重建':''));
+  if(d&&d.ok) toast('DNS 已保存'+(d.restart&&d.restart.success?'，核心已重启':'')+(d.iptables_rebuilt?'，iptables 已重建':''));
   else if(d&&d.error) toast(d.error,false);
 }
 
@@ -5833,7 +5833,7 @@ async function loadDnsHosts(){
 async function saveDnsHosts(){
   const text=document.getElementById('dns-hosts-editor').value;
   const d=await api('/api/dns/hosts',{method:'POST',body:JSON.stringify({text})});
-  if(d&&d.ok) toast('Hosts 已保存'+(d.restart&&d.restart.success?'，Xray 已重启':'')+(d.iptables_rebuilt?'，iptables 已重建':''));
+  if(d&&d.ok) toast('Hosts 已保存'+(d.restart&&d.restart.success?'，核心已重启':'')+(d.iptables_rebuilt?'，iptables 已重建':''));
   else if(d&&d.error) toast(d.error,false);
 }
 
@@ -5894,7 +5894,7 @@ async function loadConfig(){
 async function saveConfig(){
   const val=document.getElementById('config-editor').value;
   const d=await api('/api/config',{method:'POST',body:JSON.stringify({config:val})});
-  if(d&&d.ok)toast('配置已保存'+(d&&d.restart&&d.restart.success?'，Xray 已重启':''));
+  if(d&&d.ok)toast('配置已保存'+(d&&d.restart&&d.restart.success?'，核心已重启':''));
   else toast('保存失败',false);
 }
 
@@ -5961,7 +5961,7 @@ async function loadAccessStats(minutes){
 function loadAccessStatsDebounced(){clearTimeout(accessTimer);accessTimer=setTimeout(()=>loadAccessStats(),300);}
 
 async function clearLogs(){
-  if(!confirm('确认清理访问统计、Xray/面板日志和 IP 归属缓存？此操作不可恢复。'))return;
+  if(!confirm('确认清理访问统计、核心/面板日志和 IP 归属缓存？此操作不可恢复。'))return;
   const d=await api('/api/logs/clear',{method:'POST'});
   if(!d)return;
   if(d.ok){
@@ -6112,7 +6112,7 @@ async function tpSaveBalancer(){
   const box=document.getElementById("tp-output");box.style.display="block";box.textContent="Saving balancer config...";
   const d=await api("/api/transparent/balancer",{method:"POST",body:JSON.stringify({enabled,tags,strategy})});
   if(!d||!d.ok){box.textContent="Failed: "+(d&&d.error||"unknown");return;}
-  box.textContent="Balancer saved. "+(d.reloaded?"Xray restarted.":"");
+  box.textContent="Balancer saved. "+(d.reloaded?"core restarted.":"");
 }
 
 // --- Sysctl ---
@@ -6300,7 +6300,7 @@ async function connStart(){
   box.textContent+='SOCKS5: 0.0.0.0:'+ports.socks+'\n';
   box.textContent+='HTTP: 0.0.0.0:'+ports.http+'\n';
   if(transparent)box.textContent+='透明代理: 0.0.0.0:'+ports.transparent+'\n';
-  box.textContent+='Xray 重启: '+(d.restart&&d.restart.success?'成功':'失败')+'\n';
+  box.textContent+='核心重启: '+(d.restart&&d.restart.success?'成功':'失败')+'\n';
   loadConnect();
 }
 
@@ -6312,7 +6312,7 @@ async function connStop(){
   const d=await api('/api/connect/stop',{method:'POST',body:'{}'});
   if(!d||!d.ok){box.textContent='失败';return;}
   box.textContent='已断开连接\n';
-  box.textContent+='Xray 重启: '+(d.restart&&d.restart.success?'成功':'失败')+'\n';
+  box.textContent+='核心重启: '+(d.restart&&d.restart.success?'成功':'失败')+'\n';
   loadConnect();
 }
 
@@ -6331,7 +6331,7 @@ async function connTestAll(){
 async function connDoTest(tags){
   const box=document.getElementById('conn-test-output');
   box.style.display='block';
-  box.textContent='测试 '+tags.length+' 个节点延迟...\n启动临时 Xray...';
+  box.textContent='测试 '+tags.length+' 个节点延迟...\n启动临时核心...';
   const url=connTestUrl();
   const d=await api('/api/connect/test-selected',{method:'POST',body:JSON.stringify({tags,mode:'ping',url})});
   if(!d||!d.ok){
@@ -6388,7 +6388,7 @@ async function connSpeedTest(){
   const speedUrl=(document.getElementById('conn-speed-url')?.value||'').trim()||'https://speed.cloudflare.com/__down?bytes=10000000';
   const box=document.getElementById('conn-test-output');
   box.style.display='block';
-  box.textContent='测速 '+tags.length+' 个节点...\n下载: '+speedUrl+'\n启动临时 Xray...';
+  box.textContent='测速 '+tags.length+' 个节点...\n下载: '+speedUrl+'\n启动临时核心...';
   const d=await api('/api/connect/test-selected',{method:'POST',body:JSON.stringify({tags,mode:'speed',url:connTestUrl(),speed_url:speedUrl})});
   if(!d||!d.ok){box.textContent+='失败: '+(d&&d.error||'');return;}
   let lines=['=== 测速 ('+d.count+' nodes) ===',''];
@@ -6556,9 +6556,13 @@ async function tpSaveBypass(){
 </html>
 """
 
+PANEL_TITLE = (os.environ.get("PANEL_TITLE") or "Derwalld").strip()[:40] or "Derwalld"
+
+
 @app.route("/")
 def index():
-    return Response(HTML, content_type="text/html; charset=utf-8")
+    import html as _html
+    return Response(HTML.replace("__PANEL_TITLE__", _html.escape(PANEL_TITLE)), content_type="text/html; charset=utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -6566,7 +6570,7 @@ def index():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Xray Manager web panel")
+    parser = argparse.ArgumentParser(description="Derwalld web panel")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--xray-config", default=DEFAULT_XRAY_CFG)
@@ -6593,7 +6597,7 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-    print(f"Xray Manager starting on http://{args.host}:{args.port}")
+    print(f"{PANEL_TITLE} panel starting on http://{args.host}:{args.port}")
     print(f"  Xray config: {XRAY_CFG}")
     print(f"  Xray binary: {XRAY_BIN}")
     print(f"  Service: {SVC_NAME}")
