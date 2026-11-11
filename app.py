@@ -4435,7 +4435,8 @@ input[readonly],textarea[readonly]{background:var(--bg3)!important;color:var(--t
 .btn:active{background:var(--accent-soft)}
 .btn:disabled{cursor:not-allowed;opacity:.45;color:var(--text2);border-color:var(--border)}
 .btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-.seg{display:inline-flex;border:1px solid var(--border2);border-radius:4px;overflow:hidden}
+.seg{display:inline-flex;border:1px solid var(--border2);border-radius:4px;overflow-x:auto;max-width:100%;flex-shrink:0}
+.seg button{white-space:nowrap}
 .seg button{height:30px;padding:0 14px;border:0;border-right:1px solid var(--border2);background:var(--bg2);color:var(--text3);cursor:pointer;font-size:13px}
 .seg button:last-child{border-right:0}
 .seg button.on{background:var(--accent-soft);color:var(--accent);font-weight:500}
@@ -4628,6 +4629,7 @@ details > summary{cursor:pointer;color:var(--text3)!important}
     <div class="tab" data-tab="dns" onclick="switchTab('dns')"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>DNS</div>
     <div class="nav-group">运维</div>
     <div class="tab" data-tab="status" onclick="switchTab('status')"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>状态</div>
+    <div class="tab" data-tab="traffic" onclick="switchTab('traffic')"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>流量分析</div>
     <div class="tab" data-tab="logs" onclick="switchTab('logs')"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM9 8h6M9 12h6M9 16h4"/></svg>日志与访问</div>
     <div class="tab" data-tab="config" onclick="switchTab('config')"><svg viewBox="0 0 24 24"><path d="M8 6 3 12l5 6M16 6l5 6-5 6"/></svg>配置文件</div>
     <div class="tab" data-tab="system" onclick="switchTab('system')"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>系统</div>
@@ -4767,6 +4769,14 @@ details > summary{cursor:pointer;color:var(--text3)!important}
       <div id="stats-interfaces" style="font-size:12px;color:var(--text2)"></div>
     </div>
     <div class="card">
+      <h2>监听端口</h2>
+      <table><thead><tr><th>地址</th><th>出口</th></tr></thead><tbody id="listen-tbody"></tbody></table>
+    </div>
+  </div>
+
+  <!-- Traffic analysis -->
+  <div class="tab-content" id="tab-traffic">
+    <div class="card">
       <h2>流量统计（本机）</h2>
       <p style="font-size:13px;margin:-6px 0 12px">按网卡统计整台机器的收发字节（读取宿主机 /proc/net/dev，含代理以外的全部流量），每分钟采样一次，按小时存储，保留 400 天。</p>
       <div style="overflow-x:auto"><table style="white-space:nowrap">
@@ -4787,30 +4797,31 @@ details > summary{cursor:pointer;color:var(--text3)!important}
     </div>
     <div class="card">
       <h2>外部 IP 流量</h2>
-      <p style="font-size:13px;margin:-6px 0 12px">按对端 IP 统计整台机器（含局域网转发和 docker）的连接与字节，来自内核连接跟踪（nf_conntrack_acct）。「经核心」是应用要访问的原始目标 IP（如 kiro.dev 解析出的地址），其线上流量实际流向「代理节点」或「直连」，合计时不重复计入。</p>
+      <p style="font-size:13px;margin:-6px 0 12px">按对端 IP 统计整台机器（含局域网转发和 docker）的连接与字节，来自内核连接跟踪（nf_conntrack_acct）。按类型分开查看，默认显示流量最大的 10 个。</p>
       <div id="pr-status" style="font-size:12px;color:var(--text2);margin-bottom:10px"></div>
+      <div id="pr-sum" style="font-size:13px;color:var(--text3);margin-bottom:12px"></div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <div class="seg" id="pr-kind">
+          <button data-k="core" class="on" onclick="setPeerKind('core')">应用目标 <span></span></button>
+          <button data-k="node" onclick="setPeerKind('node')">代理节点 <span></span></button>
+          <button data-k="direct" onclick="setPeerKind('direct')">直连 <span></span></button>
+          <button data-k="internal" onclick="setPeerKind('internal')">内网 <span></span></button>
+          <button data-k="inbound" onclick="setPeerKind('inbound')">入站 <span></span></button>
+        </div>
         <div class="seg" id="pr-range">
           <button data-h="1" class="on" onclick="setPeerRange(1)">1 小时</button>
           <button data-h="24" onclick="setPeerRange(24)">24 小时</button>
           <button data-h="168" onclick="setPeerRange(168)">7 天</button>
         </div>
-        <select id="pr-kind" onchange="loadPeers()" style="height:30px;padding:0 8px;border:1px solid var(--border2);border-radius:4px;background:var(--bg2);color:var(--text)">
-          <option value="">全部类型</option><option value="core">经核心（应用目标）</option><option value="wire">仅线上（不含经核心）</option>
-          <option value="node">代理节点</option><option value="direct">直连</option><option value="internal">内网</option><option value="inbound">入站</option>
-        </select>
-        <input id="pr-q" placeholder="搜索 IP / 域名 / 节点" onkeydown="if(event.key==='Enter')loadPeers()" style="height:30px;flex:1;min-width:min(200px,100%);padding:0 10px;border:1px solid var(--border2);border-radius:4px">
+        <input id="pr-q" placeholder="搜索 IP / 域名 / 节点" onkeydown="if(event.key==='Enter'){peerLimit=10;loadPeers();}" style="height:30px;flex:1;min-width:min(200px,100%);padding:0 10px;border:1px solid var(--border2);border-radius:4px">
         <button class="btn" onclick="loadPeers()">刷新</button>
       </div>
-      <div id="pr-sum" style="font-size:13px;color:var(--text3);margin-bottom:10px"></div>
+      <div id="pr-kind-desc" style="font-size:12px;color:var(--text2);margin-bottom:8px"></div>
       <div style="overflow-x:auto"><table style="white-space:nowrap">
         <thead><tr><th>对端 IP</th><th>域名 / 节点</th><th>归属</th><th>类型</th><th>协议:端口</th><th>↓ 下载</th><th>↑ 上传</th><th>连接</th><th>最后</th></tr></thead>
         <tbody id="pr-tbody"><tr><td colspan="9" style="color:var(--text2)">加载中…</td></tr></tbody>
       </table></div>
-    </div>
-    <div class="card">
-      <h2>监听端口</h2>
-      <table><thead><tr><th>地址</th><th>出口</th></tr></thead><tbody id="listen-tbody"></tbody></table>
+      <div id="pr-more" style="margin-top:10px;display:none"><button class="btn" onclick="peerLimit+=20;loadPeers()">显示更多</button> <span id="pr-more-info" style="font-size:12px;color:var(--text2);margin-left:8px"></span></div>
     </div>
   </div>
 
@@ -5018,8 +5029,8 @@ details > summary{cursor:pointer;color:var(--text3)!important}
   <!-- Logs -->
   <div class="tab-content" id="tab-logs">
     <div class="card">
-      <h2>访问统计</h2>
-      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">基于核心日志解析，统计最近窗口内的访问域名、直连/代理/拦截和出口节点。需确保日志级别为 info。</p>
+      <h2>访问记录</h2>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:12px">基于核心日志，逐条列出经过代理核心的连接（时间、客户端、目标、出口）。按对端 IP 的流量排行见「流量分析」。需确保日志级别为 info。</p>
       <div class="btn-group" style="margin-bottom:12px">
         <button class="btn" onclick="loadAccessStats(5)">最近5分钟</button>
         <button class="btn" onclick="loadAccessStats(10)">最近10分钟</button>
@@ -5035,9 +5046,6 @@ details > summary{cursor:pointer;color:var(--text3)!important}
         <button class="btn danger" onclick="clearLogs()">清理统计和日志</button>
       </div>
       <div id="access-summary" style="margin-bottom:12px;color:var(--text2)">加载中...</div>
-      <h3 style="margin:12px 0 8px">目标排行</h3>
-      <table><thead><tr><th>目标域名/IP</th><th>归属</th><th>总数</th><th>代理</th><th>直连</th><th>拦截</th><th>出口分布</th><th>最后访问</th></tr></thead><tbody id="access-targets"></tbody></table>
-      <h3 style="margin:16px 0 8px">最近记录</h3>
       <table><thead><tr><th>时间</th><th>客户端</th><th>目标</th><th>归属</th><th>端口</th><th>类型</th><th>出口</th></tr></thead><tbody id="access-records"></tbody></table>
     </div>
     <div class="card">
@@ -5308,7 +5316,8 @@ function switchTab(name){
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
   if(name==='connect')loadConnect();
-  if(name==='status'){loadStatus();startStatsPolling();loadTraffic();loadPeers();}else{stopStatsPolling();}
+  if(name==='status'){loadStatus();startStatsPolling();}else{stopStatsPolling();}
+  if(name==='traffic'){loadTraffic();loadPeers();}
   if(name==='inbounds'){loadInbounds();loadTestUrls();}
   if(name==='outbounds'){loadOutbounds();loadObTestUrls();}
   if(name==='routing')loadRouting();
@@ -5454,17 +5463,29 @@ function renderTraffic(){
   const srx=pts.reduce((a,p)=>a+p.rx,0), stx=pts.reduce((a,p)=>a+p.tx,0);
   document.getElementById('tr-sum').textContent='区间合计 ↓ '+fmtBytes(srx)+'  ↑ '+fmtBytes(stx);
 }
-window.addEventListener('resize',()=>{if(document.getElementById('tab-status').classList.contains('active'))renderTraffic();});
+window.addEventListener('resize',()=>{if(document.getElementById('tab-traffic').classList.contains('active'))renderTraffic();});
 
-let peerHours=1;
+let peerHours=1, peerKind='core', peerLimit=10;
+const PEER_KIND_DESC={
+  core:'应用要访问的原始目标 IP（如 kiro.dev 解析出的地址）。这部分流量的实际线路走「代理节点」或「直连」，合计时不重复计入。',
+  node:'代理核心连到节点服务器的实际线上流量。',
+  direct:'不经代理、直接连到公网 IP 的流量（含核心直连出口和局域网设备 NAT 出去的流量）。',
+  internal:'连到内网 / 私有地址的流量。',
+  inbound:'对方主动连到本机的连接，如访问面板、SSH。'};
+function setPeerKind(k){
+  peerKind=k; peerLimit=10;
+  document.querySelectorAll('#pr-kind button').forEach(b=>b.classList.toggle('on',b.dataset.k===k));
+  loadPeers();
+}
 function setPeerRange(h){
-  peerHours=h;
+  peerHours=h; peerLimit=10;
   document.querySelectorAll('#pr-range button').forEach(b=>b.classList.toggle('on',+b.dataset.h===h));
   loadPeers();
 }
 async function loadPeers(){
-  const kind=document.getElementById('pr-kind').value, q=document.getElementById('pr-q').value.trim();
-  const d=await api('/api/traffic/peers?hours='+peerHours+'&kind='+encodeURIComponent(kind)+'&q='+encodeURIComponent(q)+'&limit=300');
+  const kind=peerKind, q=document.getElementById('pr-q').value.trim();
+  document.getElementById('pr-kind-desc').textContent=PEER_KIND_DESC[kind]||'';
+  const d=await api('/api/traffic/peers?hours='+peerHours+'&kind='+encodeURIComponent(kind)+'&q='+encodeURIComponent(q)+'&limit='+peerLimit);
   const tb=document.getElementById('pr-tbody'), st=document.getElementById('pr-status');
   if(!d||!d.ok){tb.innerHTML='<tr><td colspan="9" style="color:var(--red)">'+escapeHtml((d&&d.error)||'加载失败')+'</td></tr>';return;}
   const s=d.status||{};
@@ -5477,7 +5498,8 @@ async function loadPeers(){
   const t=d.totals||{}, g=k=>t[k]||{rx:0,tx:0,peers:0};
   document.getElementById('pr-sum').innerHTML='线上合计 ↓ <b>'+fmtBytes((d.wire||{}).rx||0)+'</b> ↑ <b>'+fmtBytes((d.wire||{}).tx||0)+'</b>'+
     '　代理节点 '+fmtBytes(g('node').rx+g('node').tx)+'　直连 '+fmtBytes(g('direct').rx+g('direct').tx)+'　内网 '+fmtBytes(g('internal').rx+g('internal').tx)+'　入站 '+fmtBytes(g('inbound').rx+g('inbound').tx)+
-    '　<span style="color:var(--text2)">经核心目标 '+g('core').peers+' 个</span>';
+    '';
+  document.querySelectorAll('#pr-kind button').forEach(b=>{b.querySelector('span').textContent=g(b.dataset.k).peers?'('+g(b.dataset.k).peers+')':'';});
   const kindTag=r=>{
     const c={core:'var(--accent)',node:'#722ed1',direct:'var(--green)',internal:'var(--text3)',inbound:'var(--yellow)'}[r.kind]||'var(--text3)';
     let l=r.label; if(r.kind==='core')l+=r.route==='direct'?' → 直连':r.route==='block'?' → 拦截':' → '+(r.outbound||'代理');
@@ -5488,7 +5510,10 @@ async function loadPeers(){
     const meta=r.meta?('AS'+escapeHtml(r.meta.asn||'')+' '+escapeHtml(r.meta.country||'')+'<div style="font-size:11px;color:var(--text2);max-width:220px;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(r.meta.as_name||'')+'</div>'):'-';
     const last=r.last_seen?new Date(r.last_seen*1000).toLocaleString('zh-CN',{hour12:false,month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'-';
     return '<tr><td>'+escapeHtml(r.ip)+'</td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis">'+name+'</td><td>'+meta+'</td><td>'+kindTag(r)+'</td><td>'+escapeHtml((r.proto||'')+':'+(r.port||''))+'</td><td>'+fmtBytes(r.rx)+'</td><td>'+fmtBytes(r.tx)+'</td><td>'+r.conns+'</td><td style="font-size:12px;color:var(--text2)">'+last+'</td></tr>';
-  }).join('')+(d.matched>d.rows.length?'<tr><td colspan="9" style="color:var(--text2)">仅显示前 '+d.rows.length+' 条，共 '+d.matched+' 条</td></tr>':''):'<tr><td colspan="9" style="color:var(--text2)">暂无数据（每分钟全量读取一次，新连接关闭时实时计入）</td></tr>';
+  }).join(''):'<tr><td colspan="9" style="color:var(--text2)">暂无数据（每分钟全量读取一次，新连接关闭时实时计入）</td></tr>';
+  const more=document.getElementById('pr-more');
+  more.style.display=d.matched>d.rows.length?'':'none';
+  document.getElementById('pr-more-info').textContent='已显示 '+d.rows.length+' / '+d.matched;
 }
 
 function startStatsPolling(){
@@ -6564,15 +6589,10 @@ async function loadAccessStats(minutes){
   const summary=document.getElementById('access-summary');
   if(!d.ok){
     summary.innerHTML='<span style="color:var(--red)">访问日志不可用：'+escapeHtml(d.error||d.hint||'unknown')+'</span>';
-    document.getElementById('access-targets').innerHTML='';
     document.getElementById('access-records').innerHTML='';
     return;
   }
   summary.innerHTML='最近 <b>'+d.window_minutes+'</b> 分钟：总计 <b>'+d.total+'</b>，代理 <b style="color:var(--green)">'+d.proxy+'</b>，直连 <b>'+d.direct+'</b>，拦截 <b style="color:var(--red)">'+d.blocked+'</b>，补全 <b>'+((d.enriched_targets)||0)+'</b> 个目标 <span style="color:var(--text2);font-size:11px">('+escapeHtml(d.log_file)+')</span>';
-  document.getElementById('access-targets').innerHTML=(d.by_target||[]).map(x=>{
-    const obs=Object.entries(x.outbounds||{}).map(([k,v])=>k+':'+v).join(', ');
-    return '<tr><td>'+targetCell(x)+'</td><td>'+asInfo(x.ip_meta)+'</td><td>'+x.count+'</td><td>'+x.proxy+'</td><td>'+x.direct+'</td><td>'+x.blocked+'</td><td>'+escapeHtml(obs)+'</td><td>'+escapeHtml(x.last_seen)+'</td></tr>';
-  }).join('')||'<tr><td colspan="8" style="color:var(--text2)">暂无记录</td></tr>';
   document.getElementById('access-records').innerHTML=(d.records||[]).map(r=>'<tr><td>'+escapeHtml(r.time)+'</td><td>'+escapeHtml(r.client)+'</td><td>'+targetCell(r)+'</td><td>'+asInfo(r.ip_meta)+'</td><td>'+escapeHtml(r.port||'')+'</td><td>'+escapeHtml(routeTypeLabel(r.route_type))+'</td><td>'+escapeHtml(r.outbound)+'</td></tr>').join('')||'<tr><td colspan="7" style="color:var(--text2)">暂无记录</td></tr>';
 }
 function loadAccessStatsDebounced(){clearTimeout(accessTimer);accessTimer=setTimeout(()=>loadAccessStats(),300);}
