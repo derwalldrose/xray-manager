@@ -20,6 +20,9 @@ DEFAULT_URL = "https://iptoasn.com/data/ip2asn-v4.tsv.gz"
 FALLBACK_URL = "https://cdn.jsdelivr.net/npm/@ip-location-db/iptoasn-asn/iptoasn-asn-ipv4.csv"
 MIN_ROWS = 100000          # sanity check for a downloaded file
 REFRESH_SECONDS = 7 * 86400
+CHECK_SECONDS = 600        # how often the background thread looks at the file
+RETRY_SECONDS = 300        # first retry after a failed download, doubled each time
+RETRY_MAX_SECONDS = 3600
 
 
 class AsnDB:
@@ -36,6 +39,8 @@ class AsnDB:
         self.rows = 0
         self.error = ""
         self.updating = False
+        self._seen_mtime = None   # mtime of the file last handed to load()
+        self._failures = 0        # consecutive failed downloads
 
     # ---------- loading ----------
     @staticmethod
@@ -72,9 +77,18 @@ class AsnDB:
                 idx.append(i)
         return starts, ends, idx, info
 
+    def _mtime(self):
+        try:
+            return os.path.getmtime(self.path)
+        except OSError:
+            return None
+
     def load(self):
         if not os.path.exists(self.path):
             return False
+        # Remember the attempt even if parsing fails, so a corrupt file is not
+        # re-parsed on every check; a replaced file gets a new mtime.
+        self._seen_mtime = self._mtime()
         try:
             starts, ends, idx, info = self._parse(self.path)
         except Exception as e:  # corrupt file: keep the previous tables
@@ -141,15 +155,37 @@ class AsnDB:
                 except OSError:
                     pass
 
+    def _tick(self):
+        """One background pass; returns the seconds to sleep before the next.
+
+        Downloads when the file is missing or older than REFRESH_SECONDS and
+        retries a failed download after RETRY_SECONDS (doubling up to
+        RETRY_MAX_SECONDS). Reloads when the file was replaced by someone else,
+        e.g. a manual download, so no panel restart is needed.
+        """
+        age = self.file_age()
+        if age is None or age > REFRESH_SECONDS:
+            if self.update():
+                self._failures = 0
+            else:
+                self._failures += 1
+                return min(RETRY_SECONDS * 2 ** (self._failures - 1), RETRY_MAX_SECONDS)
+        elif self._mtime() != self._seen_mtime:
+            self.load()
+        self._failures = 0
+        return CHECK_SECONDS
+
     def start(self):
-        """Load in the background and refresh weekly; never blocks the caller."""
+        """Load in the background and keep the file fresh; never blocks the caller."""
         def run():
             self.load()
             while True:
-                age = self.file_age()
-                if age is None or age > REFRESH_SECONDS:
-                    self.update()
-                time.sleep(6 * 3600)
+                try:
+                    wait = self._tick()
+                except Exception as e:  # keep the thread alive
+                    self.error = f"tick: {e}"
+                    wait = RETRY_SECONDS
+                time.sleep(wait)
         threading.Thread(target=run, name="ip-asn", daemon=True).start()
 
     # ---------- lookup ----------

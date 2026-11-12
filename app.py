@@ -4628,6 +4628,6 @@ if __name__ == "__main__":
         print(f"  Peer traffic (conntrack): acct={_conntrack_acct_enabled()} keep {PEER_KEEP_DAYS}d")
     if os.environ.get("IP_ASN_DB", "1") != "0":
         _asn_db.start()
-        print(f"  IP ASN db: {IP_ASN_PATH} (weekly refresh)")
+        print(f"  IP ASN db: {IP_ASN_PATH} (weekly refresh, retry on failure, auto-reload)")
 
     app.run(host=args.host, port=args.port, debug=False)
