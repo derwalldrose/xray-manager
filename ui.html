@@ -296,7 +296,7 @@ tr.ob-system td{color:var(--text-3)}
 .inuse{background:var(--green-soft)!important;color:var(--green)!important}
 
 /* ---------- menus / popovers ---------- */
-.menu{position:fixed;z-index:400;min-width:180px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow-lg);padding:6px;animation:pop .12s ease}
+.menu{position:fixed;z-index:400;min-width:180px;max-height:calc(100vh - 16px);overflow-y:auto;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow-lg);padding:6px;animation:pop .12s ease}
 @keyframes pop{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:none}}
 .menu button,.menu a{display:flex;align-items:center;gap:10px;width:100%;height:34px;padding:0 10px;border:0;background:transparent;border-radius:6px;cursor:pointer;font-size:13px;color:var(--text);text-align:left}
 .menu button:hover{background:var(--hover)}
@@ -1323,7 +1323,7 @@ function openConnMenu(el){
     items.push({html:tags.map(x=>'<code>'+escapeHtml(x)+'</code>').join(' ')+'<br>'+(tags.length>1?'负载均衡 · '+(STRAT[s.balancer_strategy]||s.balancer_strategy||'')+'<br>':'')+
       'SOCKS5 :'+(s.inbound_socks_port||10810)+' · HTTP :'+(s.inbound_http_port||10818)+(s.transparent_enabled?' · 透明 :'+(s.transparent_port||12345):'')});
     items.push('sep');
-    items.push({label:'切换节点',icon:'nodes',fn:()=>switchTab('nodes')});
+    items.push({label:'切换节点…',icon:'nodes',fn:()=>openQuickSwitch(el)});
     items.push({label:'重启代理核心',icon:'refresh',fn:()=>svcAction('restart')});
     items.push({label:'断开连接',icon:'power',danger:true,fn:connStop});
   }else{
@@ -1332,6 +1332,33 @@ function openConnMenu(el){
     if(s.was_active_but_stopped&&(s.selected_tags||[]).length)items.push({label:'按上次的节点重新连接',icon:'play',fn:()=>connStart((s.selected_tags||[]).slice())});
   }
   openMenu(el,items);
+}
+
+// One-click switch to a single node, keeping the current strategy/ports/transparent
+// settings. The backend applies it live (xray api bo) when nothing else changes.
+function openQuickSwitch(el){
+  const s=connState||{}, cur=new Set(s.selected_tags||[]);
+  const nodes=(s.nodes||[]).filter(n=>!(cur.size===1&&cur.has(n.tag)));
+  const items=[{header:'快速切换节点'}];
+  nodes.forEach(n=>{
+    const l=connLatency[n.tag]||{};
+    const lat=l.ping_ok&&l.ping_ms?' · '+Math.round(parseFloat(l.ping_ms)*1000)+' ms':l.ping_ok===false?' · 失败':'';
+    items.push({label:n.tag+lat,icon:'play',fn:()=>connQuickSwitch(n.tag)});
+  });
+  items.push('sep');
+  items.push({label:'多选 / 负载均衡…',icon:'nodes',fn:()=>switchTab('nodes')});
+  setTimeout(()=>openMenu(el,items),0);
+}
+async function connQuickSwitch(tag){
+  const s=connState||{};
+  const body={tags:[tag],strategy:s.balancer_strategy||'roundRobin',transparent:!!s.transparent_enabled,
+    ports:{socks:s.inbound_socks_port||10810,http:s.inbound_http_port||10818,transparent:s.transparent_port||12345}};
+  const d=await api('/api/connect/start',{method:'POST',body:JSON.stringify(body)});
+  if(d&&d.ok){
+    const okR=d.hot||!!(d.restart&&d.restart.success);
+    toast('已切换到 '+tag+(d.hot?'（热切换，核心未重启）':d.hot_error?'（热切换失败，已重启核心）':'（已重启核心）')+(okR?'':'，核心启动失败，请查看日志'),okR);
+  }
+  if(currentTab==='nodes')await loadNodesPage();else if(currentTab==='overview')await loadOverview();else await refreshConnState();
 }
 
 /* ================= overview ================= */
@@ -1364,7 +1391,7 @@ function renderHero(s){
     (s.transparent_enabled?'<dt>透明代理</dt><dd>0.0.0.0:'+(s.transparent_port||12345)+'</dd>':'')):'';
   const a=$('ov-actions');a.innerHTML='';
   const mk=(cls,html,fn)=>{const b=document.createElement('button');b.className='btn '+cls;b.innerHTML=html;b.onclick=()=>fn(b);a.appendChild(b);return b;};
-  if(on){mk('','切换节点',()=>switchTab('nodes'));mk('danger',icon('power')+'断开连接',connStop);}
+  if(on){mk('','切换节点',b=>openQuickSwitch(b));mk('danger',icon('power')+'断开连接',connStop);}
   else{
     if(s.was_active_but_stopped&&tags.length)mk('primary lg',icon('play')+'重新连接',b=>connStart(tags.slice(),b));
     mk(s.was_active_but_stopped&&tags.length?'lg':'primary lg',icon('nodes')+'选择节点',()=>switchTab('nodes'));
@@ -1530,7 +1557,7 @@ function renderNodeBar(bar,txt,btns){
   }
   if(changed)bar.classList.add('dirty');
   txt.innerHTML='<span>已选 <b>'+tags.length+'</b> 个节点'+(tags.length>1?' · 负载均衡（'+strat+'）':'')+'</span>'+
-    (changed?'<span class="muted">与当前连接不同，应用后会重新连接（约 2 秒中断）</span>':on?'<span class="muted">正在使用</span>':'');
+    (changed?'<span class="muted">'+(tags.length===1&&!connSettingsDirty?'切到单个节点立即生效，不重启核心；已有连接留在原节点直到关闭':'与当前连接不同，应用后会重启核心（约 2 秒中断）')+'</span>':on?'<span class="muted">正在使用</span>':'');
   add('ghost','清空',()=>connToggleAll(false));
   add('',icon('zap')+'测延迟',b=>connDoTest(tags,'ping',b));
   add('',icon('gauge')+'测速',b=>connDoTest(tags,'speed',b));
@@ -1553,7 +1580,9 @@ async function connStart(tags,btn){
     const d=await api('/api/connect/start',{method:'POST',body:JSON.stringify(body)});
     if(!d||!d.ok)return;
     connSettingsDirty=false;
-    toast('已连接 '+tags.length+' 个节点'+(body.transparent?' · 透明代理':'')+(d.restart&&d.restart.success?'':'（核心重启失败，请查看日志）'),!!(d.restart&&d.restart.success));
+    if(d.hot){toast('已切换到 '+tags[0]+'（热切换，核心未重启）');return;}
+    const okR=!!(d.restart&&d.restart.success);
+    toast('已连接 '+tags.length+' 个节点'+(body.transparent?' · 透明代理':'')+(d.hot_error?'（热切换失败，已重启核心）':'')+(okR?'':'（核心重启失败，请查看日志）'),okR);
   });
   if(currentTab==='nodes')await loadNodesPage();else if(currentTab==='overview')await loadOverview();else await refreshConnState();
 }

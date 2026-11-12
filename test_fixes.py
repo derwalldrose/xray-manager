@@ -262,7 +262,8 @@ class CustomRulesTest(TempConfigMixin, unittest.TestCase):
             {"type": "field", "domain": ["geosite:category-ads-all"], "outboundTag": "block"},
             {"type": "field", "domain": ["domain:x.com"], "outboundTag": "deleted-node"},
         ])
-        for tags, want in ((["n2"], ("outboundTag", "n2")), (["n1", "n2"], ("balancerTag", "proxy-balancer"))):
+        # single nodes also go through the balancer (hot switch)
+        for tags, want in ((["n2"], ("balancerTag", "proxy-balancer")), (["n1", "n2"], ("balancerTag", "proxy-balancer"))):
             cfg, err = app._build_connect_config(tags, "roundRobin", True, {"socks": 1, "http": 2, "transparent": 3})
             self.assertIsNone(err)
             rules = cfg["routing"]["rules"]

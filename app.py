@@ -30,6 +30,7 @@ import threading
 import functools
 import time
 import shlex
+import hashlib
 import random
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -81,6 +82,11 @@ GEOIP_PATH = f"{BASE_DIR}/data/geoip.dat"
 GEOSITE_PATH = f"{BASE_DIR}/data/geosite.dat"
 IP_ASN_PATH = f"{BASE_DIR}/data/ip2asn-v4.tsv.gz"
 LEASTPING_PROBE_URL = "https://www.gstatic.com/generate_204"
+# Connect mode routes proxy traffic through this balancer even for a single node,
+# so switching to another single node is a live `xray api bo` call (no restart).
+PROXY_BALANCER = "proxy-balancer"
+XRAY_API_PORT = int(os.environ.get("XRAY_API_PORT", "10085") or 10085)
+RUNNING_FP_FILE = f"{BASE_DIR}/state/running-config.fp"
 _asn_db = _ipasn.AsnDB(IP_ASN_PATH, [u for u in (os.environ.get("IP_ASN_URL") or "").split(",") if u] or (_ipasn.DEFAULT_URL, _ipasn.FALLBACK_URL))
 GEO_CDN_PREFIX = "https://hub.543083.xyz/"
 GEO_URLS_FILE = f"{BASE_DIR}/state/geo-urls.json"
@@ -918,14 +924,18 @@ def _build_connect_config(selected_tags, strategy, transparent, ports):
     routing = cfg.setdefault("routing", {})
     routing["domainStrategy"] = routing.get("domainStrategy", "IPIfNonMatch")
 
-    # Balancers
-    if is_multi:
-        balancer = {
-            "tag": "proxy-balancer",
-            "selector": selected_tags,
-            "strategy": {"type": strategy},
-        }
-        routing["balancers"] = [balancer]
+    # Balancers. A single node also goes through the balancer (enables hot switch),
+    # unless its tag is a prefix of another tag: selectors match by prefix, so the
+    # balancer could then pick the wrong node.
+    all_tags = [ob.get("tag") for ob in outbounds if ob.get("tag")]
+    use_balancer = bool(selected_tags) and (
+        is_multi or not any(t != selected_tags[0] and t.startswith(selected_tags[0]) for t in all_tags))
+    if use_balancer:
+        routing["balancers"] = [{
+            "tag": PROXY_BALANCER,
+            "selector": list(selected_tags),
+            "strategy": {"type": strategy if is_multi else "random"},
+        }]
     else:
         routing["balancers"] = []
     # leastPing needs an observatory, otherwise the core refuses to start
@@ -950,11 +960,11 @@ def _build_connect_config(selected_tags, strategy, transparent, ports):
 
     # 3. User traffic → proxy (must come BEFORE catch-all UDP direct,
     #    otherwise transparent UDP always bypasses proxy)
-    if is_multi:
-        rules.append({"type": "field", "inboundTag": ["socks-in"], "balancerTag": "proxy-balancer"})
-        rules.append({"type": "field", "inboundTag": ["http-in"], "balancerTag": "proxy-balancer"})
+    if use_balancer:
+        rules.append({"type": "field", "inboundTag": ["socks-in"], "balancerTag": PROXY_BALANCER})
+        rules.append({"type": "field", "inboundTag": ["http-in"], "balancerTag": PROXY_BALANCER})
         if transparent:
-            rules.append({"type": "field", "inboundTag": ["transparent"], "balancerTag": "proxy-balancer"})
+            rules.append({"type": "field", "inboundTag": ["transparent"], "balancerTag": PROXY_BALANCER})
     else:
         tag = selected_tags[0] if selected_tags else "direct"
         rules.append({"type": "field", "inboundTag": ["socks-in"], "outboundTag": tag})
@@ -973,7 +983,79 @@ def _build_connect_config(selected_tags, strategy, transparent, ports):
 
     _apply_custom_rules(cfg)
     _ensure_access_log_config(cfg)
+    _ensure_routing_api(cfg)
     return cfg, None
+
+
+def _pick_api_listen():
+    """First free 127.0.0.1 port from XRAY_API_PORT (a taken port would stop Xray from starting)."""
+    for port in range(XRAY_API_PORT, XRAY_API_PORT + 20):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sk:
+            try:
+                sk.bind(("127.0.0.1", port))
+                return f"127.0.0.1:{port}"
+            except OSError:
+                continue
+    return f"127.0.0.1:{XRAY_API_PORT}"
+
+
+def _ensure_routing_api(cfg):
+    """Enable Xray's RoutingService on a loopback port. An existing listen address is
+    kept: the running core already holds it."""
+    api = cfg.get("api") if isinstance(cfg.get("api"), dict) else {}
+    api.setdefault("tag", "api")
+    if not api.get("listen"):
+        api["listen"] = _pick_api_listen()
+    services = list(api.get("services") or [])
+    if "RoutingService" not in services:
+        services.append("RoutingService")
+    api["services"] = services
+    cfg["api"] = api
+    return cfg
+
+
+def _connect_fingerprint(cfg):
+    """Hash of the config minus what a hot switch changes (balancer selector and
+    strategy, the leastPing observatory). Equal hashes mean the running core only
+    differs from cfg in which node the balancer picks."""
+    c = json.loads(json.dumps(cfg))
+    _ensure_access_log_config(c)
+    for b in (c.get("routing") or {}).get("balancers") or []:
+        if b.get("tag") == PROXY_BALANCER:
+            b.pop("selector", None)
+            b.pop("strategy", None)
+    if (c.get("observatory") or {}).get("probeURL") == LEASTPING_PROBE_URL:
+        c.pop("observatory", None)
+    return hashlib.sha256(json.dumps(c, sort_keys=True).encode()).hexdigest()
+
+
+def _running_fp_write(cfg):
+    try:
+        Path(RUNNING_FP_FILE).parent.mkdir(parents=True, exist_ok=True)
+        Path(RUNNING_FP_FILE).write_text(_connect_fingerprint(cfg) if cfg else "")
+    except OSError:
+        pass
+
+
+def _running_fp_read():
+    try:
+        return Path(RUNNING_FP_FILE).read_text().strip()
+    except OSError:
+        return ""
+
+
+def _balancer_override(tag, cfg=None):
+    """Point the running proxy balancer at `tag`. Returns (ok, message)."""
+    if cfg is None:
+        cfg, _ = _parse_config()
+    listen = ((cfg or {}).get("api") or {}).get("listen")
+    if not listen:
+        return False, "API 未启用"
+    out, err, rc = _run(f"{shlex.quote(XRAY_BIN)} api bo -s {shlex.quote(listen)} -t 3 "
+                        f"-b {PROXY_BALANCER} {shlex.quote(tag)}", timeout=8)
+    if rc != 0:
+        return False, (err or out).strip()[:300] or f"exit {rc}"
+    return True, ""
 
 
 def _tp_load_custom_bypass():
@@ -1873,6 +1955,7 @@ def _restart_xray():
     runtime_path, resolved, materialize_error = _materialize_runtime_config()
     if materialize_error:
         return {"active": "error", "success": False, "error": materialize_error}
+    _running_fp_write(_parse_config()[0])
     if _has_systemd():
         _run(f"systemctl --no-block restart {SVC_NAME}")
         time.sleep(1.5)
@@ -3057,6 +3140,43 @@ def api_connect_start():
     else:
         original_inbounds = cfg_check.get("inbounds", [])
 
+    import datetime as _dt
+
+    def _new_state(started_at=None):
+        return {
+            "active": True,
+            "selected_tags": tags,
+            "balancer_strategy": strategy,
+            "transparent_enabled": transparent,
+            "started_at": started_at or _dt.datetime.now().isoformat(),
+            "inbound_socks_port": ports.get("socks", 10810),
+            "inbound_http_port": ports.get("http", 10818),
+            "transparent_port": ports.get("transparent", 12345),
+            "original_inbounds": original_inbounds,
+        }
+
+    # Hot switch: already connected and only the single target node changes. The
+    # running core keeps its inbounds, iptables and DNS hijack; existing connections
+    # stay on the old node until they close. "restart": true forces a full restart.
+    if (len(tags) == 1 and not data.get("restart") and _prev.get("active")
+            and bool(_prev.get("transparent_enabled")) == transparent
+            and cfg.get("routing", {}).get("balancers")
+            and _connect_fingerprint(cfg) == _running_fp_read()):
+        backup, test = _save_config_object(cfg)
+        if not test["ok"]:
+            return jsonify({"error": "配置测试失败", "detail": test["output"]}), 400
+        ok, msg = _balancer_override(tags[0], cfg)
+        if ok:
+            state = _new_state(_prev.get("started_at"))
+            state["switched_at"] = _dt.datetime.now().isoformat()
+            _connect_state_write(state)
+            return jsonify({"ok": True, "hot": True, "state": state})
+        print(f"[connect] hot switch failed, restarting core: {msg}", flush=True)
+        restart = _restart_xray()
+        state = _new_state()
+        _connect_state_write(state)
+        return jsonify({"ok": True, "hot": False, "hot_error": msg, "state": state, "restart": restart})
+
     # If transparent proxy requested, backup iptables first
     backed_up = False
     if transparent:
@@ -3085,22 +3205,10 @@ def api_connect_start():
     # Restart xray
     restart = _restart_xray()
 
-    # Save state
-    import datetime as _dt
-    state = {
-        "active": True,
-        "selected_tags": tags,
-        "balancer_strategy": strategy,
-        "transparent_enabled": transparent,
-        "started_at": _dt.datetime.now().isoformat(),
-        "inbound_socks_port": ports.get("socks", 10810),
-        "inbound_http_port": ports.get("http", 10818),
-        "transparent_port": ports.get("transparent", 12345),
-        "original_inbounds": original_inbounds,
-    }
+    state = _new_state()
     _connect_state_write(state)
 
-    return jsonify({"ok": True, "state": state, "restart": restart})
+    return jsonify({"ok": True, "hot": False, "state": state, "restart": restart})
 
 
 @app.route("/api/connect/stop", methods=["POST"])
@@ -3127,6 +3235,13 @@ def api_connect_stop():
             if any(t in ib_tags for t in ("socks-in", "http-in")):
                 continue
             new_rules.append(r)
+        # The balancer is gone; rules still pointing at it (transparent inbound, user
+        # "proxy" rules) would make the config invalid. Point them at the first node.
+        fallback = next(iter(state.get("selected_tags") or []), None) or "direct"
+        for r in new_rules:
+            if r.get("balancerTag") == PROXY_BALANCER:
+                r.pop("balancerTag")
+                r["outboundTag"] = fallback
         routing["rules"] = new_rules
         _save_config_object(cfg)
 
