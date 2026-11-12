@@ -757,7 +757,7 @@ textarea.config-editor{width:100%;min-height:520px;background:var(--surface-2);f
           <button data-t="direct" onclick="setAccessType('direct')">直连</button>
           <button data-t="blocked" onclick="setAccessType('blocked')">拦截</button>
         </div>
-        <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="access-search" placeholder="搜索域名 / IP / 节点 / 客户端" oninput="loadAccessStatsDebounced()"></div>
+        <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="access-search" placeholder="搜索域名 / IP / 节点 / 客户端" oninput="accessSearchInput()"></div>
       </div>
       <div id="access-summary" class="hint">加载中…</div>
     </div>
@@ -2920,20 +2920,36 @@ async function deleteInbound(){
 
 /* --- logs --- */
 let accessType='all', logLines=200;
-function setAccessType(t){accessType=t;document.querySelectorAll('#ac-type button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));loadAccessStats();}
+// One request per time range (type=all); tab and search filter locally, so
+// switching tabs does not re-parse xray.log on the server.
+let accessData=null, accessSearchTimer=null;
+const ACCESS_FETCH_LIMIT=1000, ACCESS_SHOW=200;
+function setAccessType(t){accessType=t;document.querySelectorAll('#ac-type button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));renderAccess();}
+function accessSearchInput(){clearTimeout(accessSearchTimer);accessSearchTimer=setTimeout(renderAccess,120);}
 async function loadAccessStats(minutes){
   if(minutes)accessMinutes=minutes;
   document.querySelectorAll('#ac-range button').forEach(b=>b.classList.toggle('on',+b.dataset.m===accessMinutes));
-  const q=$('access-search').value||'', wrap=$('access-wrap');
+  const wrap=$('access-wrap');
   wrap.classList.add('is-loading');
-  const d=await api('/api/access-stats?minutes='+accessMinutes+'&type='+encodeURIComponent(accessType)+'&q='+encodeURIComponent(q));
+  const d=await api('/api/access-stats?minutes='+accessMinutes+'&type=all&limit='+ACCESS_FETCH_LIMIT);
   wrap.classList.remove('is-loading');
   if(!d)return;
+  accessData=d;renderAccess();
+}
+function renderAccess(){
+  const d=accessData;if(!d)return;
   const summary=$('access-summary');
   if(!d.ok){summary.innerHTML='<span style="color:var(--red)">访问日志不可用：'+escapeHtml(d.error||d.hint||'unknown')+'</span>';$('access-records').innerHTML='';return;}
-  summary.innerHTML='最近 '+d.window_minutes+' 分钟共 <b>'+d.total+'</b> 条 · 代理 <b style="color:var(--green)">'+d.proxy+'</b> · 直连 <b>'+d.direct+'</b> · 拦截 <b style="color:var(--red)">'+d.blocked+'</b>';
+  const all=d.records||[], q=($('access-search').value||'').trim().toLowerCase();
+  let recs=accessType==='all'?all:all.filter(r=>r.route_type===accessType);
+  if(q)recs=recs.filter(r=>[r.client,r.target,r.display_target,r.outbound,r.route_type].concat(r.domains||[]).join(' ').toLowerCase().includes(q));
+  const filtered=accessType!=='all'||q;
+  summary.innerHTML='最近 '+d.window_minutes+' 分钟共 <b>'+d.total+'</b> 条 · 代理 <b style="color:var(--green)">'+d.proxy+'</b> · 直连 <b>'+d.direct+'</b> · 拦截 <b style="color:var(--red)">'+d.blocked+'</b>'+
+    (filtered?' · 筛选出 <b>'+recs.length+'</b> 条':'')+
+    (d.total>all.length&&filtered?' <span class="muted">（在最近 '+all.length+' 条中筛选）</span>':'')+
+    (recs.length>ACCESS_SHOW?' <span class="muted">· 显示最新 '+ACCESS_SHOW+' 条</span>':'');
   const rt=t=>({proxy:'<span class="tag blue">代理</span>',direct:'<span class="tag green">直连</span>',blocked:'<span class="tag red">拦截</span>'}[t]||escapeHtml(t||''));
-  $('access-records').innerHTML=(d.records||[]).length?(d.records||[]).map(r=>'<tr><td class="nowrap">'+escapeHtml(r.time)+'</td><td>'+escapeHtml(r.client)+'</td><td>'+targetCell(r)+'</td><td>'+asInfo(r.ip_meta)+'</td><td>'+escapeHtml(r.port||'')+'</td><td>'+rt(r.route_type)+'</td><td>'+escapeHtml(r.outbound||'')+'</td></tr>').join(''):'<tr><td colspan="7" class="empty">该时间段没有记录</td></tr>';
+  $('access-records').innerHTML=recs.length?recs.slice(0,ACCESS_SHOW).map(r=>'<tr><td class="nowrap">'+escapeHtml(r.time)+'</td><td>'+escapeHtml(r.client)+'</td><td>'+targetCell(r)+'</td><td>'+asInfo(r.ip_meta)+'</td><td>'+escapeHtml(r.port||'')+'</td><td>'+rt(r.route_type)+'</td><td>'+escapeHtml(r.outbound||'')+'</td></tr>').join(''):'<tr><td colspan="7" class="empty">'+(filtered?'没有匹配的记录':'该时间段没有记录')+'</td></tr>';
 }
 async function loadLogs(n){
   if(n)logLines=n;
