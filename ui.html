@@ -736,6 +736,20 @@ textarea.config-editor{width:100%;min-height:520px;background:var(--surface-2);f
 
 <!-- ===================== Logs ===================== -->
 <section class="tab-content" id="tab-logs">
+  <div class="card">
+    <div class="card-head">
+      <h2>服务日志</h2>
+      <span class="spacer"></span>
+      <div class="seg" id="log-lines">
+        <button data-n="50" onclick="loadLogs(50)">50 行</button>
+        <button data-n="200" class="on" onclick="loadLogs(200)">200 行</button>
+        <button data-n="500" onclick="loadLogs(500)">500 行</button>
+      </div>
+      <button class="btn icon" title="刷新" onclick="loadLogs()"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></button>
+    </div>
+    <div class="search" style="margin-bottom:10px"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="log-filter" placeholder="过滤关键词，如 direct、error、telegram" oninput="filterLogs()"></div>
+    <div class="log-box" id="log-box">加载中…</div>
+  </div>
   <div class="card flush">
     <div class="card-head">
       <h2>访问记录</h2>
@@ -761,24 +775,10 @@ textarea.config-editor{width:100%;min-height:520px;background:var(--surface-2);f
       </div>
       <div id="access-summary" class="hint">加载中…</div>
     </div>
-    <div class="table-wrap loadable" id="access-wrap" style="max-height:620px;overflow:auto"><table>
+    <div class="table-wrap loadable" id="access-wrap" style="max-height:460px;overflow:auto"><table>
       <thead><tr><th>时间</th><th>客户端</th><th>目标</th><th>归属</th><th>端口</th><th>类型</th><th>出口</th></tr></thead>
       <tbody id="access-records"></tbody>
     </table></div>
-  </div>
-  <div class="card">
-    <div class="card-head">
-      <h2>服务日志</h2>
-      <span class="spacer"></span>
-      <div class="seg" id="log-lines">
-        <button data-n="50" onclick="loadLogs(50)">50 行</button>
-        <button data-n="200" class="on" onclick="loadLogs(200)">200 行</button>
-        <button data-n="500" onclick="loadLogs(500)">500 行</button>
-      </div>
-      <button class="btn icon" title="刷新" onclick="loadLogs()"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></button>
-    </div>
-    <div class="search" style="margin-bottom:10px"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="log-filter" placeholder="过滤关键词，如 direct、error、telegram" oninput="filterLogs()"></div>
-    <div class="log-box" id="log-box">加载中…</div>
   </div>
 </section>
 
@@ -1199,7 +1199,7 @@ const PAGES={
   dns:['DNS','代理核心的上游 DNS 与 Hosts'],
   inbounds:['入站','本地 SOCKS / HTTP 监听端口'],
   traffic:['流量分析','本机网卡流量与按对端 IP 的连接统计'],
-  logs:['访问日志','经过代理核心的连接记录与服务日志'],
+  logs:['访问日志','代理核心的服务日志与连接记录'],
   config:['配置文件','直接编辑代理核心配置'],
   system:['系统设置','内核参数、Geo 数据与访问 Token'],
   backups:['备份','配置文件的历史备份'],
